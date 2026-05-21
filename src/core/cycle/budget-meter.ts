@@ -1,13 +1,22 @@
 /**
  * v0.28: cumulative cost meter for dream-cycle phases (auto-think + drift).
  *
+ * v0.37.x: kept as a thin adapter over `BudgetTracker` semantics. The public
+ * class shape (`BudgetMeter`, `SubmitEstimate`, `BudgetCheckResult`) is
+ * preserved so every existing dream-cycle call site keeps working. The
+ * audit JSONL grew a `schema_version: 1` field on every line (A2 amended:
+ * schema-stable, not byte-stable — reorderings are tolerated, field
+ * renames are breaking). `test/fixtures/dream-budget-schema-v1.jsonl`
+ * pins the documented field set.
+ *
  * Per Codex P1 #10: each subagent submit estimates max-cost from
  * `model + max_output_tokens`, accumulates per-cycle, refuses next submit
  * if cumulative > budget. Non-Anthropic models bypass the gate with a
  * `BUDGET_METER_NO_PRICING` warn (once per process).
  *
  * Ledger lives at `~/.gbrain/audit/dream-budget-YYYY-Www.jsonl` (ISO-week
- * rotation, same pattern as shell-audit). Each line is one submit's cost
+ * rotation, same pattern as shell-audit; filename math now goes through
+ * `src/core/audit-week-file.ts` per T4). Each line is one submit's cost
  * estimate + actual usage when reported back.
  */
 
@@ -91,6 +100,7 @@ export class BudgetMeter {
         );
       }
       writeLedgerLine(this.auditPath, {
+        schema_version: 1,
         phase: this.opts.phase,
         ts: new Date().toISOString(),
         event: 'submit_unpriced',
@@ -112,6 +122,7 @@ export class BudgetMeter {
     if (this.opts.budgetUsd <= 0) {
       this.cumulativeUsd += cost;
       writeLedgerLine(this.auditPath, {
+        schema_version: 1,
         phase: this.opts.phase,
         ts: new Date().toISOString(),
         event: 'submit',
@@ -127,6 +138,7 @@ export class BudgetMeter {
     const projected = this.cumulativeUsd + cost;
     if (projected > this.opts.budgetUsd) {
       writeLedgerLine(this.auditPath, {
+        schema_version: 1,
         phase: this.opts.phase,
         ts: new Date().toISOString(),
         event: 'submit_denied',
@@ -147,6 +159,7 @@ export class BudgetMeter {
 
     this.cumulativeUsd += cost;
     writeLedgerLine(this.auditPath, {
+      schema_version: 1,
       phase: this.opts.phase,
       ts: new Date().toISOString(),
       event: 'submit',
