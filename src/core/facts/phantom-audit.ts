@@ -53,6 +53,7 @@ export function computePhantomAuditFilename(now: Date = new Date()): string {
 const writer = createAuditWriter<PhantomAuditEvent>({
   featureName: 'phantoms',
   errorLabel: 'gbrain',
+  errorMessagePrefix: 'phantom audit ',
   errorTrailer: '; cycle continues',
 });
 

@@ -108,6 +108,19 @@ export interface AuditWriterOpts {
    */
   errorLabel?: string;
   /**
+   * Qualifier inserted between the label and "write failed". For
+   * pre-v0.40.4 byte-identical preservation of operator-grep patterns:
+   *   - rerank-audit: 'rerank-failure audit '
+   *   - audit-slug-fallback: 'slug-fallback audit '
+   *   - phantom-audit: 'phantom audit '
+   *   - shell-audit + supervisor-audit + slug-fallback: '' (label is
+   *     already the qualifier in their pre-v0.40.4 stderr messages).
+   *
+   * Defaults to '' (no qualifier). Module-specific qualifiers preserve
+   * operator log-grep patterns from before the refactor.
+   */
+  errorMessagePrefix?: string;
+  /**
    * Trailing phrase on the stderr warning, after the error message.
    * Existing modules use: `'; submission continues'`,
    * `'; import continues'`, `'; cycle continues'`,
@@ -163,6 +176,7 @@ export function createAuditWriter<T extends { ts: string }>(
 ): AuditWriter<T> {
   const { featureName } = opts;
   const errorLabel = opts.errorLabel ?? featureName;
+  const errorMessagePrefix = opts.errorMessagePrefix ?? '';
   const errorTrailer = opts.errorTrailer ?? '';
 
   function computeFilename(now: Date = new Date()): string {
@@ -183,7 +197,7 @@ export function createAuditWriter<T extends { ts: string }>(
       fs.appendFileSync(file, JSON.stringify(row) + '\n', { encoding: 'utf8' });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`[${errorLabel}] write failed (${msg})${errorTrailer}\n`);
+      process.stderr.write(`[${errorLabel}] ${errorMessagePrefix}write failed (${msg})${errorTrailer}\n`);
     }
   }
 

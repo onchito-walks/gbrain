@@ -2294,11 +2294,18 @@ export class PostgresEngine implements BrainEngine {
     // which keeps cross-source leakage impossible by construction.
     // cross_source_hits uses COALESCE so NULL source_id rows behave as
     // 'default' and don't silently disappear from the count.
+    //
+    // Defense-in-depth (codex outside-voice review): deleted_at IS NULL
+    // on both join sides so a soft-deleted page in the input set
+    // (theoretically possible if a future caller bypasses hybridSearch's
+    // visibility filter) can't contribute to hits or cross_source_hits.
+    // Matches the v0.35.5.0 findOrphanPages fix pattern.
     const rows = await sql`
       WITH targets AS (
         SELECT id, COALESCE(source_id, 'default') AS source_id
         FROM pages
         WHERE id = ANY(${pageIds}::int[])
+          AND deleted_at IS NULL
       )
       SELECT
         l.to_page_id AS to_page_id,
@@ -2308,7 +2315,7 @@ export class PostgresEngine implements BrainEngine {
                THEN COALESCE(p.source_id, 'default') END
         )::int AS cross_source_hits
       FROM links l
-      JOIN pages   p ON p.id = l.from_page_id
+      JOIN pages   p ON p.id = l.from_page_id AND p.deleted_at IS NULL
       JOIN targets t ON t.id = l.to_page_id
       WHERE l.from_page_id = ANY(${pageIds}::int[])
         AND l.to_page_id   = ANY(${pageIds}::int[])

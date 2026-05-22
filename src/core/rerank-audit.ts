@@ -74,6 +74,7 @@ function truncateErrorSummary(msg: string, max = 200): string {
 const writer = createAuditWriter<RerankFailureEvent>({
   featureName: 'rerank-failures',
   errorLabel: 'gbrain',
+  errorMessagePrefix: 'rerank-failure audit ',
   errorTrailer: '; search continues',
 });
 
@@ -98,18 +99,11 @@ export function readRecentRerankFailures(days = 7, now: Date = new Date()): Rera
   return writer.readRecent(days, now);
 }
 
-// stderr label "gbrain" is the pre-v0.40.4 prefix for rerank-audit failures.
-// It is intentionally generic ("[gbrain] rerank-failure audit write failed")
-// vs the per-feature "[shell-audit]" style used elsewhere. The
-// pre-v0.40.4 message was:
+// stderr label "gbrain" + qualifier "rerank-failure audit " preserve the
+// pre-v0.40.4 message byte-for-byte:
 //
 //   `[gbrain] rerank-failure audit write failed (${msg}); search continues`
 //
-// The new shared format becomes:
-//
-//   `[gbrain] write failed (${msg}); search continues`
-//
-// The "rerank-failure" qualifier is dropped from the message text. This is
-// the only operator-visible drift from the refactor. Acceptable because the
-// stderr line is human-debugging not machine-parsed; the same operator
-// running `tail -f audit/*` sees which file was touched.
+// The `errorMessagePrefix` option on createAuditWriter restores the
+// qualifier that would otherwise be dropped by the refactor. Operators
+// grepping logs for "rerank-failure audit write failed" keep working.

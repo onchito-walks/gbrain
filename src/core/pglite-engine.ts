@@ -2240,11 +2240,15 @@ export class PGLiteEngine implements BrainEngine {
     // and source-scope rationale: see BrainEngine.getAdjacencyBoosts JSDoc.
     // Same CTE shape, same COALESCE on source_id for NULL safety, same
     // CASE-WHEN exclusion of target's own source for cross_source_hits.
+    //
+    // Defense-in-depth (codex outside-voice review): deleted_at IS NULL
+    // on both join sides. Matches Postgres-engine parity.
     const { rows } = await this.db.query(
       `WITH targets AS (
          SELECT id, COALESCE(source_id, 'default') AS source_id
          FROM pages
          WHERE id = ANY($1::int[])
+           AND deleted_at IS NULL
        )
        SELECT
          l.to_page_id AS to_page_id,
@@ -2254,7 +2258,7 @@ export class PGLiteEngine implements BrainEngine {
                 THEN COALESCE(p.source_id, 'default') END
          )::int AS cross_source_hits
        FROM links l
-       JOIN pages   p ON p.id = l.from_page_id
+       JOIN pages   p ON p.id = l.from_page_id AND p.deleted_at IS NULL
        JOIN targets t ON t.id = l.to_page_id
        WHERE l.from_page_id = ANY($1::int[])
          AND l.to_page_id   = ANY($1::int[])

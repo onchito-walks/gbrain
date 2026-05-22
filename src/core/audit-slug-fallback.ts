@@ -47,6 +47,7 @@ export function computeSlugFallbackAuditFilename(now: Date = new Date()): string
 const writer = createAuditWriter<SlugFallbackAuditEvent>({
   featureName: 'slug-fallback',
   errorLabel: 'gbrain',
+  errorMessagePrefix: 'slug-fallback audit ',
   errorTrailer: '; import continues',
 });
 
