@@ -303,3 +303,57 @@ describe('computeNightlyQualityProbeHealthCheck — pure doctor branch coverage'
     expect(check.message).toMatch(/1 PASS run /); // "run " not "runs "
   });
 });
+
+// ---------------------------------------------------------------------------
+// 4. Codex CDX-5 — doctor flags ALL non-PASS outcomes (no_embedding_key,
+// rate_limited, inconclusive must trip warn, not get silently reported as PASS)
+// ---------------------------------------------------------------------------
+
+describe('codex CDX-5 — doctor health: every non-PASS outcome surfaces', () => {
+  test('no_embedding_key outcome → warn (was silently PASS before CDX-5 fix)', async () => {
+    const { computeNightlyQualityProbeHealthCheck } = await import('../src/commands/doctor.ts');
+    const events = [{ outcome: 'no_embedding_key', ts: '2026-05-22T03:00:00Z' }];
+    const check = computeNightlyQualityProbeHealthCheck(true, events);
+    expect(check.status).toBe('warn');
+    expect(check.message).toMatch(/no_embed_key=1/);
+  });
+
+  test('rate_limited outcome → warn', async () => {
+    const { computeNightlyQualityProbeHealthCheck } = await import('../src/commands/doctor.ts');
+    const events = [{ outcome: 'rate_limited', ts: '2026-05-22T03:00:00Z' }];
+    const check = computeNightlyQualityProbeHealthCheck(true, events);
+    expect(check.status).toBe('warn');
+    expect(check.message).toMatch(/rate_limited=1/);
+  });
+
+  test('inconclusive outcome → warn', async () => {
+    const { computeNightlyQualityProbeHealthCheck } = await import('../src/commands/doctor.ts');
+    const events = [{ outcome: 'inconclusive', ts: '2026-05-22T03:00:00Z' }];
+    const check = computeNightlyQualityProbeHealthCheck(true, events);
+    expect(check.status).toBe('warn');
+    expect(check.message).toMatch(/inconclusive=1/);
+  });
+
+  test('counts include the new outcome buckets when mixed with pass/fail/error', async () => {
+    const { computeNightlyQualityProbeHealthCheck } = await import('../src/commands/doctor.ts');
+    const events = [
+      { outcome: 'pass', ts: '2026-05-16T03:00:00Z' },
+      { outcome: 'fail', ts: '2026-05-17T03:00:00Z' },
+      { outcome: 'error', ts: '2026-05-18T03:00:00Z' },
+      { outcome: 'inconclusive', ts: '2026-05-19T03:00:00Z' },
+      { outcome: 'budget_exceeded', ts: '2026-05-20T03:00:00Z' },
+      { outcome: 'no_embedding_key', ts: '2026-05-21T03:00:00Z' },
+      { outcome: 'rate_limited', ts: '2026-05-22T03:00:00Z' },
+    ];
+    const check = computeNightlyQualityProbeHealthCheck(true, events);
+    expect(check.status).toBe('warn');
+    expect(check.message).toMatch(/6 non-PASS runs/); // 7 total, 1 pass, 6 bad
+    expect(check.message).toMatch(/pass=1/);
+    expect(check.message).toMatch(/fail=1/);
+    expect(check.message).toMatch(/error=1/);
+    expect(check.message).toMatch(/inconclusive=1/);
+    expect(check.message).toMatch(/budget=1/);
+    expect(check.message).toMatch(/no_embed_key=1/);
+    expect(check.message).toMatch(/rate_limited=1/);
+  });
+});

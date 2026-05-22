@@ -806,3 +806,76 @@ describe('buildByTypeSummary (pure function)', () => {
     expect(summary.aggregate.rate).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// 13. Codex CDX-3 — resume + --by-type-floor must enforce the floor even on
+// a no-op resume (where all questions already done). Pre-CDX-3 the early
+// return bypassed the floor gate entirely.
+// ---------------------------------------------------------------------------
+
+describe('codex CDX-3 — resume + --by-type-floor enforcement on no-op resume', () => {
+  test('all-done resume still runs --by-type emission AND --by-type-floor gate', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'lme-resume-'));
+    const outPath = join(tmp, 'all-done.jsonl');
+    try {
+      // Pre-seed the output file with all-failed rows (recall_hit: false).
+      // This represents a prior run that completed every question but with
+      // very poor recall — the floor gate should fire even though no
+      // questions are processed THIS run.
+      const fixture = readFileSync(FIXTURE_PATH, 'utf8')
+        .split('\n').filter(l => l.length > 0).map(l => JSON.parse(l)).slice(0, 5);
+      const { writeFileSync } = await import('fs');
+      writeFileSync(
+        outPath,
+        fixture.map(q => JSON.stringify({
+          question_id: q.question_id,
+          question: q.question,
+          question_type: q.question_type,
+          hypothesis: 'done',
+          recall_hit: false, // every prior question missed
+        })).join('\n') + '\n',
+        'utf8',
+      );
+
+      const { client } = makeStubClient('should-not-be-called');
+      // Wrap to catch process.exit thrown from inside.
+      const exitCapture: { code: number | null } = { code: null };
+      const originalExit = process.exit;
+      // @ts-ignore — runtime override for test
+      process.exit = ((code: number) => {
+        exitCapture.code = code;
+        throw new Error('__exit__');
+      }) as any;
+      try {
+        await runEvalLongMemEval(
+          [FIXTURE_PATH, '--keyword-only', '--limit', '5',
+           '--output', outPath, '--resume-from', outPath,
+           '--by-type', '--by-type-floor', '0.5'],
+          { client },
+        );
+      } catch (e) {
+        // Expected: --by-type-floor breach → exit(1) → our test throw
+        if (!String(e).includes('__exit__')) throw e;
+      } finally {
+        // @ts-ignore — runtime restore
+        process.exit = originalExit;
+      }
+
+      // CDX-3: floor gate fired despite no-op resume → exit code 1.
+      expect(exitCapture.code).toBe(1);
+
+      // AND a by_type_summary was emitted at the file tail (CDX-3 also says
+      // resume must run summary emission even on no-op).
+      const lines = readFileSync(outPath, 'utf8').split('\n').filter(l => l.length > 0);
+      const summaries = lines.filter(l => {
+        try { return JSON.parse(l).kind === 'by_type_summary'; } catch { return false; }
+      });
+      expect(summaries.length).toBe(1);
+      const summary = JSON.parse(summaries[0]);
+      // All rows had recall_hit: false → aggregate.rate is 0 → below 0.5 floor.
+      expect(summary.aggregate.rate).toBeLessThan(0.5);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  }, 60_000);
+});

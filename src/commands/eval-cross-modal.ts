@@ -492,15 +492,49 @@ interface BatchRow {
   hypothesis: string;
 }
 
+/**
+ * v0.40.1.0 Track D (codex CDX-1) — upstream-error row from
+ * `gbrain eval longmemeval`. Carries `question`+`question_type` and an
+ * `error` field but no usable hypothesis. Counted in the batch summary's
+ * `upstream_error_count` so the denominator includes failed rows, never
+ * silently dropped (which would let the gate pass on a surviving subset).
+ */
+interface UpstreamErrorRow {
+  question_id: string;
+  question: string;
+  question_type?: string;
+  error: string;
+}
+
+interface BatchReadResult {
+  rows: BatchRow[];
+  upstream_errors: UpstreamErrorRow[];
+  malformed_count: number;
+}
+
 export interface BatchSummary {
   schema_version: 1;
   kind: 'cross_modal_batch_summary';
   timestamp: string;
+  /** Sum of scored + upstream_error + malformed rows. Real denominator. */
   total: number;
   pass_count: number;
   fail_count: number;
   inconclusive_count: number;
+  /** Per-question runtime errors from the cross-modal scoring layer. */
   error_count: number;
+  /**
+   * v0.40.1.0 Track D (codex CDX-1) — rows that arrived from the upstream
+   * eval already failed (longmemeval emitted an error row with no usable
+   * hypothesis). Counted in `total` so the denominator can't bypass the gate.
+   */
+  upstream_error_count: number;
+  /**
+   * v0.40.1.0 Track D (codex CDX-1) — JSONL rows that didn't have the
+   * required shape (missing question or hypothesis, not a tagged error row).
+   * Counted in `total`; treated as ERROR for exit precedence.
+   */
+  malformed_count: number;
   verdict: 'pass' | 'fail' | 'inconclusive' | 'error';
   est_cost_usd: number;
   slots: SlotConfig[];
@@ -508,21 +542,23 @@ export interface BatchSummary {
   concurrent: number;
   per_question: Array<{
     question_id: string;
-    verdict: 'pass' | 'fail' | 'inconclusive' | 'error';
+    verdict: 'pass' | 'fail' | 'inconclusive' | 'error' | 'upstream_error';
     error?: string;
     final_aggregate?: unknown;
   }>;
 }
 
-function readBatchRows(path: string): BatchRow[] {
+function readBatchRows(path: string): BatchReadResult {
   if (!existsSync(path)) {
     throw new Error(`--batch file not found: ${path}`);
   }
   const raw = readFileSync(path, 'utf8');
   const rows: BatchRow[] = [];
+  const upstream_errors: UpstreamErrorRow[] = [];
   let lineNo = 0;
   let summarySkipped = 0;
   let parseErrors = 0;
+  let malformed_count = 0;
   for (const line of raw.split('\n')) {
     lineNo++;
     if (!line.trim()) continue;
@@ -535,15 +571,30 @@ function readBatchRows(path: string): BatchRow[] {
       continue;
     }
     if (!obj || typeof obj !== 'object') continue;
-    // Skip the by_type_summary tail row (Codex #6 — metadata, not a question).
+    // Skip the by_type_summary tail row — metadata, not a question.
     if (obj.kind === 'by_type_summary') {
       summarySkipped++;
       continue;
     }
+    // v0.40.1.0 Track D (codex CDX-1): upstream error rows from
+    // `gbrain eval longmemeval` carry an `error` field and an empty/missing
+    // hypothesis. Treat them as upstream_error verdicts in the batch summary
+    // so they count in the denominator instead of silently disappearing.
+    if (typeof obj.error === 'string' && obj.error.length > 0) {
+      upstream_errors.push({
+        question_id: typeof obj.question_id === 'string' ? obj.question_id : `line-${lineNo}`,
+        question: typeof obj.question === 'string' ? obj.question : '',
+        ...(typeof obj.question_type === 'string' ? { question_type: obj.question_type } : {}),
+        error: obj.error,
+      });
+      continue;
+    }
     if (typeof obj.question !== 'string' || typeof obj.hypothesis !== 'string') {
-      // Row missing required fields — skip with warn.
+      // Row missing required fields — malformed, count it. We count instead
+      // of silently dropping so the batch summary can surface the loss.
+      malformed_count++;
       process.stderr.write(
-        `[eval cross-modal batch] skipping row at line ${lineNo}: ` +
+        `[eval cross-modal batch] skipping malformed row at line ${lineNo}: ` +
         `missing question or hypothesis field\n`,
       );
       continue;
@@ -557,10 +608,24 @@ function readBatchRows(path: string): BatchRow[] {
   if (summarySkipped > 0) {
     process.stderr.write(`[eval cross-modal batch] filtered ${summarySkipped} summary row(s)\n`);
   }
+  if (upstream_errors.length > 0) {
+    process.stderr.write(
+      `[eval cross-modal batch] ${upstream_errors.length} upstream-error row(s) detected; ` +
+      `they will count in the batch denominator as ERROR verdicts.\n`,
+    );
+  }
+  if (malformed_count > 0) {
+    process.stderr.write(
+      `[eval cross-modal batch] ${malformed_count} malformed row(s) skipped. ` +
+      `Batch will FAIL — re-run upstream eval to fix.\n`,
+    );
+  }
   if (parseErrors > 0) {
     process.stderr.write(`[eval cross-modal batch] skipped ${parseErrors} corrupt line(s)\n`);
+    // Corrupt JSON lines roll into malformed for exit-precedence purposes.
+    malformed_count += parseErrors;
   }
-  return rows;
+  return { rows, upstream_errors, malformed_count };
 }
 
 async function runBatchMode(parsed: ParsedArgs, opts: RunCrossModalOpts): Promise<number> {
@@ -578,16 +643,34 @@ async function runBatchMode(parsed: ParsedArgs, opts: RunCrossModalOpts): Promis
     { id: 'C', model: parsed.slotCModel ?? DEFAULT_SLOTS[2]!.model },
   ];
 
+  // v0.40.1.0 Track D (codex CDX-2): --limit must be >= 1. Passing
+  // --limit 0 would let an empty result fall through to PASS with
+  // total:0 — a direct CI bypass. Fail fast.
+  if (limit < 1) {
+    process.stderr.write(
+      `Error: --limit must be >= 1 (got ${limit}). --limit 0 would bypass the gate.\n`,
+    );
+    return 1;
+  }
+
   // Read + slice rows BEFORE configuring the gateway so a malformed batch
   // file fails fast without spending any setup time.
   let rows: BatchRow[];
+  let upstreamErrors: UpstreamErrorRow[];
+  let malformedCount: number;
   try {
-    rows = readBatchRows(parsed.batch!);
+    const result = readBatchRows(parsed.batch!);
+    rows = result.rows;
+    upstreamErrors = result.upstream_errors;
+    malformedCount = result.malformed_count;
   } catch (err) {
     process.stderr.write(`Error: ${err instanceof Error ? err.message : String(err)}\n`);
     return 1;
   }
-  if (rows.length === 0) {
+  // Total usable inputs = scored rows + upstream errors (CDX-1: both count
+  // in the denominator). Zero usable inputs means there's nothing to do
+  // AND nothing to flag — the upstream eval produced no output at all.
+  if (rows.length === 0 && upstreamErrors.length === 0) {
     process.stderr.write(`Error: --batch file has zero usable rows\n`);
     return 1;
   }
@@ -666,15 +749,36 @@ async function runBatchMode(parsed: ParsedArgs, opts: RunCrossModalOpts): Promis
       });
     }
 
-    // Exit precedence (per D10, fail-loud convention):
-    //   any error  → 2
+    // v0.40.1.0 Track D (codex CDX-1): upstream errors from the upstream
+    // eval are folded into per_question with verdict 'upstream_error' so
+    // the audit trail is complete. They count in the ERROR exit precedence.
+    for (const ue of upstreamErrors) {
+      perQuestionResults.push({
+        question_id: ue.question_id,
+        verdict: 'upstream_error',
+        error: ue.error,
+      });
+    }
+
+    // v0.40.1.0 Track D (codex CDX-1): malformed rows can't be scored AND
+    // can't be cited (no question text). They count toward total + ERROR
+    // exit code so a corrupt JSONL can't silently shrink the denominator.
+
+    const upstreamErrorCount = upstreamErrors.length;
+    const totalDenom = rows.length + upstreamErrorCount + malformedCount;
+
+    // Exit precedence (fail-loud convention; CDX-1 widens "ERROR" to include
+    // upstream and malformed):
+    //   any error / upstream_error / malformed → 2
     //   else any FAIL → 1
     //   else any INCONCLUSIVE → 2
     //   else 0 (all PASS)
     let batchVerdict: BatchSummary['verdict'];
     let exitCode: number;
-    if (errored > 0) { batchVerdict = 'error'; exitCode = 2; }
-    else if (fail > 0) { batchVerdict = 'fail'; exitCode = 1; }
+    if (errored > 0 || upstreamErrorCount > 0 || malformedCount > 0) {
+      batchVerdict = 'error';
+      exitCode = 2;
+    } else if (fail > 0) { batchVerdict = 'fail'; exitCode = 1; }
     else if (inconclusive > 0) { batchVerdict = 'inconclusive'; exitCode = 2; }
     else { batchVerdict = 'pass'; exitCode = 0; }
 
@@ -682,11 +786,13 @@ async function runBatchMode(parsed: ParsedArgs, opts: RunCrossModalOpts): Promis
       schema_version: 1,
       kind: 'cross_modal_batch_summary',
       timestamp: new Date().toISOString(),
-      total: rows.length,
+      total: totalDenom,
       pass_count: pass,
       fail_count: fail,
       inconclusive_count: inconclusive,
       error_count: errored,
+      upstream_error_count: upstreamErrorCount,
+      malformed_count: malformedCount,
       verdict: batchVerdict,
       est_cost_usd: estTotal,
       slots,
@@ -710,8 +816,9 @@ async function runBatchMode(parsed: ParsedArgs, opts: RunCrossModalOpts): Promis
 
     process.stderr.write(
       `\n[eval cross-modal batch] verdict=${batchVerdict} ` +
-      `pass=${pass} fail=${fail} inconclusive=${inconclusive} error=${errored} ` +
-      `(total ${rows.length})\n`,
+      `pass=${pass} fail=${fail} inconclusive=${inconclusive} ` +
+      `error=${errored} upstream_error=${upstreamErrorCount} malformed=${malformedCount} ` +
+      `(total ${totalDenom})\n`,
     );
     process.stderr.write(`[eval cross-modal batch] summary receipt: ${summaryPath}\n`);
 

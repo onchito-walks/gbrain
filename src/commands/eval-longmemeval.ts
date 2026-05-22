@@ -365,6 +365,29 @@ export async function runEvalLongMemEval(args: string[], runOpts: RunOpts = {}):
     }
     if (questions.length === 0) {
       process.stderr.write(`[longmemeval] resume: nothing to do (all questions already answered).\n`);
+      // v0.40.1.0 Track D (codex CDX-3): even a no-op resume must run the
+      // --by-type summary emission + --by-type-floor enforcement against
+      // the existing file's rows. Skipping these steps would let a prior
+      // run be resumed as "all done" and bypass the floor gate entirely.
+      if (opts.byType && opts.outputPath) {
+        const seededBucket: Record<string, { hit: number; total: number }> = {};
+        seedRecallByTypeFromFile(opts.outputPath, seededBucket);
+        const summary = buildByTypeSummary(seededBucket);
+        emitByTypeSummary(opts.outputPath, summary);
+        if (opts.byTypeFloor !== undefined) {
+          const floor = opts.byTypeFloor;
+          const breaches: string[] = [];
+          for (const [t, v] of Object.entries(summary.recall_by_type)) {
+            if (v.rate < floor) {
+              breaches.push(`${t}: ${(v.rate * 100).toFixed(1)}% < ${(floor * 100).toFixed(1)}%`);
+            }
+          }
+          if (breaches.length > 0) {
+            process.stderr.write(`[longmemeval] FAIL --by-type-floor=${floor}: ${breaches.join(', ')}\n`);
+            process.exit(1);
+          }
+        }
+      }
       return;
     }
   }
@@ -416,8 +439,15 @@ export async function runEvalLongMemEval(args: string[], runOpts: RunOpts = {}):
         progress.tick(1, q.question_id);
       } catch (err: any) {
         errorCount++;
+        // v0.40.1.0 Track D (codex CDX-1): emit the `question` text on error
+        // rows too so the cross-modal --batch consumer can flag them as
+        // upstream errors instead of silently dropping them from the
+        // denominator. Also carry question_type so by-type summary stays
+        // accurate across error rows.
         emitter.emit({
           question_id: q.question_id,
+          question: q.question,
+          question_type: q.question_type,
           hypothesis: '',
           error: String(err?.message ?? err),
         });

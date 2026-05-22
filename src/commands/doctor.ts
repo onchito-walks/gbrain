@@ -1480,16 +1480,21 @@ export function computeNightlyQualityProbeHealthCheck(
       message: `enabled but no probe events in the last 7 days (next run by autopilot).`,
     };
   }
-  const bad = events.filter(e =>
-    e.outcome === 'fail' || e.outcome === 'error' || e.outcome === 'budget_exceeded'
-  );
+  // v0.40.1.0 Track D (codex CDX-5): any non-PASS outcome is bad signal.
+  // Previously only fail / error / budget_exceeded triggered warn —
+  // no_embedding_key / rate_limited / inconclusive were silently reported
+  // as PASS, hiding real misconfigurations.
+  const bad = events.filter(e => e.outcome !== 'pass');
   const latest = events[events.length - 1]!;
   if (bad.length > 0) {
     const counts =
       `pass=${events.filter(e => e.outcome === 'pass').length} ` +
       `fail=${events.filter(e => e.outcome === 'fail').length} ` +
       `error=${events.filter(e => e.outcome === 'error').length} ` +
-      `budget=${events.filter(e => e.outcome === 'budget_exceeded').length}`;
+      `inconclusive=${events.filter(e => e.outcome === 'inconclusive').length} ` +
+      `budget=${events.filter(e => e.outcome === 'budget_exceeded').length} ` +
+      `no_embed_key=${events.filter(e => e.outcome === 'no_embedding_key').length} ` +
+      `rate_limited=${events.filter(e => e.outcome === 'rate_limited').length}`;
     return {
       name,
       status: 'warn',

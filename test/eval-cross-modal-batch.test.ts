@@ -354,3 +354,84 @@ describe('argument parser strictness (v0.40.1.0 Track D / coverage gap)', () => 
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// 4. Codex CDX-1 + CDX-2 — upstream error rows + --limit 0 + malformed rows
+// must count in the denominator and fail-loud (no silent CI bypass).
+// ---------------------------------------------------------------------------
+
+describe('codex CDX-1 + CDX-2 — denominator-bypass defenses', () => {
+  test('upstream-error rows (longmemeval emitted {error:...}) count as upstream_error, NOT silently dropped', async () => {
+    // Mimics what eval-longmemeval emits when runOneQuestion throws:
+    // {question_id, question, question_type, hypothesis: '', error: '...'}
+    const fixturePath = writeBatchFixture([
+      { question_id: 'q1', question: 'a', hypothesis: 'a-ans' },
+      { question_id: 'q2', question: 'b', question_type: 'temporal-reasoning', hypothesis: '', error: 'upstream OOM' },
+      { question_id: 'q3', question: 'c', hypothesis: 'c-ans' },
+    ]);
+    const summaryPath = join(mkdtempSync(join(tmpdir(), 'cm-summary-')), 'summary.json');
+    try {
+      const exit = await runEvalCrossModal(
+        ['--batch', fixturePath, '--output', summaryPath, '--limit', '10',
+         '--cycles', '1', '--concurrent', '2', '--max-usd', '1000'],
+        { runEval: makeStubRunEval(['pass', 'pass']) },  // only 2 calls (q1, q3) — q2 is upstream error
+      );
+      // Exit 2 because upstream_error_count > 0 (CDX-1).
+      expect(exit).toBe(2);
+      const summary = JSON.parse(readFileSync(summaryPath, 'utf8')) as BatchSummary;
+      // Denominator is 3 (not 2!) — upstream error counted.
+      expect(summary.total).toBe(3);
+      expect(summary.upstream_error_count).toBe(1);
+      expect(summary.error_count).toBe(0);
+      expect(summary.pass_count).toBe(2);
+      expect(summary.verdict).toBe('error');
+      // q2 surfaces in per_question with verdict 'upstream_error'.
+      const q2 = summary.per_question.find(p => p.question_id === 'q2');
+      expect(q2).toBeDefined();
+      expect(q2!.verdict).toBe('upstream_error');
+      expect(q2!.error).toBe('upstream OOM');
+    } finally {
+      rmSync(fixturePath, { recursive: true, force: true });
+      rmSync(summaryPath, { force: true });
+    }
+  });
+
+  test('malformed rows (missing question or hypothesis) count toward malformed_count + exit 2', async () => {
+    const fixturePath = writeBatchFixture([
+      { question_id: 'q1', question: 'a', hypothesis: 'a-ans' },
+      { question_id: 'q2' /* missing question and hypothesis */ },
+      { question_id: 'q3', question: 'c', hypothesis: 'c-ans' },
+    ]);
+    const summaryPath = join(mkdtempSync(join(tmpdir(), 'cm-summary-')), 'summary.json');
+    try {
+      const exit = await runEvalCrossModal(
+        ['--batch', fixturePath, '--output', summaryPath, '--limit', '10',
+         '--cycles', '1', '--concurrent', '2', '--max-usd', '1000'],
+        { runEval: makeStubRunEval(['pass', 'pass']) },
+      );
+      expect(exit).toBe(2);
+      const summary = JSON.parse(readFileSync(summaryPath, 'utf8')) as BatchSummary;
+      expect(summary.malformed_count).toBe(1);
+      expect(summary.total).toBe(3);  // 2 scored + 0 upstream + 1 malformed
+      expect(summary.verdict).toBe('error');
+    } finally {
+      rmSync(fixturePath, { recursive: true, force: true });
+      rmSync(summaryPath, { force: true });
+    }
+  });
+
+  test('--limit 0 is rejected (would bypass the gate with empty result → PASS)', async () => {
+    const fixturePath = writeBatchFixture([
+      { question_id: 'q1', question: 'a', hypothesis: 'a-ans' },
+    ]);
+    try {
+      const exit = await runEvalCrossModal(
+        ['--batch', fixturePath, '--limit', '0'],
+        { runEval: makeStubRunEval(['pass']) },
+      );
+      expect(exit).toBe(1);
+    } finally {
+      rmSync(fixturePath, { recursive: true, force: true });
+    }
+  });
+});
