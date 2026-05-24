@@ -2,7 +2,7 @@
 
 All notable changes to GBrain will be documented in this file.
 
-## [0.40.9.0] - 2026-05-24
+## [0.40.10.0] - 2026-05-24
 
 **Your brain stops accepting junk pages, and oversize content stops crashing the embedder.** A page from one of your source repos can no longer break embedding, defeat search, or pollute your knowledge graph just because it's a Cloudflare challenge dump or an absurdly large file. The new sanity gate lives at the narrow waist of ingestion, so every path that writes pages — sync, capture, `put_page` MCP, the `/ingest` webhook — picks it up uniformly.
 
@@ -32,7 +32,7 @@ Two failure modes treated differently:
 
 **99 new unit tests** (207 assertions) across 6 files covering the assessor, literal loader, embed-skip helper, audit JSONL, lint rules, and the import-file gate. 136 surface-area regression tests on the files touched all pass in isolation. Full bun:test suite returns clean.
 
-### To take advantage of v0.40.9.0
+### To take advantage of v0.40.10.0
 
 `gbrain upgrade` carries this for you. No migration, no manual steps. After upgrading:
 
@@ -42,7 +42,7 @@ Two failure modes treated differently:
    ```
    Surfaces existing junk pages and oversized pages already in your brain.
 
-2. **For any junk pages doctor flags**, the right cleanup is at the source — `git rm` the file from the source repo, push, then `gbrain sync`. The v0.41+ wave will ship `gbrain sources prune-junk <id>` to automate this; for v0.40.9.0 it's a manual two-step.
+2. **For any junk pages doctor flags**, the right cleanup is at the source — `git rm` the file from the source repo, push, then `gbrain sync`. The v0.41+ wave will ship `gbrain sources prune-junk <id>` to automate this; for v0.40.10.0 it's a manual two-step.
 
 3. **For oversized pages doctor flags** as warn-tier, no action needed unless you want to split. New oversize will automatically write with `frontmatter.embed_skip` and be queryable by title (just not search-rankable until split).
 
