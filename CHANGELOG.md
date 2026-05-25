@@ -2,6 +2,116 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.41.14.0] - 2026-05-25
+
+**Your gbrain skills can declare their own routing triggers in their
+frontmatter, and they just work. No more keeping the same trigger list
+in two places that quietly drift apart.**
+
+If you ever ran `gbrain doctor` on a fresh install and saw it complain
+about seven "routing missed" warnings, that's because gbrain shipped
+the dispatcher map (`skills/RESOLVER.md`) and the per-skill trigger
+declarations (`triggers:` in each `SKILL.md` frontmatter) as two
+separate sources of truth. Whenever one drifted from the other, doctor
+docked your health score by ~5 points and the routing-eval CLI showed
+the same warnings independently. Fixing one surface didn't fix the
+other. This release closes that drift bug class for good.
+
+What you can now do:
+
+- Declare a skill's routing triggers in ONE place — the skill's own
+  `SKILL.md` frontmatter. Every consumer (doctor, `routing-eval`,
+  mounted cross-brain dispatch) sees the same triggers automatically.
+- Add a new skill without touching `RESOLVER.md`. The skill gets
+  auto-registered from its frontmatter the moment the file lands.
+- Keep `RESOLVER.md` as the curated human-readable dispatcher map
+  (it still works), but treat it as an *additive* surface — its rows
+  union with the frontmatter, they don't replace it.
+- Run `bun src/cli.ts reindex --help` and get help text instead of
+  "Unknown command: reindex" (small CLI registration fix bundled in).
+- Trust your PR CI to catch routing drift: the new
+  `bun run check:resolver` gate is wired into `bun run verify`, so a
+  new skill with mismatched fixtures fails the build instead of
+  silently degrading user-install resolver_health after merge.
+
+How to take advantage:
+
+- Run `gbrain doctor` — resolver_health now reports `OK — 47 skills,
+  all reachable` with zero warnings on bundled skills.
+- Adding a skill? Put `triggers:` in the SKILL.md frontmatter and skip
+  the RESOLVER.md edit. It's reachable from doctor, routing-eval, and
+  any mounted brain that loads it.
+
+How to verify after upgrade:
+
+```bash
+gbrain check-resolvable --json --skills-dir skills/ \
+  | jq '.report | {ok, errors: (.errors|length), warnings: (.warnings|length)}'
+# Expect: {"ok": true, "errors": 0, "warnings": 0}
+
+bun src/cli.ts reindex --help
+# Expect: usage line, not "Unknown command"
+```
+
+Closes issue #1451. Cherry-picked the trigger-broadening direction
+from kylma-code's PR #1331 and the `reindex` CLI registration from
+lost9999's PR #1354 — both contributors got it right on their own
+surfaces; this release combines them with the structural fix that
+closes the underlying drift class.
+
+### For contributors
+
+New shared primitive at `src/core/skill-trigger-index.ts`:
+`loadSkillTriggerIndex(skillsDir)` returns the unified entry list
+folded from per-skill frontmatter + RESOLVER.md / AGENTS.md (including
+the OpenClaw `../AGENTS.md` parent-dir merge). UNION semantics,
+case-insensitive dedupe keyed on `(skillPath, normalized trigger)`.
+Three consumers fold through this primitive — `checkResolvable`,
+`runRoutingEvalCli`, `mounts-cache.composeResolvers`. Before this,
+each consumer built its own resolver index from RESOLVER.md only;
+fixing frontmatter for doctor wouldn't reach the routing-eval CLI
+or cross-brain dispatchers. The CI gate `bun run check:resolver`
+(strict mode, exit-1 on any warning) prevents the drift class from
+returning. 18 hermetic unit cases in `test/skill-trigger-index.test.ts`
+cover frontmatter scan, RESOLVER.md merge, parent-dir scan,
+deprecated-skill skip, missing-dir resilience, malformed-YAML
+warn-once, and synthesis round-trip. Plan + 5 decisions + codex
+outside-voice recalibration captured at
+`~/.claude/plans/system-instruction-you-are-working-tidy-storm.md`.
+
+Co-Authored-By: kylma-code <noreply@github.com>
+Co-Authored-By: lost9999 <noreply@github.com>
+
+## To take advantage of v0.41.14.0
+
+`gbrain upgrade` should do this automatically. If `gbrain doctor`
+still warns about resolver health on bundled skills:
+
+1. **Verify the headline fix:**
+   ```bash
+   gbrain check-resolvable --json --skills-dir skills/ \
+     | jq '.report | {ok, errors: (.errors|length), warnings: (.warnings|length)}'
+   ```
+   Expect `{"ok": true, "errors": 0, "warnings": 0}`.
+
+2. **Verify the CLI fix:**
+   ```bash
+   gbrain reindex --help
+   ```
+   Expect a usage line, not "Unknown command: reindex".
+
+3. **If you maintain a fork with custom skills**, your existing
+   RESOLVER.md / AGENTS.md rows still work unchanged (union
+   semantics). For new skills you add going forward, you can declare
+   `triggers:` in the SKILL.md frontmatter and skip the RESOLVER.md
+   edit — they'll be auto-registered everywhere.
+
+4. **If any check fails or the numbers look wrong,** please file an
+   issue: https://github.com/garrytan/gbrain/issues including:
+   - output of `gbrain doctor`
+   - output of `gbrain check-resolvable --json`
+   - which step broke
+
 ## [0.41.11.1] - 2026-05-25
 
 **CI got twice as fast. Every PR now finishes in about four and a half
