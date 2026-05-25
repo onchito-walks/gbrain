@@ -10,6 +10,44 @@
 
 - [ ] **TODO-4 (P1) — Measure actual orphan-ratio reduction on representative brain post-merge.** v0.41.10.0 CHANGELOG softens the design-doc claim from "88% → <30%" to "material reduction, exact figure TBD" per codex CK13 (strict-exact + min-length≥4 + no-aliases + no-fuzzy will under-deliver on 3-char real entities like "YC", first-name mentions like "Bob", and abbreviations). After v0.41.10.0 lands, run `gbrain extract links --by-mention` against the production OpenClaw deployment (~165K pages) and capture before/after orphan_ratio from `gbrain doctor --json`. Update `docs/designs/GBRAIN_ONBOARD.md` (in PR #1409 if still open, or as follow-up edit if merged) with the measured number. Update CHANGELOG retroactively only if the measurement is material to user expectations.
 
+## v0.41.6.0 follow-ups (v0.41.7+)
+
+- [ ] **v0.41.7+: investigate v0.40+ schema-probe deadlock ROOT cause.**
+  v0.41.6.0 D4 ships the symptom fix (retry+poll silently when the race
+  resolves itself; warn with revised wording when truly stuck). Codex
+  outside-voice F12 caught the load-bearing finding: `initSchema()`
+  already takes `pg_advisory_lock(42)` so the SQLSTATE 40P01 race must
+  involve OTHER locks. Hypothesis: DDL locks acquired by initSchema's
+  ALTER / CREATE statements deadlock against application queries
+  (long-running SELECTs on `pages`, PgBouncer pool artifacts). Reproduce
+  on real PgBouncer setup with concurrent reads + simulated migration.
+  Expected outcome: either connection-pool isolation fix or DDL-lock
+  NOWAIT pattern. Effort: human ~4-6h / CC ~1h once repro is in hand.
+  Depends on: nothing; v0.41.6.0 D4 already quiets the alarming warning
+  for the common case, so this investigation is unblocked.
+
+- [ ] **v0.41.7+: wire inline auto-embed errors at sync.ts:1173-1186
+  through `recordSyncFailures`.** v0.41.6.0 D1 closes the headline
+  missing-creds case (preflight short-circuits before any embed call).
+  D2's classifier patterns cover rate-limit / quota / oversize errors
+  for per-file embeds inside `runImport` (which already records
+  failures correctly). But the inline post-import auto-embed catch at
+  `src/commands/sync.ts:1173-1186` swallows errors to stderr only and
+  never reaches `recordSyncFailures`. Wire it through with deduplication
+  guard (some errors may also be recorded by per-file `runImport` —
+  avoid double-recording). Effort: human ~1d / CC ~30min including
+  dedup test surface.
+
+- [ ] **v0.41.7+: true end-to-end cancellation in search via AbortSignal.**
+  v0.41.6.0 D3 `withTimeout` bounds USER wait via Promise.race + process
+  exit. The underlying DB / API socket keeps running until the kernel
+  reaps the process or the server times out the abandoned query. For
+  long-running subagent loops or rerank pipelines, threading AbortSignal
+  end-to-end would save server-side resources. Touches `hybridSearch` +
+  engine + `cosineReScore` + `reranker` signatures. Effort: human ~1d /
+  CC ~3h. Tradeoff: large surface fan-out for marginal benefit on the
+  CLI exit-on-timeout path. Only ship when a non-CLI consumer
+  (HTTP MCP, future autopilot health checks) wants true cancellation.
 ## community-pr-wave follow-ups (filed during ship)
 
 - [ ] **`FREE_LOCAL_*_PROVIDERS` zero-pricing bypassable via redirected
@@ -465,6 +503,86 @@ cleanup can move each into the relevant area section.
   via Minion job, swaps active column atomically. Column-registry
   primitive exists (`embedding_columns` from v0.36.3); migration verb
   doesn't. (Embedding cluster.)
+
+---
+## v0.41.8.0 PGLite hang follow-ups (v0.41+)
+
+These were filed when v0.41.8.0 shipped the search/query/get hang fix
+(#1247/#1269/#1290) + WASM init classifier (#1340) + sync breadcrumbs.
+Three items deferred:
+
+- [ ] **Investigate #1342 — `gbrain sync` hangs after schema v89→v92
+  migration (PGLite, single reporter).** Repro shape: ~99% CPU in pure-JS
+  JIT loop per `sample <pid>`, zero stderr output, reproduces with
+  `--dry-run --no-pull`. Triggered after migrations 89→92 landed (v89
+  facts_event_type_column, v90 contextual_retrieval_columns, v91
+  pages_generation_trigger_and_bookmark, v92 sources_github_repo_index).
+  Stale lock recovery from a `brain.pglite.broken-20260523-120636`
+  rename suggests half-applied schema state.
+
+  **Ruled out** (per v0.41.8.0 plan-eng-review): NOT the
+  `withRefreshingLock` heartbeat (user takes the legacy global-lock
+  path — no setInterval); NOT the v91 trigger function (only fires on
+  writes, user repros with `--dry-run`); NOT the two `while (true)`
+  loops in `src/commands/sync.ts` (parallel worker pool + watch mode,
+  neither in the user's invocation path).
+
+  **Next diagnostic steps**:
+  1. Seed a fresh PGLite brain at schema v88 (snapshot the embedded
+     schema blob at that version into a test fixture), apply migrations
+     v89→v92, then run `performSync` with the user's exact flags and
+     an 8s timeout. Repeat with a partial-v91 state (column landed,
+     index didn't) to match the `brain.pglite.broken-...` clue.
+  2. Run the reproducer under `bun --inspect-brk` and grab the V8
+     stack at the spin point.
+  3. Scan for `contextual_retrieval_mode IS NULL` paths in sync /
+     `src/core/import-file.ts` — the v90 column may have an unbounded
+     iteration somewhere when the per-source backfill kicks in.
+
+  **Reporter's config**: PGLite, `~/.gbrain/brain.pglite`,
+  `ollama:nomic-embed-text` @ 768d, macOS 15.5, single 'default'
+  source.
+
+  **Mitigation in v0.41.8.0**: phase breadcrumbs added to
+  `performSyncInner` so the next #1342-shaped report names WHICH phase
+  spun (resolve_repo / load_active_pack / validate_repo_state /
+  detect_head). Doesn't fix; makes reports actionable.
+
+- [ ] **Concurrent disconnect-during-connect race on `PGLiteEngine`
+  (adversarial-review C6, v0.41.8.0).** The v0.41.8.0 snapshot+early-null
+  pattern in `disconnect()` improves the partial-state race for the
+  common case (single instance, sequential lifecycle), but a concurrent
+  `connect()` and `disconnect()` on the same engine instance can still
+  strand: `disconnect()` snapshots+nulls the lock and releases it while
+  `connect()` is still in-flight (lock already acquired, awaiting
+  `PGlite.create()`). When `connect()` resolves, `this._db` is assigned
+  to a fresh handle but `this._lock` is null — engine is "connected"
+  but holds no file lock; another process can acquire it concurrently.
+  Unusual caller pattern in production (one instance per process,
+  sequential lifecycle), but tests sometimes do this and the contract
+  is undefined. Fix: serialize connect/disconnect with an instance-level
+  mutex, or document the constraint and assert single-flight at the
+  call site.
+
+- [ ] **Retrofit `awaitPendingSearchCacheWrites` with the same bounded
+  timeout v0.41.8.0 added to `awaitPendingLastRetrievedWrites`.** The
+  v0.36.1.x #1090 fix at `src/core/search/hybrid.ts:36-45` shipped the
+  drain pattern without a timeout; v0.41.8.0 added the timeout + warn
+  pattern to the new `awaitPendingLastRetrievedWrites` helper. For
+  symmetry (and to close the same future-failure mode in the cache
+  drain), apply the same `Promise.race` + stderr warn pattern. ~15 LOC
+  + 2 unit cases. Pair this with the drain-helper extraction below.
+
+- [ ] **Extract a shared `createDrainHelper<T>()` factory when a third
+  fire-and-forget surface appears.** Per D4 in the v0.41.8.0 eng
+  review: two surfaces is the threshold for noticing, three for
+  extracting. `src/core/search/hybrid.ts:awaitPendingSearchCacheWrites`
+  + `src/core/last-retrieved.ts:awaitPendingLastRetrievedWrites` are
+  the two surfaces today. When a third surface is added (or when the
+  timeout-symmetry retrofit above lands and the duplication becomes
+  load-bearing), extract a `src/core/drain-helper.ts` factory consumed
+  by both call sites. Pair with the symmetry retrofit so they fire
+  together as one focused refactor.
 
 ---
 ## v0.41 Eval-loop wave follow-ups (v0.42+)

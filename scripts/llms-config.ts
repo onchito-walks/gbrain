@@ -113,6 +113,12 @@ export const SECTIONS: DocSection[] = [
         description:
           "Deploying the gbrain jobs worker: crontab + watchdog, inline --follow, systemd/Procfile/fly.toml, upgrade checklist.",
         path: "docs/guides/minions-deployment.md",
+        // v0.41.8.0: 13KB deployment runbook. Web index entry stays;
+        // single-fetch bundle drops it to keep under FULL_SIZE_BUDGET
+        // (CLAUDE.md grew past 600KB once master's v0.41.2-v0.41.6 +
+        // this wave's annotations landed). Operators read this once;
+        // agents rarely need it in context.
+        includeInFull: false,
       },
       {
         title: "docs/guides/quiet-hours.md",
@@ -249,6 +255,9 @@ export const INLINE_TIPS = [
   "`gbrain upgrade` runs post-upgrade + apply-migrations.",
 ];
 
-// Target ~600KB so llms-full.txt fits in ~150k-token contexts with room to spare.
+// Target ~700KB so llms-full.txt fits in ~175k-token contexts with room to spare.
+// Bumped from 600KB in v0.41.9.0 — CLAUDE.md grew past 600KB after the wave's
+// new-file annotations + Conductor branch-name iron-rule landed; the bundle
+// still fits comfortably in modern long-context models.
 // Generator prints a WARN if exceeded; ship with includeInFull=false exclusions.
-export const FULL_SIZE_BUDGET = 600_000;
+export const FULL_SIZE_BUDGET = 700_000;
