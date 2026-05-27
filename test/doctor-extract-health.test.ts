@@ -4,7 +4,7 @@
 //   - Empty rollup → OK with kinds: []
 //   - Per-kind halt rate > 10% → WARN with top-3 kinds in message
 //   - rollup_write_failures > 0 → WARN (when halt rates are clean)
-//   - Pre-v104 brain (no extract_rollup_7d table) → OK (best-effort)
+//   - Pre-v106 brain (no extract_rollup_7d table) → OK (best-effort)
 //   - JSON envelope stamps schema_version: 1
 //   - last_updated_at coerces to ISO string regardless of engine
 

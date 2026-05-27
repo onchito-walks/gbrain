@@ -15,7 +15,7 @@
  *   - When persistent failures accumulate (>10/hr per future doctor
  *     rule), an auto-rebuild from JSONL self-heals the cache.
  *
- * Schema (migration v104):
+ * Schema (migration v106):
  *   extract_rollup_7d (kind, source_id, day, cost_usd, halt_count,
  *                      eval_fail_count, eval_pass_count,
  *                      round_completed_count, rollup_write_failures,

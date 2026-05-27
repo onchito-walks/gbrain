@@ -152,7 +152,7 @@ export async function runExtractExplain(
     );
     rollup = rows[0] ?? null;
   } catch {
-    // Pre-v104 brain — leave rollup null.
+    // Pre-v106 brain — leave rollup null.
   }
 
   if (json) {

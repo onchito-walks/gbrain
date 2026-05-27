@@ -3,7 +3,7 @@
  *
  *   gbrain extract status [--source-id ID] [--kind X] [--run-id Y] [--json]
  *
- * Reads `extract_rollup_7d` (migration v104) and emits per-kind +
+ * Reads `extract_rollup_7d` (migration v106) and emits per-kind +
  * (optionally) per-source aggregates from the last 7 days. Operator-
  * discoverability surface for the v0.42 extract framework.
  *
