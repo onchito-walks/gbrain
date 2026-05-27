@@ -2,7 +2,7 @@
 
 All notable changes to GBrain will be documented in this file.
 
-## [0.41.21.0] - 2026-05-27
+## [0.41.24.0] - 2026-05-27
 
 **Your reformatted meeting transcripts now actually parse.**
 
@@ -10,7 +10,7 @@ If you reformat Circleback meetings into a per-line shape like
 `**Garry Tan** (12:34): hello`, gbrain used to look at them and say
 `no_match` — even when 78% of the page was valid chat. Your 36 reformatted
 meetings sat there inert and the fact extractor never saw a single
-message. v0.41.21.0 makes them flow through.
+message. v0.41.24.0 makes them flow through.
 
 Two problems were stacked. First, the parser only looked at the first
 10 lines of a page to figure out which chat format it was. Meeting
@@ -112,7 +112,7 @@ it doesn't.
   floor) and the user-facing case (113 Circleback meetings × 20,167
   messages).
 
-## To take advantage of v0.41.21.0
+## To take advantage of v0.41.24.0
 
 `gbrain upgrade` should do this automatically. Then to actually flow
 your reformatted Circleback meetings through the fact extractor:
