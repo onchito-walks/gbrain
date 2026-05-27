@@ -4,13 +4,22 @@
 // semver descending compare, transitive walking (gbrain-base@1.x →
 // gbrain-base-v2 via bundled packs).
 
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import {
   findPackSuccessors,
   _versionRangeMatches,
   _versionDescCompare,
 } from '../src/core/schema-pack/load-active.ts';
 import { _resetPackCacheForTests } from '../src/core/schema-pack/registry.ts';
+
+// Reset BEFORE every test too — sibling test files in the same bun shard
+// (schema-pack-mutate.test.ts, schema-pack-registry-reload.test.ts, etc.)
+// can pollute the module-level pack cache. afterEach alone isn't enough
+// because the first test in this file runs against whatever state the
+// previous file left behind.
+beforeEach(() => {
+  _resetPackCacheForTests();
+});
 
 afterEach(() => {
   _resetPackCacheForTests();
