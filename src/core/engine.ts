@@ -1708,7 +1708,7 @@ export interface BrainEngine {
   resolveAliases(
     aliasNorms: string[],
     opts?: { sourceId?: string; sourceIds?: string[] },
-  ): Promise<Map<string, string[]>>;
+  ): Promise<Map<string, Array<{ slug: string; source_id: string }>>>;
 
   /**
    * T3 retrieval-cathedral — WRITE side of the alias layer. Replace the full

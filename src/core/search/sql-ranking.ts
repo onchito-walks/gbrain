@@ -145,15 +145,22 @@ export function buildVisibilityClause(pageAlias: string, sourceAlias: string): s
  * recurring postgres/pglite parity bug class this repo guards against.
  *
  * Contract on the candidate CTE (`candidateCte`):
- *   - exposes a `slug` column (the per-page collapse key)
+ *   - exposes `source_id` + `slug` columns (the composite per-page collapse key)
  *   - exposes a numeric `score` column (the value pooled on)
  *   - exposes `page_id` and `chunk_id` columns (deterministic tiebreak)
  *
- * Determinism: `DISTINCT ON (slug)` keeps the FIRST row per slug under the
- * ORDER BY, so the tiebreak `slug, score DESC, page_id ASC, chunk_id ASC`
- * makes the surviving chunk fully deterministic when two chunks of the same
- * page tie on score (basis-vector eval fixtures, planner-independent — same
- * rationale as the v0.41.13 searchVector stable tiebreaker).
+ * Collapse key is COMPOSITE `(source_id, slug)`, NOT slug alone — two pages
+ * with the same slug in different sources are distinct pages (the federated
+ * multi-source contract; matches dedup.ts's pageKey and the v0.34.1 source
+ * isolation seal). Pooling on bare slug would collapse them and drop the
+ * neighbor-source page before ranking. `COALESCE(source_id, 'default')` keeps
+ * pre-v0.17 single-source rows (null source_id) collapsing correctly.
+ *
+ * Determinism: `DISTINCT ON` keeps the FIRST row per key under the ORDER BY,
+ * so the tiebreak `… score DESC, page_id ASC, chunk_id ASC` makes the surviving
+ * chunk fully deterministic when two chunks of the same page tie on score
+ * (basis-vector eval fixtures, planner-independent — same rationale as the
+ * v0.41.13 searchVector stable tiebreaker).
  *
  * Pooling happens over the FULL candidate set (`innerLimit` rows) BEFORE the
  * user-facing `LIMIT`, so a page's best chunk can't be truncated out by
@@ -167,9 +174,9 @@ export function buildVisibilityClause(pageAlias: string, sourceAlias: string): s
  */
 export function buildBestPerPagePoolCte(candidateCte: string): string {
   return `best_per_page AS (
-        SELECT DISTINCT ON (slug) *
+        SELECT DISTINCT ON (COALESCE(source_id, 'default'), slug) *
         FROM ${candidateCte}
-        ORDER BY slug, score DESC, page_id ASC, chunk_id ASC
+        ORDER BY COALESCE(source_id, 'default'), slug, score DESC, page_id ASC, chunk_id ASC
       )`;
 }
 

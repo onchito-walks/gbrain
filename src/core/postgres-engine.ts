@@ -4476,8 +4476,8 @@ export class PostgresEngine implements BrainEngine {
   async resolveAliases(
     aliasNorms: string[],
     opts?: { sourceId?: string; sourceIds?: string[] },
-  ): Promise<Map<string, string[]>> {
-    const out = new Map<string, string[]>();
+  ): Promise<Map<string, Array<{ slug: string; source_id: string }>>> {
+    const out = new Map<string, Array<{ slug: string; source_id: string }>>();
     if (!aliasNorms || aliasNorms.length === 0) return out;
     const sql = this.sql;
     const sources =
@@ -4488,20 +4488,21 @@ export class PostgresEngine implements BrainEngine {
           : null;
     const rows = sources
       ? await sql`
-          SELECT alias_norm, slug
+          SELECT alias_norm, slug, source_id
           FROM page_aliases
           WHERE alias_norm = ANY(${aliasNorms}::text[])
             AND source_id = ANY(${sources}::text[])
-          ORDER BY alias_norm, slug`
+          ORDER BY alias_norm, source_id, slug`
       : await sql`
-          SELECT alias_norm, slug
+          SELECT alias_norm, slug, source_id
           FROM page_aliases
           WHERE alias_norm = ANY(${aliasNorms}::text[])
-          ORDER BY alias_norm, slug`;
+          ORDER BY alias_norm, source_id, slug`;
     for (const r of rows) {
       const a = r.alias_norm as string;
       const list = out.get(a) ?? [];
-      if (!list.includes(r.slug as string)) list.push(r.slug as string);
+      const ref = { slug: r.slug as string, source_id: r.source_id as string };
+      if (!list.some(x => x.slug === ref.slug && x.source_id === ref.source_id)) list.push(ref);
       out.set(a, list);
     }
     return out;

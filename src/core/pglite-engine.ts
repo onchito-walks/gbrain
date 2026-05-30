@@ -4450,8 +4450,8 @@ export class PGLiteEngine implements BrainEngine {
   async resolveAliases(
     aliasNorms: string[],
     opts?: { sourceId?: string; sourceIds?: string[] },
-  ): Promise<Map<string, string[]>> {
-    const out = new Map<string, string[]>();
+  ): Promise<Map<string, Array<{ slug: string; source_id: string }>>> {
+    const out = new Map<string, Array<{ slug: string; source_id: string }>>();
     if (!aliasNorms || aliasNorms.length === 0) return out;
     const sources =
       opts?.sourceIds && opts.sourceIds.length > 0
@@ -4459,17 +4459,19 @@ export class PGLiteEngine implements BrainEngine {
         : opts?.sourceId
           ? [opts.sourceId]
           : null;
-    let q = `SELECT alias_norm, slug FROM page_aliases WHERE alias_norm = ANY($1::text[])`;
+    let q = `SELECT alias_norm, slug, source_id FROM page_aliases WHERE alias_norm = ANY($1::text[])`;
     const params: unknown[] = [aliasNorms];
     if (sources) {
       params.push(sources);
       q += ` AND source_id = ANY($2::text[])`;
     }
-    q += ` ORDER BY alias_norm, slug`;
+    q += ` ORDER BY alias_norm, source_id, slug`;
     const { rows } = await this.db.query(q, params);
-    for (const r of rows as Array<{ alias_norm: string; slug: string }>) {
+    for (const r of rows as Array<{ alias_norm: string; slug: string; source_id: string }>) {
       const list = out.get(r.alias_norm) ?? [];
-      if (!list.includes(r.slug)) list.push(r.slug);
+      if (!list.some(x => x.slug === r.slug && x.source_id === r.source_id)) {
+        list.push({ slug: r.slug, source_id: r.source_id });
+      }
       out.set(r.alias_norm, list);
     }
     return out;

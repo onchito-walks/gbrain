@@ -58,6 +58,23 @@ describe('applyAliasHop', () => {
     expect(m.score).toBeCloseTo(0.4 * 1.10, 6); // bounded present-boost
   });
 
+  test('P0 source-isolation: alias hop boosts only the aliased source, not the same slug in another source', async () => {
+    // The alias belongs to the src-b page only. Two same-slug results, different
+    // sources, both in the organic set. The hop must boost ONLY src-b's row.
+    await engine.setPageAliases('shared/page', 'src-b', ['only in b']);
+    const organic = [
+      { slug: 'shared/page', source_id: 'src-a', score: 0.5 } as unknown as SearchResult,
+      { slug: 'shared/page', source_id: 'src-b', score: 0.5 } as unknown as SearchResult,
+    ];
+    const out = await applyAliasHop(engine, organic, 'only in b', { sourceIds: ['src-a', 'src-b'] });
+    const a = out.find(r => r.source_id === 'src-a')!;
+    const b = out.find(r => r.source_id === 'src-b')!;
+    expect(b.alias_hit).toBe(true);
+    expect(b.score).toBeCloseTo(0.5 * 1.10, 6);
+    expect(a.alias_hit).toBeUndefined(); // NOT cross-boosted
+    expect(a.score).toBe(0.5);
+  });
+
   test('no alias match → input unchanged', async () => {
     const organic = [res('a', 0.9), res('b', 0.8)];
     const out = await applyAliasHop(engine, organic, 'some unrelated query', { sourceId: 'default' });
@@ -86,8 +103,8 @@ describe('ingest projection (importFromContent)', () => {
     const md = `---\ntype: note\ntitle: The Mingtang\naliases:\n  - Hall of Light\n  - 明堂\n---\nIndoor Greek amphitheater.`;
     await importFromContent(engine, 'projects/mingtang', md, { sourceId: 'default', noEmbed: true });
     const m = await engine.resolveAliases(['hall of light', '明堂'], { sourceId: 'default' });
-    expect(m.get('hall of light')).toEqual(['projects/mingtang']);
-    expect(m.get('明堂')).toEqual(['projects/mingtang']);
+    expect((m.get('hall of light') ?? []).map(r => r.slug)).toEqual(['projects/mingtang']);
+    expect((m.get('明堂') ?? []).map(r => r.slug)).toEqual(['projects/mingtang']);
   });
 
   test('removing an alias from frontmatter clears it on re-import', async () => {
@@ -97,6 +114,6 @@ describe('ingest projection (importFromContent)', () => {
     await importFromContent(engine, 'p/x', v2, { sourceId: 'default', noEmbed: true });
     const m = await engine.resolveAliases(['old name', 'keep name'], { sourceId: 'default' });
     expect(m.get('old name')).toBeUndefined();
-    expect(m.get('keep name')).toEqual(['p/x']);
+    expect((m.get('keep name') ?? []).map(r => r.slug)).toEqual(['p/x']);
   });
 });

@@ -33,8 +33,8 @@ describe('runReindexAliases', () => {
     expect(result.aliases_written).toBe(2);
 
     const m = await engine.resolveAliases(['hall of light', '明堂'], { sourceId: 'default' });
-    expect(m.get('hall of light')).toEqual(['projects/mingtang']);
-    expect(m.get('明堂')).toEqual(['projects/mingtang']);
+    expect((m.get('hall of light') ?? []).map(r => r.slug)).toEqual(['projects/mingtang']);
+    expect((m.get('明堂') ?? []).map(r => r.slug)).toEqual(['projects/mingtang']);
   });
 
   test('--dry-run writes nothing', async () => {
@@ -51,7 +51,7 @@ describe('runReindexAliases', () => {
     await runReindexAliases(engine, ['--json']);
     await runReindexAliases(engine, ['--json']);
     const m = await engine.resolveAliases(['name one'], { sourceId: 'default' });
-    expect(m.get('name one')).toEqual(['p/x']);
+    expect((m.get('name one') ?? []).map(r => r.slug)).toEqual(['p/x']);
   });
 
   test('handles comma-scalar frontmatter aliases', async () => {
@@ -59,7 +59,7 @@ describe('runReindexAliases', () => {
     const result = await runReindexAliases(engine, ['--json']);
     expect(result.aliases_written).toBe(2);
     const m = await engine.resolveAliases(['alpha', 'beta'], { sourceId: 'default' });
-    expect(m.get('alpha')).toEqual(['p/y']);
-    expect(m.get('beta')).toEqual(['p/y']);
+    expect((m.get('alpha') ?? []).map(r => r.slug)).toEqual(['p/y']);
+    expect((m.get('beta') ?? []).map(r => r.slug)).toEqual(['p/y']);
   });
 });
