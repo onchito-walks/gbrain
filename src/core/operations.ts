@@ -10,9 +10,7 @@ import { clampSearchLimit } from './engine.ts';
 import type { GBrainConfig } from './config.ts';
 import type { PageType } from './types.ts';
 import { importFromContent } from './import-file.ts';
-import { serializePageToMarkdown, resolvePageFilePath } from './markdown.ts';
-import { mkdirSync, writeFileSync, existsSync, statSync } from 'fs';
-import { dirname } from 'path';
+import { writePageThrough } from './write-through.ts';
 import { hybridSearch, hybridSearchCached } from './search/hybrid.ts';
 import { expandQuery } from './search/expansion.ts';
 import { dedupResults } from './search/dedup.ts';
@@ -23,6 +21,9 @@ import { isFactsBackstopEligible } from './facts/eligibility.ts';
 import { stripTakesFence } from './takes-fence.ts';
 import { stripFactsFence } from './facts-fence.ts';
 import { bumpLastRetrievedAt } from './last-retrieved.ts';
+import { isSearchMode } from './search/mode.ts';
+import { stampEvidence } from './search/evidence.ts';
+import type { SearchResult } from './types.ts';
 import { CJK_SLUG_CHARS } from './cjk.ts';
 import * as db from './db.ts';
 import { VERSION } from '../version.ts';
@@ -421,6 +422,59 @@ export function sourceScopeOpts(ctx: OperationContext): { sourceId?: string; sou
   return {};
 }
 
+/**
+ * T4/D5 — resolve a per-call search-mode override. Honored ONLY for trusted/
+ * local callers (ctx.remote === false) so a remote OAuth client can't escalate
+ * to the costly tokenmax bundle. Local + unknown mode → loud reject; remote +
+ * mode → silently ignored (server-configured mode wins). Returns undefined to
+ * mean "use the configured mode".
+ */
+export function resolvePerCallMode(ctx: OperationContext, raw: unknown): string | undefined {
+  if (typeof raw !== 'string' || raw.length === 0) return undefined;
+  if (ctx.remote !== false) return undefined; // remote can't select mode
+  if (!isSearchMode(raw)) {
+    throw new OperationError(
+      'invalid_params',
+      `Unknown search mode '${raw}'. Valid: conservative, balanced, tokenmax.`,
+      `gbrain search "<query>" --mode balanced`,
+    );
+  }
+  return raw;
+}
+
+/** T4 — stamp evidence/create_safety on a result set, fail-soft. */
+function stampEvidenceSafe(results: SearchResult[]): void {
+  try { stampEvidence(results); } catch { /* non-fatal */ }
+}
+
+/** T4 — shared eval-capture for the `search` op (keyword-only + cheap-hybrid paths). */
+function maybeCaptureSearch(
+  ctx: OperationContext,
+  queryText: string,
+  results: SearchResult[],
+  latency_ms: number,
+  vectorEnabled: boolean,
+  meta?: HybridSearchMeta | null,
+): void {
+  if (!isEvalCaptureEnabled(ctx.config)) return;
+  void captureEvalCandidate(
+    ctx.engine,
+    {
+      tool_name: 'search',
+      query: queryText,
+      results,
+      meta: meta ?? { vector_enabled: vectorEnabled, detail_resolved: null, expansion_applied: false },
+      latency_ms,
+      remote: ctx.remote ?? false,
+      expand_enabled: false,
+      detail: null,
+      job_id: ctx.jobId ?? null,
+      subagent_id: ctx.subagentId ?? null,
+    },
+    { scrub_pii: isEvalScrubEnabled(ctx.config) },
+  );
+}
+
 export interface Operation {
   name: string;
   description: string;
@@ -715,38 +769,20 @@ const put_page: Operation = {
     const isSandboxSubagent = ctx.viaSubagent === true
       && !(Array.isArray(ctx.allowedSlugPrefixes) && ctx.allowedSlugPrefixes.length > 0);
     if (!ctx.dryRun && result.status !== 'error' && !isSandboxSubagent) {
-      try {
-        const repoPath = await ctx.engine.getConfig('sync.repo_path');
-        if (!repoPath) {
-          writeThrough = { written: false, skipped: 'no_repo_configured' };
-        } else if (!existsSync(repoPath) || !statSync(repoPath).isDirectory()) {
-          writeThrough = { written: false, skipped: 'repo_not_found' };
-        } else {
-          const sourceId = ctx.sourceId ?? 'default';
-          const writtenPage = await ctx.engine.getPage(result.slug, { sourceId });
-          if (writtenPage) {
-            const tags = await ctx.engine.getTags(result.slug, { sourceId });
-            const provenanceVia = ctx.remote === false ? 'put_page' : 'mcp:put_page';
-            const md = serializePageToMarkdown(writtenPage, tags, {
-              frontmatterOverrides: {
-                ingested_via: provenanceVia,
-                ingested_at: new Date().toISOString(),
-                source_kind: provenanceVia,
-              },
-            });
-            const filePath = resolvePageFilePath(repoPath as string, result.slug, sourceId);
-            mkdirSync(dirname(filePath), { recursive: true });
-            writeFileSync(filePath, md, 'utf8');
-            writeThrough = { written: true, path: filePath };
-          } else {
-            writeThrough = { written: false, skipped: 'page_not_found_after_write' };
-          }
-        }
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        ctx.logger.warn(`[put_page] write-through failed for ${result.slug}: ${msg}`);
-        writeThrough = { written: false, error: msg };
-      }
+      const sourceId = ctx.sourceId ?? 'default';
+      const provenanceVia = ctx.remote === false ? 'put_page' : 'mcp:put_page';
+      // Shared canonical write-through (also used by `gbrain brainstorm/lsd
+      // --save`). Renders the file from the saved DB row and writes it
+      // atomically; never throws (failures land in skipped/error).
+      writeThrough = await writePageThrough(ctx.engine, result.slug, {
+        sourceId,
+        frontmatterOverrides: {
+          ingested_via: provenanceVia,
+          ingested_at: new Date().toISOString(),
+          source_kind: provenanceVia,
+        },
+        logger: ctx.logger,
+      });
     } else if (isSandboxSubagent) {
       writeThrough = { written: false, skipped: 'subagent_sandbox' };
     } else if (ctx.dryRun) {
@@ -1214,48 +1250,48 @@ const search: Operation = {
     query: { type: 'string', required: true },
     limit: { type: 'number', description: 'Max results (default 20)' },
     offset: { type: 'number', description: 'Skip first N results (for pagination)' },
+    mode: { type: 'string', description: 'Search mode (conservative|balanced|tokenmax). Local callers only.' },
   },
   handler: async (ctx, p) => {
     const startedAt = Date.now();
     const queryText = p.query as string;
-    // v0.34.1 (#861 — P0 leak seal): thread caller's source scope into
-    // searchKeyword. Pre-fix this op silently returned cross-source hits
-    // for any auth'd OAuth client.
-    const raw = await ctx.engine.searchKeyword(queryText, {
-      limit: (p.limit as number) || 20,
-      offset: (p.offset as number) || 0,
-      ...sourceScopeOpts(ctx),
-    });
-    const results = dedupResults(raw);
-    const latency_ms = Date.now() - startedAt;
+    const limit = (p.limit as number) || 20;
+    const offset = (p.offset as number) || 0;
+    const scope = sourceScopeOpts(ctx);
 
-    // v0.37.0 (D11): op-layer last_retrieved_at write-back. Fire-and-forget;
-    // results already returned by engine, this just marks them as user-surfaced
-    // for LSD's stale-page signal. 5-min throttle inside bumpLastRetrievedAt.
-    bumpLastRetrievedAt(ctx.engine, results.map((r) => r.page_id));
+    // T4/D5 — per-call mode honored ONLY for trusted/local callers so a remote
+    // OAuth client can't escalate to the costly tokenmax bundle. Local + unknown
+    // mode → loud reject; remote + mode set → silently ignored (uses config).
+    const perCallMode = resolvePerCallMode(ctx, p.mode);
 
-    // Op-layer capture (v0.25.0). Fire-and-forget — no await on the
-    // capture call so MCP response latency is unaffected. search has
-    // no expand/detail/vector semantics so meta fields are fixed.
-    if (isEvalCaptureEnabled(ctx.config)) {
-      void captureEvalCandidate(
-        ctx.engine,
-        {
-          tool_name: 'search',
-          query: queryText,
-          results,
-          meta: { vector_enabled: false, detail_resolved: null, expansion_applied: false },
-          latency_ms,
-          remote: ctx.remote ?? false,
-          expand_enabled: null,
-          detail: null,
-          job_id: ctx.jobId ?? null,
-          subagent_id: ctx.subagentId ?? null,
-        },
-        { scrub_pii: isEvalScrubEnabled(ctx.config) },
-      );
+    // T4/D17 — escape hatch: keyword-only when the operator opts out of the
+    // hybrid `search` contract (privacy/cost: no query text to an embedding
+    // provider). Defaults to cheap-hybrid (D4/D15).
+    const keywordOnly = (await ctx.engine.getConfig('search.mcp_keyword_only')) === 'true';
+
+    if (keywordOnly) {
+      const raw = await ctx.engine.searchKeyword(queryText, { limit, offset, ...scope });
+      const results = dedupResults(raw);
+      stampEvidenceSafe(results);
+      bumpLastRetrievedAt(ctx.engine, results.map((r) => r.page_id));
+      maybeCaptureSearch(ctx, queryText, results, Date.now() - startedAt, false);
+      return results;
     }
 
+    // Cheap-hybrid (D4/D15): full vector+keyword+RRF+pool+title+alias, but
+    // expansion OFF (no per-call LLM cost). `query` op is the full-control variant.
+    let capturedMeta: HybridSearchMeta | null = null;
+    const results = await hybridSearchCached(ctx.engine, queryText, {
+      limit,
+      offset,
+      expansion: false,
+      ...scope,
+      ...(perCallMode ? { mode: perCallMode } : {}),
+      onMeta: (m) => { capturedMeta = m; },
+    });
+    const latency_ms = Date.now() - startedAt;
+    bumpLastRetrievedAt(ctx.engine, results.map((r) => r.page_id));
+    maybeCaptureSearch(ctx, queryText, results, latency_ms, true, capturedMeta);
     return results;
   },
   scope: 'read',
@@ -1281,6 +1317,7 @@ const query: Operation = {
     offset: { type: 'number', description: 'Skip first N results (for pagination)' },
     expand: { type: 'boolean', description: 'Enable multi-query expansion (default: true)' },
     detail: { type: 'string', description: 'Result detail level: low (compiled truth only), medium (default, all with dedup), high (all chunks)' },
+    mode: { type: 'string', description: 'Search mode (conservative|balanced|tokenmax). Local callers only; remote uses configured mode.' },
     // v0.20.0 Cathedral II Layer 10 C1/C2: language + symbol-kind filters.
     lang: { type: 'string', description: 'Filter to chunks where content_chunks.language matches (e.g., typescript, python, ruby)' },
     symbol_kind: { type: 'string', description: 'Filter to chunks where content_chunks.symbol_type matches (e.g., function, class, method, type, interface)' },
@@ -1337,6 +1374,14 @@ const query: Operation = {
       type: 'string',
       description:
         "v0.36: route vector search through a non-default embedding column. Defaults to 'embedding' (OpenAI 1536d) unless `search_embedding_column` config sets a different default. Per-call override for A/B benchmarking across providers (e.g. 'embedding_voyage', 'embedding_zeroentropy'). Column MUST be declared in the `embedding_columns` config registry — unknown names throw with a paste-ready hint listing valid columns.",
+    },
+    adaptive_return: {
+      type: 'boolean',
+      description:
+        "v0.41.33 — return a TIGHT, intent-sized result set instead of the full top-K. YOU (the agent) set this per query to serve the user well:\n" +
+        "  TRUE when the user's question has a small, specific answer — a lookup ('what is X', 'who is Y', 'what's my <thing>', 'what did Z decide'), a single-fact recall, or when you'll route the result into a precise downstream step (a classifier, a decision, an exact citation). The user gets the answer, not a wall of loosely-related pages, and you spend fewer tokens reading noise.\n" +
+        "  Omit / FALSE for breadth — 'everything about X', 'list all', 'what do I know about Y', exploration, brainstorming, or any time you'd rather see more candidates and judge for yourself. Recall matters more there, so take the full top-K.\n" +
+        "Safe by construction: it NEVER returns empty when there are matches (you always get at least the top hit), and it only applies to the first page (omit when paginating). Caps come from config (search.adaptive_return_entity_max / _other_max; default 2 / 6) — pass `limit` 1 alongside this for a hard single-answer cap.",
     },
   },
   handler: async (ctx, p) => {
@@ -1403,6 +1448,8 @@ const query: Operation = {
       offset: (p.offset as number) || 0,
       expansion: expand,
       expandFn: expand ? expandQuery : undefined,
+      // T4/D5 — per-call mode (local/trusted only; remote ignored).
+      ...((): { mode?: string } => { const m = resolvePerCallMode(ctx, p.mode); return m ? { mode: m } : {}; })(),
       detail,
       language: (p.lang as string) || undefined,
       symbolKind: (p.symbol_kind as string) || undefined,
@@ -1427,6 +1474,9 @@ const query: Operation = {
       // Source scope is already threaded via ...querySourceScope above
       // (master's #1182 cleanup of the duplicate sourceScopeOpts spread).
       embeddingColumn: embeddingColumnParam,
+      // v0.41.33 — agent-explicit adaptive return-sizing. Omitted = off
+      // (config default applies). hybridSearchCached skips the cache when on.
+      adaptiveReturn: typeof p.adaptive_return === 'boolean' ? (p.adaptive_return as boolean) : undefined,
     });
     const latency_ms = Date.now() - startedAt;
 
