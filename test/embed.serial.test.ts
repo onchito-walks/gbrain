@@ -32,6 +32,11 @@ mock.module('../src/core/embedding.ts', () => ({
       activeEmbedCalls--;
     }
   },
+  // v0.41.30: embedAll/embedAllStale read the current embedding signature to
+  // stamp provenance. The mock returns a stable value; the mock engine's
+  // setPageEmbeddingSignature / invalidateStaleSignatureEmbeddings resolve to
+  // null via the Proxy default, so the signature value is inert here.
+  currentEmbeddingSignature: () => 'test:model:1536',
 }));
 
 // Import AFTER mocking.
