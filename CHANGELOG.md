@@ -2,6 +2,425 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.42.2.0] - 2026-05-30
+
+**One command now wires Claude Code, Codex, or Perplexity Computer to a remote
+gbrain when all you have is a bearer token. `gbrain connect <url> --token <tok>`
+prints a paste-ready block, or `--install` runs it for you and checks the token
+actually works before you walk away.**
+
+If your brain runs somewhere as an HTTP server (`gbrain serve --http`) and you
+have a token, connecting an agent used to mean remembering the exact
+`claude mcp add ... -H "Authorization: Bearer ..."` incantation, getting the
+`/mcp` path right, and hoping the token was valid. Now you run one command.
+It normalizes the URL (adds `/mcp`, rejects a bare host so you don't silently
+point at the wrong thing), and the block it prints tells the agent to call
+`get_brain_identity` and `list_skills` so it immediately knows whose brain this
+is and everything it can do. No local brain, no proxy, no OAuth dance: the agent
+talks straight to your remote over HTTP.
+
+Pick your agent with `--agent`:
+
+- **claude-code** (default): `claude mcp add ... -H "Authorization: Bearer ..."`.
+  `--install` runs it.
+- **codex**: `codex mcp add <name> --url <url> --bearer-token-env-var
+  GBRAIN_REMOTE_TOKEN`. Codex reads the token from the env var at runtime, so the
+  secret never lands in Codex's config file. `--install` runs it.
+- **perplexity**: prints the exact connector fields to paste into Perplexity's
+  Settings → Connectors (it's a GUI connector, so no `--install`). Defaults to a
+  bearer token, but since Perplexity is a cloud service the recommended path is
+  **OAuth**: `--agent perplexity --oauth --register` mints a least-privilege
+  client and prints the Issuer URL + Client ID + Client Secret. OAuth means the
+  connector mints short-lived, scoped access tokens instead of holding a
+  long-lived full-access secret.
+- **generic**: prints the URL + `Authorization` header (or OAuth fields with
+  `--oauth`) for any other MCP client.
+
+How to use it (run anywhere gbrain is installed):
+
+```
+gbrain auth create "claude-code"                          # mint a token on the host
+gbrain connect https://your-host/mcp --token gbrain_xxx   # print the paste block
+gbrain connect https://your-host --token gbrain_xxx --install   # or wire it + verify the token
+```
+
+`--install` runs `claude mcp add` for you, then makes one real call to your brain
+so a wrong or expired token fails right then instead of silently 401-ing on the
+agent's first question. `--json` gives you a machine-readable version with the
+token redacted (pass `--show-token` if you really want it inlined).
+
+A note on the token: a `gbrain auth create` token is long-lived and full-access.
+The printed block single-quotes it so pasting it can't accidentally run shell
+code, the command refuses to send it to a link-local or cloud-metadata address,
+and error output never echoes it. Keep it private, and prefer a scoped token if
+your host supports one.
+
+**Two ways to give a coding agent a memory, written down end to end.** Connecting
+to a remote brain is one funnel. The other is starting from nothing: `gbrain init
+--pglite` gives you a local brain in 2 seconds, and `claude mcp add gbrain --
+gbrain serve` (or `codex mcp add gbrain -- gbrain serve`) wires it straight into
+your agent with no server, no token, no tunnel. The new tutorial,
+[Give your coding agent a memory](docs/tutorials/connect-coding-agent.md), walks
+both funnels with copy-paste commands, then hands you the brain-first protocol to
+paste into `CLAUDE.md` / `AGENTS.md` and the four habits that make it worth it
+(brain-first lookup, ambient capture, briefing from your brain, whoknows). The
+README now has a "Quick start: Claude Code or Codex" fork that separates the
+lightweight retrieval path from the full autonomous install, and `INSTALL.md`
+shows the one-command wire-up right where the standalone CLI section ends.
+
+**`gbrain serve --http` now tells you when your skills are invisible.** If
+`mcp.publish_skills` is OFF, a connected agent can search and write but can't call
+`list_skills` / `get_skill` — so your skill catalog (the thing that makes an
+OpenClaw setup special) silently doesn't show up. The startup banner now prints a
+`Skills: published / not published` line, and when it's off you get a one-line
+nudge with the exact fix: `gbrain config set mcp.publish_skills true`. New brains
+from `gbrain init` default it ON; brains upgraded from before stay OFF until you
+opt in, which is the common gotcha.
+
+**Fixed: `connect` told agents to call a tool that doesn't exist over MCP.** The
+self-orientation block named `capture` as a core tool, but `capture` is a CLI-only
+convenience command, not an MCP tool — an agent that followed the instruction got
+"unknown tool." The block now names `put_page`, the real MCP write tool. A new
+end-to-end test spawns `gbrain serve` over stdio and drives the official MCP SDK
+client through `initialize` → `tools/list` → `tools/call`, so the advertised tool
+set is now pinned against what the server actually exposes (the local stdio funnel
+had zero coverage before this).
+
+## To take advantage of v0.42.2.0
+
+`gbrain upgrade` is all you need. `gbrain connect` is available immediately after
+upgrade. To wire up a coding agent:
+
+1. On the brain host (or anywhere gbrain is installed), mint a token:
+   ```bash
+   gbrain auth create "claude-code"
+   ```
+2. Generate the onboarding block (or wire it directly):
+   ```bash
+   gbrain connect https://your-host/mcp --token <the-token>
+   # or, on the machine you want to connect:
+   gbrain connect https://your-host/mcp --token <the-token> --install
+   ```
+3. Paste the printed block into Claude Code. It connects the MCP server and
+   tells the agent to call `get_brain_identity` + `list_skills`.
+4. Verify: in Claude Code, ask it to `search` for something in your brain.
+
+If anything looks wrong, `gbrain connect --help` lists every flag, and
+`docs/mcp/CLAUDE_CODE.md` covers the local-stdio path too.
+
+### Itemized changes
+
+#### Added
+- **`gbrain connect <mcp-url>`** generates (or, with `--install`, runs) the MCP
+  wiring for a remote gbrain from a bearer token. Flags: `--token`, `--name`,
+  `--agent claude-code|codex|perplexity|generic`, `--install`, `--yes`, `--force`,
+  `--json`, `--show-token`, `--timeout-ms`. Reads the token from `--token` or
+  `$GBRAIN_REMOTE_TOKEN`; in print mode the token is optional (it emits a
+  `<paste-your-token>` placeholder).
+- **Per-agent setup**: `--agent codex` emits `codex mcp add ... --bearer-token-env-var
+  GBRAIN_REMOTE_TOKEN` (token read from the env var at runtime, never written to
+  Codex config; `--install` runs it). `--agent perplexity` prints the URL + token
+  for Perplexity's Settings → Connectors GUI (no `--install`). `--agent generic`
+  prints the URL + `Authorization` header for any other MCP client. Docs:
+  `docs/mcp/CLAUDE_CODE.md` (leads with `gbrain connect`, keeps the local stdio
+  path), new `docs/mcp/CODEX.md`, updated `docs/mcp/PERPLEXITY.md`, and the README.
+- **`--install` smoke-tests the token.** After registering the server it makes a
+  real `get_brain_identity` call over the bearer connection and warns loudly on
+  a 401, unreachable host, or timeout, so a bad token fails at setup instead of
+  on the agent's first request. Supported for claude-code and codex (Perplexity
+  is GUI-only).
+- **OAuth client-credentials path (`--oauth`, perplexity + generic).** The
+  correct path when the credential lives on a third-party cloud: instead of a
+  long-lived full-access bearer token, the connector gets an Issuer URL + Client
+  ID + Client Secret and mints its own short-lived, scoped access tokens.
+  `--oauth --register` mints a least-privilege client on the host in one command;
+  `--oauth --client-id X --client-secret Y` uses an existing one (runs anywhere).
+  The full chain (register → OAuth discovery → `/token` → tool call) is proven by
+  a new end-to-end test against a live server.
+
+#### Fixed
+- **`gbrain auth create <name>` no longer drops the name.** On the bare form
+  (no `--takes-holders` flag) the name was silently discarded and the command
+  printed usage instead of minting a token. It now creates the token as
+  documented.
+
+#### Security
+- The connection command single-quotes the rendered `claude mcp add` so a token
+  containing shell metacharacters can't run code when the block is pasted;
+  validates the token to keep it out of HTTP headers; refuses to send the token
+  to link-local / cloud-metadata addresses (including IPv4-mapped IPv6 forms);
+  redacts the token from all error output and from `--json` unless `--show-token`;
+  and requires `--yes` for `--install` in a non-interactive shell.
+
+## [0.42.1.0] - 2026-05-29
+
+**Skill self-improvement no longer starts from a blank file.**
+
+v0.42.0.0 let agents optimize a skill against a benchmark, but you still had
+to come up with that benchmark. The only auto-generator, `--bootstrap-from-routing`,
+needed a `routing-eval.jsonl` you might not have, and it built tasks from routing
+fixtures — which test "does this phrasing pick this skill," not "is the output
+any good." So in practice the agent hand-wrote a benchmark from scratch every
+time, reinventing the same starting point on every run.
+
+Now there's one command that reads the skill itself and writes you a starter:
+
+```bash
+gbrain skillopt my-skill --bootstrap-from-skill
+```
+
+It makes a single LLM call that reads `skills/my-skill/SKILL.md`, figures out what
+the skill is supposed to produce, and writes ~15 realistic tasks — each with
+deterministic rule judges — to `skills/my-skill/skillopt-benchmark.jsonl`. Tune
+the count with `--bootstrap-tasks N` (max 50). No routing fixtures required.
+
+It does NOT silently trust the result. The file lands with a
+`# BOOTSTRAP_PENDING_REVIEW` line at the bottom, and the optimizer refuses to run
+until you review the tasks, **strengthen the generated judges** (they're weak
+drafts — generic `contains`, loose length caps), and delete that line. Then:
+
+```bash
+gbrain skillopt my-skill --bootstrap-reviewed --split 1:1:1
+```
+
+The `--split 1:1:1` matters: a 15-task starter needs it. The optimizer's default
+`4:1:5` split would leave a validation set of one task and refuse to run.
+
+For agents driving this brain, this is now the documented primary path for a skill
+with no benchmark: run the command, sharpen the draft, run the optimizer. Writing
+the benchmark freehand is the fallback for the rare skill the generator can't
+draft well.
+
+### Things to know
+
+- The model emits one task per line (JSONL). If the response gets cut off, the
+  finished lines are kept and only the truncated one is dropped — a clipped run
+  still gives you a usable starter instead of nothing.
+- Any task that ends up with fewer than two valid checks is dropped whole, so you
+  never get a task judged by a single weak check.
+- If the provider is down, you get the real error, not a misleading "0 tasks
+  generated."
+
+### Itemized changes
+
+- New `gbrain skillopt <skill> --bootstrap-from-skill [--bootstrap-tasks N]`
+  generator in `src/core/skillopt/bootstrap-benchmark.ts` (`runBootstrapFromSkill`),
+  sharing the overwrite guard + SKILL.md reader with the existing routing bootstrap.
+- The `benchmark not found` hint and `gbrain skillopt --help` now point at
+  `--bootstrap-from-skill` as the primary way to create a benchmark.
+- `skills/skill-optimizer/SKILL.md` and `docs/tutorials/improving-skills-with-skillopt.md`
+  reposition from-skill as the recommended starting path, with the
+  strengthen-the-judges + `--split 1:1:1` workflow spelled out.
+- Hardened the routing bootstrap's `routing-eval.jsonl` parse to skip malformed
+  lines instead of crashing the whole run.
+
+## [0.42.0.0] - 2026-05-27
+
+**Your skills now improve themselves overnight.**
+
+GBrain ships 47 bundled skills that tell agents how to handle specific kinds
+of tasks. Until now, those skills only got better when a human rewrote them.
+A human can read three or four execution traces and spot a problem; nobody
+can read forty execution traces and spot which exact rule is hurting and
+which is helping. v0.42.0.0 closes that loop. You write a benchmark of
+realistic tasks, and `gbrain skillopt <skill>` watches the agent run those
+tasks against your current skill text, proposes specific edits, re-tests,
+and only keeps changes that measurably improve the score.
+
+This is based on the SkillOpt paper (Microsoft Research, May 2026), which
+treats the skill document as the trainable parameters of an agent that
+itself never changes. The paper added 23.5 points over no-skill on GPT-5.5
+and beat hand-written skills across every benchmark it was tested on.
+gbrain's version ships every safety guard that paper found load-bearing:
+bounded edits per step, mandatory validation gating, persistent memory of
+rejected edits, and a cosine decay schedule that lets the optimizer be
+aggressive early and conservative late.
+
+### How to use it
+
+Bootstrap a benchmark from your existing routing fixtures (one Anthropic
+call per row), review the output, then run the optimizer:
+
+```bash
+gbrain skillopt my-skill --bootstrap-from-routing
+# review skills/my-skill/skillopt-benchmark.jsonl, delete the trailing
+# `# BOOTSTRAP_PENDING_REVIEW` line
+gbrain skillopt my-skill --bootstrap-reviewed
+```
+
+Or, if you already have a benchmark:
+
+```bash
+gbrain skillopt my-skill --benchmark skills/my-skill/skillopt-benchmark.jsonl
+```
+
+Add `--dry-run` to see the cost estimate without spending a dime. The
+preflight estimator refuses to start when the projected cost exceeds
+`--max-cost-usd` (default $5.00), so you'll never be surprised by a
+runaway run.
+
+### The numbers that matter
+
+| Knob | Default | What it controls |
+|---|---|---|
+| `--epochs` | 4 | Outer-loop iterations |
+| `--batch-size` | 8 | Tasks per inner step |
+| `--lr` | 4 | Max edits accepted per step |
+| `--lr-schedule` | cosine | Curve that decays the edit budget |
+| `--split` | 4:1:5 | train:sel:test ratio (refuses if D_sel < 5) |
+| `--max-cost-usd` | 5.00 | Hard ceiling; preflight refuses if exceeded |
+
+A typical 20-task benchmark with defaults costs ~$0.90 per run.
+
+### What's safe to know about
+
+- **Bundled skills are safe by default.** Skills shipping in `skills/` (the
+  ones gbrain ships) can't be auto-mutated. The optimizer writes
+  `skills/<name>/skillopt/best.md` for review; pass `--allow-mutate-bundled`
+  to commit changes back to `SKILL.md`.
+- **Skill mutations are body-only.** The optimizer can't edit `triggers:`,
+  `brain_first:`, or any other frontmatter field — those are routing
+  surface, not behavior surface.
+- **Concurrent runs are serialized.** Two terminals running
+  `gbrain skillopt my-skill` simultaneously serialize cleanly via a per-skill
+  DB lock; the second one fails fast with a paste-ready remediation hint.
+- **Crash-safe atomic writes.** SKILL.md gets rewritten via a 5-step
+  history-intent-first commit; a crash mid-write reverts cleanly on next
+  `--resume <run-id>`.
+- **Validation gating is non-negotiable.** Every candidate runs each
+  sel-task 3 times, takes the median, and only accepts if the median
+  improves on the prior best by more than 0.05. This is the paper's
+  load-bearing safety against accepting LLM judge noise as improvement.
+- **Per-skill audit trail.** Every accept/reject/abort lands in
+  `~/.gbrain/audit/skillopt-YYYY-Www.jsonl` (ISO-week rotated). `gbrain
+  doctor` will surface failed runs (when the doctor check ships in v0.42).
+
+### Cathedral fully ships in v0.42.0.0
+
+Every originally-deferred follow-up is included:
+
+- **`--all` cross-skill batch mode.** `gbrain skillopt --all` walks every
+  skill with a benchmark; per-skill cap = `--max-cost-usd`, brain-wide
+  cap = `--brain-wide-max-cost-usd` (default $10).
+- **Cross-model fleet via `--target-models a,b,c`.** Optimize the same
+  skill against N target models in parallel; per-model receipts under
+  `skills/<name>/skillopt/fleet/<slug>/`. Fleet runs are always
+  no-mutate — the operator picks a winner.
+- **MCP op `run_skillopt`** (admin scope, NOT localOnly). Remote admin
+  OAuth clients can drive optimization; per-skill allowlist gate via
+  `skillopt.allowed_skills` config (default deny-all for remote callers).
+- **Minion `--background` handler.** `gbrain skillopt foo --background`
+  submits as a Minion job + prints `job_id=N`; combine with `--follow`
+  to attach. Handler is in PROTECTED_JOB_NAMES so MCP submission rejects.
+- **`--write-capture` mode.** Write-flavored skills (those that primarily
+  call `put_page`, `submit_job`, `file_upload`) optimize via an in-memory
+  virtual brain. Captured writes feed the judge; nothing persists to the
+  user's real DB.
+- **Held-out real-user test set scaffold.** `gbrain skillopt foo --held-out
+  <path>` runs an independent validation gate on a user-curated held-out
+  set before committing the mutation. Capture infrastructure opt-in via
+  `gbrain config set skillopt.capture_enabled true`.
+- **Dream-cycle phase wrapper.** `gbrain dream --phase skillopt` walks
+  skills with stale `last_run_at` (>7d) and runs one epoch per skill
+  with per-skill ($0.50) + brain-wide ($2.00) cost caps. Bundled-skill
+  safety (D16): writes proposed.md, never auto-mutates.
+- **Adversarial test suite (41 cases across 6 files).** concurrent-runs,
+  partial-write-crash, noisy-judge, side-effecting-tool, malformed-markdown,
+  resume-after-crash. Pinned regression coverage for every safety guard.
+- **E2E PGLite test.** Real PGLite, full multi-epoch loop, mocked LLM
+  via DI seam (3 cases: dry-run + reject + resume).
+- **Reflect-prompt quality eval at `evals/skillopt-reflect/`.** 5 gold
+  fixtures + runner that scores reflect proposals against expected
+  edit-shape constraints. Pass criterion: hit rate >= 0.7.
+- **Judge LLM accuracy eval at `evals/skillopt-judge/`.** 10 gold
+  fixtures + runner that measures judge MAE vs hand-labeled gold scores.
+  Pass criterion: MAE <= 0.15 on 0..1 scale.
+
+### Still TODO (genuinely deferred to v0.42+)
+
+- Admin UI Calibration-style dashboard tab for optimizer history
+- Sweep all 47 bundled skills with their own `skillopt-benchmark.jsonl`
+  fixtures (one PR per ~5 skills; manual benchmark authoring required)
+
+## To take advantage of v0.42.0.0
+
+`gbrain upgrade` should do this automatically. To try the new command:
+
+1. **Run it on a real skill of yours:**
+   ```bash
+   gbrain skillopt my-skill --bootstrap-from-routing
+   ```
+2. **Review the generated benchmark at** `skills/my-skill/skillopt-benchmark.jsonl`,
+   then delete the trailing `# BOOTSTRAP_PENDING_REVIEW` line.
+3. **Run the optimizer:**
+   ```bash
+   gbrain skillopt my-skill --bootstrap-reviewed --dry-run    # cost preview
+   gbrain skillopt my-skill --bootstrap-reviewed              # actual run
+   ```
+4. **Verify the outcome:**
+   ```bash
+   ls skills/my-skill/skillopt/        # versions/, best.md, history.json
+   tail -5 ~/.gbrain/audit/skillopt-*.jsonl
+   ```
+5. **If any step fails or the numbers look wrong,** please file an issue
+   at https://github.com/garrytan/gbrain/issues with output of `gbrain
+   doctor` and the relevant run's history.json + the audit JSONL lines.
+
+### Itemized changes
+
+- **New CLI:** `gbrain skillopt <skill> [flags]` (top-level, mutating, NOT
+  under `gbrain eval`). Flags: `--bootstrap-from-routing`,
+  `--bootstrap-reviewed`, `--no-mutate`, `--allow-mutate-bundled`,
+  `--resume <run-id>`, `--dry-run`, `--max-cost-usd`, `--epochs`,
+  `--batch-size`, `--lr`, `--lr-schedule`, `--split`, `--optimizer-model`,
+  `--target-model`, `--judge-model`, `--all`, `--brain-wide-max-cost-usd`,
+  `--target-models`, `--background`, `--follow`, `--write-capture`,
+  `--held-out`. Exit codes 0=accepted, 1=no-improvement, 2=aborted. See
+  `gbrain skillopt --help` or `src/core/skillopt/help.ts`.
+- **New cycle phase:** `skillopt` (default OFF) added to `ALL_PHASES`
+  after `patterns`, before `synthesize_concepts`. Opt-in via
+  `gbrain config set cycle.skillopt.enabled true`. Implementation at
+  `src/core/skillopt/cycle-phase.ts:runPhaseSkillopt` walks stale skills,
+  applies per-skill ($0.50) + brain-wide ($2.00) caps, writes
+  proposed.md for bundled skills (never auto-mutates).
+- **New MCP op:** `run_skillopt` (admin scope, NOT localOnly). Per-skill
+  allowlist via `skillopt.allowed_skills` config (JSON array; default
+  deny-all for remote callers). CLI bypass via `ctx.remote === false`.
+- **New Minion handler:** `skillopt` in PROTECTED_JOB_NAMES. Drives
+  `gbrain skillopt --background` foreground-vs-background routing.
+- **Foundation modules** under `src/core/skillopt/`: `types.ts`,
+  `lr-schedule.ts` (cosineLr/linearLr/constantLr pure fns), `benchmark.ts`
+  (loadBenchmark/splitBench/parseSplit with D17 floor + D15 sentinel),
+  `score.ts` (rule/llm/qrels judge modes + parseJudgeJson),
+  `apply-edits.ts` (D5 frontmatter forbid + D9 tagged result + D6 install-
+  path gate), `rejected-buffer.ts` (LRU bound 100, content-hash key),
+  `version-store.ts` (D8 history-intent-first 5-step commit),
+  `audit.ts` (ISO-week JSONL via shared audit-writer cathedral), `lock.ts`
+  (D14 per-skill `skillopt:<name>` DB lock with auto-refresh),
+  `bundled-skill-gate.ts` (D16), `rollout.ts` (D2 gateway.toolLoop with
+  D13 read-only allowlist), `reflect.ts` (D7 two-call shape),
+  `validate-gate.ts` (D12 median-of-3 + epsilon=0.05, D4 parallel cap=4),
+  `preflight.ts` (D3 cost estimator), `checkpoint.ts` (resumability +
+  7-day GC), `bootstrap-benchmark.ts` (D15 sentinel writer),
+  `orchestrator.ts` (main loop with ASCII state-machine diagram).
+- **PROTECTED_JOB_NAMES extended** with `'skillopt'` (preemptive register
+  for future Minion handler — v1 is CLI-only foreground).
+- **Bundled meta-skill** at `skills/skill-optimizer/` with SKILL.md +
+  routing-eval.jsonl + skillopt-benchmark.jsonl (7 self-referential tasks).
+- **Tests:** 152 tests across 18 files in `test/skillopt/` + 1 E2E in
+  `test/e2e/skillopt-pglite.serial.test.ts`. Coverage:
+  - 88 unit tests on the foundation (`lr-schedule`, `benchmark`, `score`,
+    `audit`, `apply-edits`, `rejected-buffer`, `version-store`, `lock`).
+  - 41 adversarial tests across 6 files (`concurrent-runs`,
+    `partial-write-crash`, `noisy-judge`, `side-effecting-tool`,
+    `malformed-markdown`, `resume-after-crash`).
+  - 23 tests on the v2 surface (`write-capture`, `held-out`, `batch`).
+  - 3 E2E cases (dry-run + all-reject + revert-pending).
+  Hermetic via DI seams (no `mock.module`, R2-compliant). PGLite tests
+  use the canonical block (R3+R4-compliant).
+- **Issue #1481 closed** — supersedes the original proposal with the
+  decisions captured in plan
+  `~/.claude/plans/system-instruction-you-are-working-drifting-falcon.md`.
 ## [0.41.38.0] - 2026-05-30
 
 **Two fixes for Supabase brains with a code source. `gbrain code-callers` and
@@ -2708,7 +3127,6 @@ it exists.
     `{"schema_version"` envelope prefix instead of walking back from
     `"checks"` (which broke once `category_scores` introduced a
     nested object between).
-
 
 ## [0.41.19.0] - 2026-05-26
 
@@ -18296,9 +18714,13 @@ Tonight's production upgrade surfaced eleven bugs. Two of them — Bug 1 (the mi
 ## **Silent binaries are dead. Every bulk action now heartbeats.**
 ## **Agents can tell the difference between "working" and "hung."**
 
-`gbrain doctor` on a 52K-page brain used to sit silent for 10+ minutes and then get killed by an agent timeout. The checks always completed when run by hand, but stdout buffered and agents saw nothing. The same pattern hit `embed`, `sync`, `import`, `extract`, `migrate`, and every orchestrator that shelled out to them — progress either went to stdout with `` rewrites that collapse when piped, or nowhere at all. v0.15.2 routes every bulk action through one shared reporter. Non-TTY default is plain human lines on stderr, one line per event. Agents that want structured progress flip `--progress-json` and get one JSON object per line.
+`gbrain doctor` on a 52K-page brain used to sit silent for 10+ minutes and then get killed by an agent timeout. The checks always completed when run by hand, but stdout buffered and agents saw nothing. The same pattern hit `embed`, `sync`, `import`, `extract`, `migrate`, and every orchestrator that shelled out to them — progress either went to stdout with `
+` rewrites that collapse when piped, or nowhere at all. v0.15.2 routes every bulk action through one shared reporter. Non-TTY default is plain human lines on stderr, one line per event. Agents that want structured progress flip `--progress-json` and get one JSON object per line.
 
-Progress events never touch stdout. Data and final summaries still go there. Script you wrote six months ago that parses `gbrain embed` output? Still works. Agent that captures stdout to JSON.parse the result? Now gets clean JSON instead of `1234/52000 pages...` mixed in.
+Progress events never touch stdout. Data and final summaries still go there. Script you wrote six months ago that parses `gbrain embed` output? Still works. Agent that captures stdout to JSON.parse the result? Now gets clean JSON instead of `
+
+
+1234/52000 pages...` mixed in.
 
 ### The numbers that matter
 
@@ -18306,7 +18728,8 @@ Measured on this repo (80 unit test files, 14 E2E test files, real Postgres+pgve
 
 | Metric                                            | BEFORE v0.15.2         | AFTER v0.15.2                          | Δ              |
 |---------------------------------------------------|------------------------|----------------------------------------|----------------|
-| Commands that stream progress                     | 3 (ad-hoc `` stdout) | **14** (reporter, stderr, rate-gated) | **+11**        |
+| Commands that stream progress                     | 3 (ad-hoc `
+` stdout) | **14** (reporter, stderr, rate-gated) | **+11**        |
 | Progress observable when stdout is piped          | **0 of 3**             | **14 of 14**                           | always visible |
 | Canonical JSON event schema                       | none                   | **locked in `docs/progress-events.md`** | stable         |
 | `doctor` silence window on 52K pages              | 10+ min then killed    | **heartbeat every 1s**                 | observable     |
@@ -18319,9 +18742,12 @@ Measured on this repo (80 unit test files, 14 E2E test files, real Postgres+pgve
 |-----------------------|-----------------|----------------------------------------------------------------|
 | `doctor`              | None (blocks)   | Per-check heartbeat, 1s on slow queries                        |
 | `orphans`             | Final summary   | Heartbeat while `NOT EXISTS` scan runs                         |
-| `embed`               | `` stdout     | Per-page stderr, `job.updateProgress` from Minions             |
-| `files sync`          | `` stdout     | Per-file stderr                                                |
-| `export`              | `` stdout     | Per-page stderr (newly in scope)                               |
+| `embed`               | `
+` stdout     | Per-page stderr, `job.updateProgress` from Minions             |
+| `files sync`          | `
+` stdout     | Per-file stderr                                                |
+| `export`              | `
+` stdout     | Per-page stderr (newly in scope)                               |
 | `import`              | Per-100 stdout  | Per-file stderr, rate-gated                                    |
 | `extract` (fs + db)   | Ad-hoc stderr   | Canonical event schema, all paths                              |
 | `sync`                | Final summary   | Per-file ticks across delete/rename/import phases              |
@@ -18361,7 +18787,8 @@ If you run `gbrain` in CI, through a Minion worker, or inside any agent that cap
 ### Itemized changes
 
 #### Reporter (new, `src/core/progress.ts`)
-- Dependency-free. Modes: `auto` (TTY → ``-rewriting; non-TTY → plain lines), `human`, `json` (JSONL on stderr), `quiet`.
+- Dependency-free. Modes: `auto` (TTY → `
+`-rewriting; non-TTY → plain lines), `human`, `json` (JSONL on stderr), `quiet`.
 - Rate gating: emits on whichever fires first: `minIntervalMs` (default 1000) or `minItems` (default `max(10, ceil(total/100))`). Final `tick` where `done === total` always emits.
 - `startHeartbeat(reporter, note)` helper for single long-running queries (doctor's `markdown_body_completeness`, `orphans` anti-join, `repair-jsonb` per-column UPDATE).
 - `child()` composes phase paths, `sync.import.<slug>`, not flat `<slug>`.
@@ -18379,7 +18806,8 @@ If you run `gbrain` in CI, through a Minion worker, or inside any agent that cap
 - Phases use `snake_case.dot.path`. Machine-stable. Agent parsers can group by phase prefix (all `doctor.*` events belong to one run).
 
 #### Backward-compat warnings
-Progress for `embed`, `files`, `export`, `extract`, `import`, `migrate-engine` moved from stdout to stderr. Stdout now carries only final summaries and `--json` payloads. Scripts that parsed `process.stdout` for progress lines (`  1234/52000 pages...`) see empty stdout for those counters; the data they actually want (the final "Embedded N chunks" summary) is still there. Point anything grepping stdout for progress at stderr instead.
+Progress for `embed`, `files`, `export`, `extract`, `import`, `migrate-engine` moved from stdout to stderr. Stdout now carries only final summaries and `--json` payloads. Scripts that parsed `process.stdout` for progress lines (`
+  1234/52000 pages...`) see empty stdout for those counters; the data they actually want (the final "Embedded N chunks" summary) is still there. Point anything grepping stdout for progress at stderr instead.
 
 #### Minion handlers (`src/commands/jobs.ts`)
 - `embed` handler passes `job.updateProgress({done, total, embedded, phase})` as the `onProgress` callback. Primary Minion progress channel is DB-backed, readable via `gbrain jobs get <id>` or the `get_job_progress` MCP op. Stderr from `jobs work` stays coarse for daemon liveness.
@@ -18394,7 +18822,8 @@ Progress for `embed`, `files`, `export`, `extract`, `import`, `migrate-engine` m
 - Post-upgrade timeout bumped 300s → 1800s (30 min). Override via `GBRAIN_POST_UPGRADE_TIMEOUT_MS`. The old 300s cap killed v0.12.0 graph-backfill migrations on 50K+ brains; heartbeat wiring in v0.15.2 makes the long wait observable.
 
 #### CI guard
-- `scripts/check-progress-to-stdout.sh` greps `src/` for `process.stdout.write('...')` and fails `bun run test` if any regression lands.
+- `scripts/check-progress-to-stdout.sh` greps `src/` for `process.stdout.write('
+...')` and fails `bun run test` if any regression lands.
 
 #### Tests
 - New: `test/progress.test.ts` (17 cases — mode resolution, rate gating, EPIPE paths, SIGINT singleton, child phase composition), `test/cli-options.test.ts` (18 cases — flag parsing, `--quiet` skillpack-check collision regression, global-flag strip-and-dispatch), `test/e2e/doctor-progress.test.ts` (3 cases, Tier 1 — spawns the real CLI against a real Postgres, asserts stderr JSONL matches the schema and stdout stays clean).
