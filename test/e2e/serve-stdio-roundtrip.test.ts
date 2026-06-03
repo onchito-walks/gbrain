@@ -44,7 +44,13 @@ describe('serve stdio round-trip E2E (local PGLite → real MCP tool calls)', ()
 
   beforeAll(async () => {
     home = mkdtempSync(join(tmpdir(), 'gbrain-stdio-e2e-'));
+    // Hermetic PGLite: strip any ambient Postgres URL so `init --pglite` and the
+    // served brain actually use PGLite even when the shell/CI has DATABASE_URL
+    // set (otherwise the subprocess comes up on Postgres → `engine: pglite`
+    // assertion fails).
     const env = { ...process.env, GBRAIN_HOME: home };
+    delete env.DATABASE_URL;
+    delete env.GBRAIN_DATABASE_URL;
 
     // 1. Init a local PGLite brain (the "from nothing" step).
     execFileSync('bun', ['run', 'src/cli.ts', 'init', '--pglite', '--no-embedding', '--non-interactive'], {
