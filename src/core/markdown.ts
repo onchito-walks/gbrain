@@ -51,6 +51,25 @@ export interface ParsedMarkdown {
 }
 
 /**
+ * Coerce a raw YAML frontmatter value into a string.
+ *
+ * js-yaml parses unquoted scalars by type: `title: 2024-06-01` becomes a JS
+ * `Date`, `title: 1458` becomes a `number`. The old `(frontmatter.X as string)`
+ * cast was a compile-time lie — at runtime the value stayed a Date/number, so
+ * any downstream `.toLowerCase()` / `.trim()` threw and (via the importer's
+ * failure gate) could wedge sync indefinitely (issue #1939).
+ *
+ * Dates coerce to their UTC ISO date (`2024-06-01`) — deterministic across
+ * machines and matching the on-disk source token, unlike `String(date)` which
+ * renders a timezone-dependent long form. Everything else uses `String()`.
+ */
+export function coerceFrontmatterString(v: unknown): string {
+  if (v == null) return '';
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  return String(v);
+}
+
+/**
  * Parse a markdown file with YAML frontmatter into its components.
  *
  * Structure:
@@ -106,25 +125,19 @@ export function parseMarkdown(
 
   const { compiled_truth, timeline } = splitBody(body);
 
-  // #1883/#1658/#1556/#1948: frontmatter values can be non-strings (YAML coerces
-  // `title: 123` → number, `published: false` → boolean). Pre-fix the `as string`
-  // cast lied: a truthy non-string flowed downstream typed as string and crashed
-  // the first `.toLowerCase()` (content-sanity), aborting the whole lint/sync run.
-  //   - title: a scalar (number/bool) is coerced to String (preserve intent;
-  //     `title: 123` → "123"); anything else falls back to the inferred title.
+  // #1948/#1939: frontmatter values can be non-strings (YAML coerces `title: 123`
+  // → number, a bare date → Date). The `as string` cast used to lie: a truthy
+  // non-string flowed downstream typed as string and crashed the first
+  // `.toLowerCase()` (content-sanity), aborting the whole lint/sync run.
+  //   - title: coerce to a string (preserve intent; `title: 123` → "123").
   //   - type/slug: NEVER fabricated from a non-string (a coerced "123" slug
-  //     collides + diverges from the slug validator). Fall back to inference.
+  //     collides + diverges from the slug validator — outside-voice OV3a). Fall
+  //     back to inference; the NON_STRING_FIELD lint finding below surfaces it.
   const rawType = frontmatter.type;
   const type = (typeof rawType === 'string' && rawType.length > 0 ? rawType : (
     opts?.activePack ? inferTypeFromPack(filePath, opts.activePack) : inferType(filePath)
   )) as PageType;
-  const rawTitle = frontmatter.title;
-  const title =
-    typeof rawTitle === 'string' && rawTitle.length > 0
-      ? rawTitle
-      : (typeof rawTitle === 'number' || typeof rawTitle === 'boolean')
-        ? String(rawTitle)
-        : inferTitle(filePath);
+  const title = coerceFrontmatterString(frontmatter.title).trim() || inferTitle(filePath);
   const tags = extractTags(frontmatter);
   const rawSlug = frontmatter.slug;
   const slug = typeof rawSlug === 'string' && rawSlug.length > 0 ? rawSlug : inferSlug(filePath);

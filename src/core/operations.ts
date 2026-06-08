@@ -1511,6 +1511,11 @@ const query: Operation = {
         "  TRUE is redundant in default mode (it's already on); it only matters to override a brain whose config turned autocut off.\n" +
         "Safe by construction: never returns empty when there are matches, only applies to the first page (omit when paginating), and is a no-op when no reranker scored the results (so it can't cut on an untrustworthy signal). Distinct from `adaptive_return`: autocut cuts on the score cliff; adaptive_return caps by question intent. Leave both unset for the smart default.",
     },
+    relational: {
+      type: 'boolean',
+      description:
+        "v0.43 — relational recall arm. SMART DEFAULT (on in balanced/tokenmax). When the question is about a RELATIONSHIP ('who invested in widget-co', 'who introduced me to alice', 'what connects fund-a and fund-b'), the brain resolves the named entity and walks its typed-edge graph (invested_in, works_at, founded, …), surfacing the answer even when no passage mentions both sides. Pure no-op for non-relational questions. Pass FALSE to force lexical/vector-only retrieval (e.g. debugging why a graph answer appeared). You almost never set this.",
+    },
   },
   handler: async (ctx, p) => {
     const startedAt = Date.now();
@@ -1607,6 +1612,8 @@ const query: Operation = {
       // v0.42.3.0 — autocut ceiling override. Omitted = smart default (ON in
       // reranked modes). `false` forces the full top-K.
       autocut: typeof p.autocut === 'boolean' ? (p.autocut as boolean) : undefined,
+      // v0.43 — relational recall override. Omitted = smart default (mode bundle).
+      relationalRetrieval: typeof p.relational === 'boolean' ? (p.relational as boolean) : undefined,
     });
     const latency_ms = Date.now() - startedAt;
 
