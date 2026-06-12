@@ -85,6 +85,12 @@ export async function runCrossModalBatchForProbe(
     if (ak) Object.assign(process.env, { ['ANTHROPIC_API_KEY']: ak });
     if (zk) Object.assign(process.env, { ['ZEROENTROPY_API_KEY']: zk });
   }
+  // Override chat_model for the cross-modal gateway check — without
+  // this, isAvailable('chat') checks against openai:gpt-4o-mini
+  // (the file-plane default) which lacks credentials.
+  if (!process.env.GBRAIN_CHAT_MODEL) {
+    process.env.GBRAIN_CHAT_MODEL = 'anthropic:claude-sonnet-4-6';
+  }
   const slotA = process.env.GBRAIN_NIGHTLY_PROBE_SLOT_A ?? 'anthropic:claude-haiku-4-5-20251001';
   const slotB = process.env.GBRAIN_NIGHTLY_PROBE_SLOT_B ?? 'anthropic:claude-sonnet-4-6';
   const slotC = process.env.GBRAIN_NIGHTLY_PROBE_SLOT_C ?? 'anthropic:claude-sonnet-4-6';
