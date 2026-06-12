@@ -74,6 +74,9 @@ export async function runCrossModalBatchForProbe(
   args: CrossModalProbeArgs,
 ): Promise<{ exitCode: number; summary: CrossModalBatchSummary }> {
   const { runEvalCrossModal } = await import('../../commands/eval-cross-modal.ts');
+  const slotA = process.env.GBRAIN_NIGHTLY_PROBE_SLOT_A ?? 'anthropic:claude-haiku-4-5-20251001';
+  const slotB = process.env.GBRAIN_NIGHTLY_PROBE_SLOT_B ?? 'anthropic:claude-sonnet-4-6';
+  const slotC = process.env.GBRAIN_NIGHTLY_PROBE_SLOT_C ?? 'anthropic:claude-sonnet-4-6';
   const exitCode = await runEvalCrossModal([
     '--batch',
     args.batchPath,
@@ -81,6 +84,12 @@ export async function runCrossModalBatchForProbe(
     args.summaryPath,
     '--max-usd',
     String(args.maxUsd),
+    '--slot-a-model',
+    slotA,
+    '--slot-b-model',
+    slotB,
+    '--slot-c-model',
+    slotC,
     '--yes',
     '--json',
   ]);
