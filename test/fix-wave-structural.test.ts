@@ -125,15 +125,20 @@ describe('v0.36.1.x #1124 — query --no-expand actually negates expand', () => 
 
 describe('v0.42.20.0 — background-work registry drains every sink before disconnect', () => {
   // Supersedes the v0.41.8.0 #1247/#1269/#1290 per-call last-retrieved drain:
-  // last-retrieved is now one of four registry sinks; cli.ts drains the whole
-  // registry (drainAllBackgroundWorkForCliExit) before disconnect on BOTH the
-  // op-dispatch path AND the CLI_ONLY path (the latter closes #1762 for capture).
-  test('cli.ts imports + uses drainAllBackgroundWorkForCliExit', () => {
+  // last-retrieved is one of the registry sinks. Since the v0.43 #2084 drain
+  // hoist, cli.ts routes EVERY owner-disconnect through drainThenDisconnect
+  // (one helper, all 8 sites) instead of two inline drain+disconnect pairs.
+  test('cli.ts imports the registry drain + routes owner-disconnects through drainThenDisconnect', () => {
     const src = readFileSync('src/cli.ts', 'utf8');
     expect(src).toMatch(/import\s+\{\s*drainAllBackgroundWorkForCliExit\s*\}\s*from\s+['"]\.\/core\/background-work\.ts['"]/);
-    // Two call sites: op-dispatch finally + handleCliOnly finally.
-    const calls = src.match(/await\s+drainAllBackgroundWorkForCliExit\s*\(/g) ?? [];
-    expect(calls.length).toBeGreaterThanOrEqual(2);
+    // The single registry-drain call site lives inside the shared helper...
+    expect(src).toMatch(/export async function drainThenDisconnect/);
+    expect(src).toMatch(/await\s+drainAllBackgroundWorkForCliExit\s*\(/);
+    // ...and the helper covers every owner-disconnect (op-dispatch, CLI_ONLY
+    // fall-through, search dashboard, doctor x3, ze-switch, dream,
+    // read-only-timeout path).
+    const calls = src.match(/await\s+drainThenDisconnect\s*\(/g) ?? [];
+    expect(calls.length).toBeGreaterThanOrEqual(8);
   });
 
   test('last-retrieved.ts still exports the bounded drain + registers a drainer', () => {
@@ -155,11 +160,13 @@ describe('v0.42.20.0 — background-work registry drains every sink before disco
       .toMatch(/name:\s*'eval-capture'/);
   });
 
-  test('cli.ts behavioral positioning: registry drain appears BEFORE engine.disconnect (op-dispatch)', () => {
+  test('cli.ts behavioral positioning: drainThenDisconnect drains the registry BEFORE engine.disconnect', () => {
     const src = readFileSync('src/cli.ts', 'utf8');
-    const localPath = src.match(/\/\/ Local engine path \(unchanged behavior[\s\S]+?^\}/m);
-    expect(localPath).not.toBeNull();
-    const block = localPath![0];
+    // The ordering invariant lives ONCE, inside the shared helper (v0.43
+    // #2084 drain hoist): registry drain, THEN best-effort disconnect.
+    const helper = src.match(/export async function drainThenDisconnect[\s\S]+?^\}/m);
+    expect(helper).not.toBeNull();
+    const block = helper![0];
     const drainCallRe = /await\s+drainAllBackgroundWorkForCliExit\s*\(/;
     const disconnectCallRe = /await\s+engine\.disconnect\s*\(/;
     expect(block).toMatch(drainCallRe);
@@ -167,6 +174,10 @@ describe('v0.42.20.0 — background-work registry drains every sink before disco
     const drainIdx = block.indexOf(block.match(drainCallRe)![0]);
     const disconnectIdx = block.indexOf(block.match(disconnectCallRe)![0]);
     expect(drainIdx).toBeLessThan(disconnectIdx);
+    // And the op-dispatch finally routes through the helper.
+    const localPath = src.match(/\/\/ Local engine path \(unchanged behavior[\s\S]+?\n  \}\n\}/m);
+    expect(localPath).not.toBeNull();
+    expect(localPath![0]).toMatch(/await\s+drainThenDisconnect\s*\(/);
   });
 
   test('background-work.ts: Map registry, ordered drain, awaited abort, test seam', () => {

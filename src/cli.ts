@@ -26,7 +26,7 @@ import type { BrainEngine } from './core/engine.ts';
 import { operations, OperationError } from './core/operations.ts';
 import type { Operation, OperationContext } from './core/operations.ts';
 import { drainAllBackgroundWorkForCliExit } from './core/background-work.ts';
-import { shouldForceExitAfterMain, flushStdoutThenExit } from './core/cli-force-exit.ts';
+import { shouldForceExitAfterMain, flushStdoutThenExit, setCliExitCode, getCliExitCode } from './core/cli-force-exit.ts';
 import { serializeMarkdown } from './core/markdown.ts';
 import { parseGlobalFlags, setCliOptions, getCliOptions } from './core/cli-options.ts';
 import type { CliOptions } from './core/cli-options.ts';
@@ -376,7 +376,7 @@ async function main() {
     } else {
       console.error(e instanceof Error ? e.message : String(e));
     }
-    process.exitCode = 1;
+    setCliExitCode(1);
   } finally {
     // 1s per-sink drain timeout: read paths with no pending work pay the
     // ~0ms fast path; capture/import that DO enqueue pay up to 1s (+ facts
@@ -419,7 +419,7 @@ export async function drainThenDisconnect(
       );
       // Honor an exit code an errored op already set — a bare process.exit(0)
       // here would mask a failed op as success if the drain/disconnect hangs.
-      process.exit(process.exitCode ?? 0);
+      process.exit(getCliExitCode());
     }, DISCONNECT_HARD_DEADLINE_MS);
     // unref so the timer itself doesn't keep the event loop alive — only
     // the actual pending work (PGLite WASM handle) does.
@@ -1169,12 +1169,12 @@ async function handleCliOnly(command: string, args: string[]) {
     // v0.43 (#2084 inner-exit sweep): exitCode + return instead of a
     // mid-handler process.exit — flows through the entrypoint flush-exit
     // so buffered stdout is never truncated.
-    process.exitCode = runFriction(args);
+    setCliExitCode(runFriction(args));
     return;
   }
   if (command === 'claw-test') {
     const { runClawTest } = await import('./commands/claw-test.ts');
-    process.exitCode = await runClawTest(args);
+    setCliExitCode(await runClawTest(args));
     return;
   }
   if (command === 'report') {
@@ -1276,7 +1276,7 @@ async function handleCliOnly(command: string, args: string[]) {
       execSync(`bash "${scriptPath}"`, { stdio: 'inherit', env: { ...process.env } });
     } catch (e: any) {
       // Non-zero exit = some tests failed (exit code = failure count)
-      process.exitCode = e.status ?? 1;
+      setCliExitCode(e.status ?? 1);
     }
     return;
   }
@@ -1324,7 +1324,7 @@ async function handleCliOnly(command: string, args: string[]) {
   // The handler self-configures the AI gateway from loadConfig() + process.env.
   if (command === 'eval' && args[0] === 'cross-modal') {
     const { runEvalCrossModal } = await import('./commands/eval-cross-modal.ts');
-    process.exitCode = await runEvalCrossModal(args.slice(1));
+    setCliExitCode(await runEvalCrossModal(args.slice(1)));
     return;
   }
 
@@ -1336,7 +1336,7 @@ async function handleCliOnly(command: string, args: string[]) {
   // engine-required path below.
   if (command === 'eval' && args[0] === 'takes-quality' && args[1] === 'replay') {
     const { runReplayNoBrain } = await import('./commands/eval-takes-quality.ts');
-    process.exitCode = await runReplayNoBrain(args.slice(2));
+    setCliExitCode(await runReplayNoBrain(args.slice(2)));
     return;
   }
 
@@ -1369,7 +1369,7 @@ async function handleCliOnly(command: string, args: string[]) {
   // gate runs on machines with no `~/.gbrain/config.json`.
   if (command === 'eval' && args[0] === 'conversation-parser') {
     const { runEvalConversationParser } = await import('./commands/eval-conversation-parser.ts');
-    process.exitCode = await runEvalConversationParser(args.slice(1));
+    setCliExitCode(await runEvalConversationParser(args.slice(1)));
     return;
   }
 
@@ -1398,7 +1398,7 @@ async function handleCliOnly(command: string, args: string[]) {
     const cfgPre = loadConfig();
     if (isThinClient(cfgPre)) {
       const { runEvalWhoknows } = await import('./commands/eval-whoknows.ts');
-      process.exitCode = await runEvalWhoknows(null, args.slice(1));
+      setCliExitCode(await runEvalWhoknows(null, args.slice(1)));
       return;
     }
   }
@@ -1413,7 +1413,7 @@ async function handleCliOnly(command: string, args: string[]) {
     if (cfgPre && isThinClient(cfgPre)) {
       const { runStatus } = await import('./commands/status.ts');
       const result = await runStatus(null, args);
-      process.exitCode = result.exitCode;
+      setCliExitCode(result.exitCode);
       return;
     }
   }
@@ -1547,7 +1547,7 @@ async function handleCliOnly(command: string, args: string[]) {
         // so wrappers (sync, CI scripts, `&& gbrain doctor`) propagate.
         const importResult = await runImport(engine, args);
         if (importResult.errors > 0) {
-          process.exitCode = 1;
+          setCliExitCode(1);
         }
         break;
       }
@@ -1732,7 +1732,7 @@ async function handleCliOnly(command: string, args: string[]) {
         // v0.43 (#2084 inner-exit sweep): a mid-switch process.exit skipped
         // the finally's drain + disconnect entirely. exitCode + break flows
         // through both, then the entrypoint flush-exit ends the process.
-        process.exitCode = result.exitCode;
+        setCliExitCode(result.exitCode);
         break;
       }
       // v0.38 — Capture: single human-facing entrypoint for ingestion.
@@ -2317,7 +2317,7 @@ if (import.meta.main) {
   // are excluded by shouldForceExitAfterMain and keep the event loop.
   main().then(
     () => {
-      if (shouldForceExitAfterMain()) void flushStdoutThenExit(Number(process.exitCode ?? 0));
+      if (shouldForceExitAfterMain()) void flushStdoutThenExit(getCliExitCode());
     },
     (e) => {
       console.error(e instanceof Error ? (e.message || String(e)) : String(e));

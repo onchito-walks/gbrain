@@ -33,6 +33,38 @@ export function shouldForceExitAfterMain(
 }
 
 /**
+ * v0.43 (#2084) — gbrain owns its exit verdict.
+ *
+ * `process.exitCode` is NOT trustworthy in this process: PGLite's Emscripten
+ * runtime writes the WASM backend's proc_exit status into it (initdb at
+ * create-time, the postmaster at close-time — see `exitCode=status` in
+ * pglite's dist), and those writes land asynchronously outside any
+ * snapshot/restore window. Pre-#2084 the success path never read
+ * process.exitCode so the pollution was invisible; the deliberate flush-exit
+ * MUST NOT propagate it (a clean `gbrain apply-migrations` was exiting 99).
+ *
+ * So gbrain records its own verdict here: every gbrain-owned exit-code
+ * assignment routes through `setCliExitCode()` (which also mirrors to
+ * process.exitCode for anything else that reads it), and the exit paths read
+ * `getCliExitCode()` — never ambient process.exitCode.
+ */
+let _cliExitCode: number | undefined;
+
+export function setCliExitCode(code: number): void {
+  _cliExitCode = code;
+  process.exitCode = code;
+}
+
+export function getCliExitCode(): number {
+  return _cliExitCode ?? 0;
+}
+
+/** Test seam — reset the recorded verdict between cases. */
+export function _resetCliExitCodeForTests(): void {
+  _cliExitCode = undefined;
+}
+
+/**
  * v0.43 (#2084) — deliberate exit after bounded teardown.
  *
  * Lingering sockets (embedding-provider fetch keep-alive, PgBouncer txn-mode
