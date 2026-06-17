@@ -30,6 +30,25 @@ job) and sync. See CLAUDE.md "Pace Mode".
   `embed --stale --pace --progress-json` caps concurrency + emits telemetry;
   single-flight rejects a 2nd concurrent run; lock heartbeat advances during a
   paced sleep (short-TTL). Unit coverage (`db-pacer`/`pace-mode`) already ships.
+## gbrain#2200 federated-read follow-ups (filed v0.42.46.0)
+
+- [ ] **P1 — Close the federated-read scope on the remaining same-class by-slug read ops.**
+  v0.42.46.0 (#2200) routed `get_page` tags + `get_tags` / `get_links` / `get_backlinks` /
+  `get_timeline` through the federated source scope and taught the engine methods to honor
+  `sourceIds[]`. The adversarial review (Codex + Claude) flagged sibling read ops in the
+  SAME class that still use scalar-only `ctx.sourceId ? {sourceId} : {}` and never thread
+  `ctx.auth.allowedSources`: `get_chunks`, `get_raw_data`, `get_versions`, and `resolve_slugs`
+  (the standalone op — `resolve_slugs` passes NO scope at all). A remote federated client
+  (grant set, dispatch-default `ctx.sourceId='default'`) reads these against `default` or
+  unscoped, not its grant.
+  - **Why:** same cross-source correctness/isolation class #2200 targets; a federated client
+    can't read chunks/raw-data/versions for an authorized non-default source, and `resolve_slugs`
+    can fuzzy-resolve across all sources.
+  - **How to start:** mirror the #2200 pattern — route each handler through `sourceScopeOpts(ctx)`
+    (or `linkReadScopeOpts` if a far endpoint exists), add `sourceIds?: string[]` to the engine
+    methods (`getChunks` / `getRawData` / `getVersions` / `resolveSlugs`) with `source_id = ANY($::text[])`
+    precedence, and add federated/isolation tests + engine-parity arms.
+  - **Depends on:** nothing; #2200 established the pattern and the `linkReadScopeOpts` helper.
 
 ## Spend-controls wave follow-ups (filed v0.42.45.0, #2139)
 
