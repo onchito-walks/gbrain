@@ -893,6 +893,7 @@ export async function runAutopilot(engine: BrainEngine, args: string[]) {
               dispatched: result.dispatched,
               skipped_fresh: result.skipped_fresh,
               skipped_cap: result.skipped_cap,
+              skipped_cooldown: result.skipped_cooldown,
               legacy_fallback: result.legacy_fallback,
               fanout_max: fanoutMax,
               score,
@@ -900,7 +901,8 @@ export async function runAutopilot(engine: BrainEngine, args: string[]) {
           } else if (!result.legacy_fallback) {
             console.log(
               `[dispatch] fanout: ${result.dispatched.length} dispatched, ` +
-              `${result.skipped_fresh.length} fresh, ${result.skipped_cap.length} capped ` +
+              `${result.skipped_fresh.length} fresh, ${result.skipped_cap.length} capped, ` +
+              `${result.skipped_cooldown.length} cooldown ` +
               `(score=${score}, max=${fanoutMax})`,
             );
           }

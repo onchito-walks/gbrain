@@ -1692,6 +1692,21 @@ export async function registerBuiltinHandlers(
     // Pull default: legacy `true` for back-compat; explicit boolean wins.
     const pull = typeof job.data.pull === 'boolean' ? job.data.pull : true;
 
+    // #2194 fix #2 / codex #5 (D4): claim-time cooldown guard. A job already
+    // queued or retrying (max_attempts:2) can reach the worker after the
+    // dispatch gate decided to back this source off. Skip it here as a NO-OP
+    // (status 'skipped', NOT a failure — a failure would re-arm the cooldown).
+    if (sourceId) {
+      const { isSourceInCooldown } = await import('./autopilot-fanout.ts');
+      if (await isSourceInCooldown(engine, sourceId)) {
+        return {
+          partial: false,
+          status: 'skipped',
+          report: { reason: 'source_in_cooldown', source_id: sourceId },
+        };
+      }
+    }
+
     const report = await runCycle(engine, {
       brainDir: effectiveBrainDir,
       pull,

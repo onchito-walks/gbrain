@@ -35,6 +35,22 @@ import type { MinionQueue } from '../core/minions/queue.ts';
 
 const FULL_CYCLE_FLOOR_MIN = 60;
 
+// #2194 fix #2: failure cooldown. A source whose autopilot-cycle keeps
+// failing/timing-out re-dispatches every tick today (only SUCCESS gates
+// dispatch), so the same handful of sources fail and re-fan-out forever — the
+// self-perpetuating dead-job storm. Back a failed source off with bounded
+// exponential cooldown so a chronically-slow source can't re-dispatch every
+// tick. Disabled with autopilot.failure_cooldown_min=0.
+const FAILURE_COOLDOWN_BASE_MIN = 10;
+const FAILURE_COOLDOWN_CAP_MIN = 120;
+const FAILURE_COOLDOWN_EXP_CAP = 4; // 2^4 = 16× base before the cap clamps
+
+/** Recent-failure record for one source (from minion_jobs dead/failed rows). */
+export interface SourceFailure { count: number; lastFailedAt: Date; }
+
+/** Resolved cooldown knobs. baseMin <= 0 means the cooldown is disabled. */
+export interface CooldownOpts { baseMin: number; capMin: number; }
+
 export interface FanoutOpts {
   repoPath: string;
   slot: string;
@@ -58,6 +74,8 @@ export interface FanoutResult {
   skipped_fresh: string[];
   /** Source ids beyond the fanoutMax cap (will retry next tick). */
   skipped_cap: string[];
+  /** Source ids skipped because they're in failure cooldown (#2194 fix #2). */
+  skipped_cooldown: string[];
   /** True when this tick fell back to the legacy single-job path
    *  (no sources rows / engine empty). */
   legacy_fallback: boolean;
@@ -168,6 +186,133 @@ export function isSourceStale(src: SourceRow, now = Date.now(), floorMin = FULL_
 }
 
 /**
+ * Most recent SUCCESSFUL cycle for a source. Prefers `last_source_cycle_at`
+ * (per-source phases, written by the split cycle) and falls back to the legacy
+ * `last_full_cycle_at`, so this works before AND after the cycle split.
+ */
+export function readLastSuccessAt(src: SourceRow): Date | null {
+  const c = src.config ?? {};
+  const raw = (typeof c.last_source_cycle_at === 'string' && c.last_source_cycle_at)
+    || (typeof c.last_full_cycle_at === 'string' && c.last_full_cycle_at)
+    || null;
+  if (!raw) return null;
+  const d = new Date(raw);
+  return Number.isFinite(d.getTime()) ? d : null;
+}
+
+/** Bounded exponential cooldown window (minutes) for a given failure count. */
+export function cooldownMinForCount(count: number, opts: CooldownOpts): number {
+  if (count <= 0 || opts.baseMin <= 0) return 0;
+  const mult = Math.pow(2, Math.min(count - 1, FAILURE_COOLDOWN_EXP_CAP));
+  return Math.min(opts.baseMin * mult, opts.capMin);
+}
+
+/**
+ * Is a source currently in failure cooldown? Pure — drives both the dispatch
+ * gate and the claim-time guard. A SUCCESS at-or-after the most recent failure
+ * clears the cooldown (codex #7: operator repair / manual cycle re-eligibility),
+ * so a recovered source is never suppressed by stale failure history.
+ */
+export function isInFailureCooldown(
+  failure: SourceFailure | undefined,
+  lastSuccessAt: Date | null,
+  now: number,
+  opts: CooldownOpts,
+): boolean {
+  if (opts.baseMin <= 0) return false;            // disabled
+  if (!failure || failure.count <= 0) return false;
+  if (lastSuccessAt && lastSuccessAt.getTime() >= failure.lastFailedAt.getTime()) return false;
+  const cooldownMs = cooldownMinForCount(failure.count, opts) * 60_000;
+  return (now - failure.lastFailedAt.getTime()) < cooldownMs;
+}
+
+/**
+ * Resolve cooldown knobs from config. `autopilot.failure_cooldown_min` overrides
+ * the base (0 = disable entirely — exactly today's behavior);
+ * `autopilot.failure_cooldown_cap_min` overrides the ceiling.
+ */
+export async function resolveFailureCooldownOpts(engine: BrainEngine): Promise<CooldownOpts> {
+  let baseMin = FAILURE_COOLDOWN_BASE_MIN;
+  let capMin = FAILURE_COOLDOWN_CAP_MIN;
+  const baseCfg = await engine.getConfig('autopilot.failure_cooldown_min');
+  if (baseCfg !== null && baseCfg !== undefined && baseCfg !== '') {
+    const n = parseInt(baseCfg, 10);
+    if (Number.isFinite(n) && n >= 0) baseMin = n;
+  }
+  const capCfg = await engine.getConfig('autopilot.failure_cooldown_cap_min');
+  if (capCfg) {
+    const n = parseInt(capCfg, 10);
+    if (Number.isFinite(n) && n >= 1) capMin = n;
+  }
+  return { baseMin, capMin };
+}
+
+/**
+ * Read recent dead/failed autopilot-cycle jobs grouped by source. Read-at-
+ * dispatch (NOT a write hook) because timeouts/RSS-kills/stalls dead-letter via
+ * SQL in queue.ts and never run handler code — a write-only cooldown would miss
+ * the exact failures that drive the storm. Engine-parity-safe via executeRaw
+ * (one query, both engines); cutoff is precomputed in JS to avoid INTERVAL
+ * portability concerns. codex #6: rows with a null source_id are excluded.
+ */
+export async function readRecentSourceFailures(
+  engine: BrainEngine,
+  opts: { sinceMin?: number; sourceId?: string } = {},
+): Promise<Map<string, SourceFailure>> {
+  const sinceMin = opts.sinceMin ?? FAILURE_COOLDOWN_CAP_MIN;
+  const cutoff = new Date(Date.now() - sinceMin * 60_000).toISOString();
+  const map = new Map<string, SourceFailure>();
+  try {
+    const params: unknown[] = [cutoff];
+    let sql =
+      `SELECT data->>'source_id' AS source_id,
+              count(*)::int AS fail_count,
+              max(finished_at) AS last_failed_at
+         FROM minion_jobs
+        WHERE name = 'autopilot-cycle'
+          AND status IN ('dead','failed')
+          AND data->>'source_id' IS NOT NULL
+          AND finished_at IS NOT NULL
+          AND finished_at > $1`;
+    if (opts.sourceId) { params.push(opts.sourceId); sql += ` AND data->>'source_id' = $${params.length}`; }
+    sql += ` GROUP BY data->>'source_id'`;
+    const rows = await engine.executeRaw<{ source_id: string | null; fail_count: number; last_failed_at: string | Date }>(sql, params);
+    for (const r of rows) {
+      if (!r.source_id) continue; // codex #6 null-source guard (defensive)
+      const last = r.last_failed_at instanceof Date ? r.last_failed_at : new Date(r.last_failed_at);
+      if (!Number.isFinite(last.getTime())) continue;
+      map.set(r.source_id, { count: Number(r.fail_count) || 0, lastFailedAt: last });
+    }
+  } catch {
+    // Pre-migration / transient DB error → no cooldown data (fail open: dispatch).
+  }
+  return map;
+}
+
+/**
+ * Claim-time cooldown guard (codex #5 / D4): a job already queued or retrying
+ * (max_attempts:2) can reach the worker after the dispatch gate decided. The
+ * handler calls this immediately before runCycle; an in-cooldown claim becomes
+ * a no-op skip (NOT a failure — it must not re-arm the cooldown). Shares the
+ * exact cooldown math with the dispatch gate (DRY).
+ */
+export async function isSourceInCooldown(engine: BrainEngine, sourceId: string, now = Date.now()): Promise<boolean> {
+  const opts = await resolveFailureCooldownOpts(engine);
+  if (opts.baseMin <= 0) return false;
+  const failures = await readRecentSourceFailures(engine, { sinceMin: opts.capMin, sourceId });
+  const failure = failures.get(sourceId);
+  if (!failure) return false;
+  let lastSuccessAt: Date | null = null;
+  try {
+    const rows = await engine.executeRaw<{ config: Record<string, unknown> | null }>(
+      `SELECT config FROM sources WHERE id = $1`, [sourceId],
+    );
+    if (rows[0]) lastSuccessAt = readLastSuccessAt({ config: rows[0].config ?? {} } as SourceRow);
+  } catch { /* treat as no success */ }
+  return isInFailureCooldown(failure, lastSuccessAt, now, opts);
+}
+
+/**
  * Decide which sources to dispatch this tick. Pure function so tests can
  * exercise the freshness gate + cap math without an engine.
  *
@@ -182,11 +327,21 @@ export function selectSourcesForDispatch(
   fanoutMax: number,
   now = Date.now(),
   floorMin = FULL_CYCLE_FLOOR_MIN,
-): { dispatch: SourceRow[]; skippedFresh: SourceRow[]; skippedCap: SourceRow[] } {
+  recentFailures: Map<string, SourceFailure> = new Map(),
+  cooldownOpts: CooldownOpts = { baseMin: FAILURE_COOLDOWN_BASE_MIN, capMin: FAILURE_COOLDOWN_CAP_MIN },
+): { dispatch: SourceRow[]; skippedFresh: SourceRow[]; skippedCap: SourceRow[]; skippedCooldown: SourceRow[] } {
   const stale: SourceRow[] = [];
   const fresh: SourceRow[] = [];
+  const cooldown: SourceRow[] = [];
   for (const s of sources) {
-    (isSourceStale(s, now, floorMin) ? stale : fresh).push(s);
+    if (!isSourceStale(s, now, floorMin)) { fresh.push(s); continue; }
+    // #2194 fix #2: a stale source that recently failed is held in cooldown so
+    // it can't re-dispatch every tick (the storm). Success clears it.
+    if (isInFailureCooldown(recentFailures.get(s.id), readLastSuccessAt(s), now, cooldownOpts)) {
+      cooldown.push(s);
+      continue;
+    }
+    stale.push(s);
   }
   // Oldest-first ordering: NULL last_full_cycle_at sorts before any timestamp.
   stale.sort((a, b) => {
@@ -197,7 +352,7 @@ export function selectSourcesForDispatch(
   });
   const dispatch = stale.slice(0, fanoutMax);
   const skippedCap = stale.slice(fanoutMax);
-  return { dispatch, skippedFresh: fresh, skippedCap };
+  return { dispatch, skippedFresh: fresh, skippedCap, skippedCooldown: cooldown };
 }
 
 /**
@@ -249,10 +404,27 @@ export async function dispatchPerSource(
     } else {
       log(`[dispatch] job #${job.id} autopilot-cycle (legacy single-source)`);
     }
-    return { dispatched: [], skipped_fresh: [], skipped_cap: [], legacy_fallback: true };
+    return { dispatched: [], skipped_fresh: [], skipped_cap: [], skipped_cooldown: [], legacy_fallback: true };
   }
 
-  const { dispatch, skippedFresh, skippedCap } = selectSourcesForDispatch(sources, opts.fanoutMax);
+  // #2194 fix #2: load recent per-source failures + cooldown knobs so a
+  // chronically-failing source is backed off instead of re-dispatched every
+  // tick. Fail-open: cooldown is an optimization, not a correctness gate — if
+  // config/job-history reads fail (or the engine lacks them), dispatch proceeds
+  // with no cooldown rather than blocking.
+  let cooldownOpts: CooldownOpts = { baseMin: 0, capMin: FAILURE_COOLDOWN_CAP_MIN };
+  let recentFailures = new Map<string, SourceFailure>();
+  try {
+    cooldownOpts = await resolveFailureCooldownOpts(engine);
+    if (cooldownOpts.baseMin > 0) {
+      recentFailures = await readRecentSourceFailures(engine, { sinceMin: cooldownOpts.capMin });
+    }
+  } catch {
+    cooldownOpts = { baseMin: 0, capMin: FAILURE_COOLDOWN_CAP_MIN };
+  }
+
+  const { dispatch, skippedFresh, skippedCap, skippedCooldown } =
+    selectSourcesForDispatch(sources, opts.fanoutMax, Date.now(), FULL_CYCLE_FLOOR_MIN, recentFailures, cooldownOpts);
 
   const dispatched: string[] = [];
   for (const src of dispatch) {
@@ -317,10 +489,18 @@ export async function dispatchPerSource(
     }));
   }
 
+  if (skippedCooldown.length > 0 && opts.jsonMode) {
+    emit(JSON.stringify({
+      event: 'fanout_cooldown_skipped',
+      sources: skippedCooldown.map(s => s.id),
+    }));
+  }
+
   return {
     dispatched,
     skipped_fresh: skippedFresh.map(s => s.id),
     skipped_cap: skippedCap.map(s => s.id),
+    skipped_cooldown: skippedCooldown.map(s => s.id),
     legacy_fallback: false,
   };
 }
