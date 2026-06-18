@@ -212,7 +212,7 @@ export interface SyncResult {
    * cron operators can disambiguate timeout vs pull-timeout in monitoring.
    */
   filesImported?: number;
-  reason?: 'timeout' | 'pull_timeout' | 'checkpoint_unavailable';
+  reason?: 'timeout' | 'pull_timeout' | 'stall_timeout' | 'checkpoint_unavailable';
   /**
    * v0.42.x (#1794): cumulative file paths durably banked to the checkpoint
    * across THIS run + prior resumed runs. Surfaced on every partial/blocked
@@ -1440,7 +1440,7 @@ function buildPartialResult(opts: {
   modified: number;
   deleted: number;
   renamed: number;
-  reason: 'timeout' | 'pull_timeout' | 'checkpoint_unavailable';
+  reason: 'timeout' | 'pull_timeout' | 'stall_timeout' | 'checkpoint_unavailable';
   bankedFiles?: number;
 }): SyncResult {
   return {
@@ -2050,7 +2050,7 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
   // `bankedFiles` is surfaced so a killed run shows banked progress instead of
   // looking like total loss. toCommit reports the PINNED target; last_commit is
   // never advanced on a partial (the next run resumes from the checkpoint).
-  const partial = async (reason: 'timeout' | 'pull_timeout'): Promise<SyncResult> => {
+  const partial = async (reason: 'timeout' | 'pull_timeout' | 'stall_timeout'): Promise<SyncResult> => {
     deregisterCheckpointCleanup();
     if (!checkpointDead) {
       try { await flushCheckpoint(); } catch { /* best effort — we're aborting */ }
@@ -2418,11 +2418,20 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
     // composed into `opts.signal`, so the existing per-iteration abort checks,
     // pacer.acquire/pace, and parallel-worker break-loops all observe it; the
     // drain returns partial() (last_commit unchanged, next run resumes from the
-    // checkpoint) and withRefreshingLock's finally releases the lock. Limits: a
-    // single file taking longer than the window trips it; a fully starved event
-    // loop won't fire this timer (the wall-clock hard deadline is that backstop).
+    // checkpoint) and withRefreshingLock's finally releases the lock. Limits
+    // (TODOS: #1950 follow-up — thread a cancellation signal through importFile):
+    // the abort is observed BETWEEN files (the per-iteration checks + the next
+    // importOnePath's pre-acquire check), so a hang INSIDE a single importFile
+    // call is not interrupted until that call returns — the watchdog fires and
+    // logs, but the in-flight file finishes (or the wall-clock hard deadline is
+    // the eventual backstop). This catches the documented #1950 incident shape
+    // (a slow-but-progressing drain, many files) and a stalled between-file
+    // drain; a single wedged file or a fully starved event loop is out of scope
+    // here. stallAborted distinguishes this from a user --timeout/SIGINT so the
+    // partial result reports `stall_timeout`, not `timeout`.
     const stallSeconds = resolveStallAbortSeconds();
     const progressAt = { last: Date.now() };
+    let stallAborted = false;
     let stallTimer: ReturnType<typeof setInterval> | undefined;
     if (stallSeconds > 0) {
       const stallMs = stallSeconds * 1000;
@@ -2433,6 +2442,7 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
             `[sync] no import progress for ${stallSeconds}s — aborting (stall watchdog). ` +
             `The per-source lock will release; the next 'gbrain sync' resumes from the checkpoint.`,
           );
+          stallAborted = true;
           stallController.abort();
         }
       }, Math.min(5000, stallMs));
@@ -2544,7 +2554,7 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
           // serial fallback inside the parallel branch (database_url unset).
           if (opts.signal?.aborted) {
             progress.finish();
-            return await partial('timeout');
+            return await partial(stallAborted ? 'stall_timeout' : 'timeout');
           }
           await importOnePath(engine, path);
         }
@@ -2608,7 +2618,7 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
         // primary serial site.
         if (opts.signal?.aborted) {
           progress.finish();
-          return await partial('timeout');
+          return await partial(stallAborted ? 'stall_timeout' : 'timeout');
         }
         await importOnePath(engine, path);
       }
@@ -2632,7 +2642,7 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
     // the bookmark write below. By returning partial here, we preserve
     // the D-V3-1 invariant that abort means "never advance last_commit."
     if (opts.signal?.aborted) {
-      return await partial('timeout');
+      return await partial(stallAborted ? 'stall_timeout' : 'timeout');
     }
   }
 
