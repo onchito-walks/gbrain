@@ -5200,6 +5200,35 @@ const ontology_conflicts: Operation = {
   cliHints: { name: 'ontology-contradictions' },
 };
 
+const volunteer_chronicle: Operation = {
+  name: 'volunteer_chronicle',
+  description:
+    'Life Chronicle agent-orientation: the recent timeline (last N days) + the current ' +
+    'validity-resolved ontology for the named entities, in one zero-LLM payload, so an agent ' +
+    'orients before acting. Diary-sourced ontology is redacted for remote callers. ' +
+    'CLI: `gbrain orient [--days 7] [--entities people/a,people/b]`.',
+  scope: 'read',
+  params: {
+    days: { type: 'number', description: 'Recent-timeline lookback in days (default 7).' },
+    entities: { type: 'string', description: 'Comma-separated entity slugs to resolve ontology for.' },
+    limit: { type: 'number', description: 'Max timeline rows (default 50).' },
+  },
+  handler: async (ctx, p) => {
+    const { loadChronicleContext } = await import('./context/chronicle-context.ts');
+    const entities = typeof p.entities === 'string'
+      ? p.entities.split(',').map((s) => s.trim()).filter(Boolean)
+      : undefined;
+    return loadChronicleContext(ctx.engine, {
+      days: typeof p.days === 'number' ? p.days : undefined,
+      entities,
+      limit: typeof p.limit === 'number' ? p.limit : undefined,
+      remote: ctx.remote !== false,
+      ...sourceScopeOpts(ctx),
+    });
+  },
+  cliHints: { name: 'orient' },
+};
+
 export const operations: Operation[] = [
   // Page CRUD
   get_page, put_page, delete_page, list_pages,
@@ -5253,6 +5282,7 @@ export const operations: Operation[] = [
   // v0.42.x (#2390): Life Chronicle timeline reads
   chronicle_day, chronicle_since, chronicle_last_seen,
   ontology_get, ontology_propose, ontology_dimensions, ontology_conflicts,
+  volunteer_chronicle,
   // v0.43 (#2095): push-based context
   volunteer_context,
   // v0.31: hot memory (facts table)
