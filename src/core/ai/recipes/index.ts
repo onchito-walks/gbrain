@@ -27,6 +27,7 @@ import { llamaServerReranker } from './llama-server-reranker.ts';
 import { moonshot } from './moonshot.ts';
 import { mistral } from './mistral.ts';
 import { nvidia } from './nvidia.ts';
+import { rhp } from './r-hp.ts';
 
 const ALL: Recipe[] = [
   openai,
@@ -41,6 +42,7 @@ const ALL: Recipe[] = [
   together,
   llamaServer,
   llamaServerReranker,
+  rhp,
   minimax,
   dashscope,
   dashscopeRerank,
