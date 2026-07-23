@@ -266,8 +266,17 @@ async function phaseBFenceFacts(
         // reusing every pre-existing match would make a retry duplicate rows.
         // Consume pre-existing row numbers per key, then append any remainder.
         const existingFence = parseFactsFence(body);
+        // A prior partial run may have renamed the fence before one of its DB
+        // assignments failed. Do not reuse a fence row already claimed in DB.
+        const occupied = await engine.executeRaw<{ row_num: number }>(
+          `SELECT row_num FROM facts
+            WHERE source_id = $1 AND source_markdown_slug = $2 AND row_num IS NOT NULL`,
+          [sourceId, entitySlug],
+        );
+        const occupiedRowNums = new Set(occupied.map(row => Number(row.row_num)));
         const existingRowNumsByKey = new Map<string, number[]>();
         for (const fact of existingFence.facts) {
+          if (occupiedRowNums.has(fact.rowNum)) continue;
           const key = `${fact.claim}\0${fact.source ?? ''}`;
           const rowNums = existingRowNumsByKey.get(key) ?? [];
           rowNums.push(fact.rowNum);
