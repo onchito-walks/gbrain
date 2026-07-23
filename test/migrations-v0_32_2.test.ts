@@ -142,6 +142,20 @@ describe('phaseBFenceFacts — happy path backfill', () => {
     expect(rows.rows[1]).toMatchObject({ id: id2, row_num: 2, source_markdown_slug: 'people/alice' });
   });
 
+  test('preserves duplicate legacy facts as distinct fence rows', async () => {
+    await seedLegacyFact({ entity_slug: 'people/alice', fact: 'Attended the same event' });
+    await seedLegacyFact({ entity_slug: 'people/alice', fact: 'Attended the same event' });
+
+    const r = await __testing.phaseBFenceFacts(engine, OPTS);
+    expect(r.status).toBe('complete');
+
+    const body = readFileSync(join(brainDir, 'people/alice.md'), 'utf-8');
+    expect(parseFactsFence(body).facts).toHaveLength(2);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rows = await (engine as any).db.query('SELECT row_num FROM facts ORDER BY id');
+    expect(rows.rows.map((row: { row_num: number }) => row.row_num)).toEqual([1, 2]);
+  });
+
   test('groups by entity page — multi-entity batch touches multiple files', async () => {
     await seedLegacyFact({ entity_slug: 'people/alice', fact: 'A1' });
     await seedLegacyFact({ entity_slug: 'companies/acme', fact: 'C1' });

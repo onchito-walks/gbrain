@@ -259,29 +259,28 @@ async function phaseBFenceFacts(
           body = `---\ntype: ${type}\ntitle: ${title}\nslug: ${entitySlug}\n---\n\n# ${title}\n`;
         }
 
-        // Append each legacy row, collecting the assigned row_nums.
-        // Already-fenced rows (row_num already set) are skipped at the
-        // DB-row level by the WHERE clause, but if the SAME (entity,
-        // source, claim, source-text) tuple was previously appended in
-        // a partial-completion re-run, parseFactsFence will see the
-        // existing row and append a duplicate. We dedup on (claim,
-        // source) before append to handle this.
+        // Append each legacy row, collecting the assigned row_nums. Reuse only
+        // rows that existed before this run, one-for-one. A legacy database can
+        // contain duplicate (claim, source) facts; assigning two DB rows to one
+        // pre-existing fence row violates idx_facts_fence_key. Conversely,
+        // reusing every pre-existing match would make a retry duplicate rows.
+        // Consume pre-existing row numbers per key, then append any remainder.
         const existingFence = parseFactsFence(body);
-        const existingKeySet = new Set(existingFence.facts.map(f => `${f.claim}\0${f.source ?? ''}`));
+        const existingRowNumsByKey = new Map<string, number[]>();
+        for (const fact of existingFence.facts) {
+          const key = `${fact.claim}\0${fact.source ?? ''}`;
+          const rowNums = existingRowNumsByKey.get(key) ?? [];
+          rowNums.push(fact.rowNum);
+          existingRowNumsByKey.set(key, rowNums);
+        }
 
         const assignments: Array<{ id: string; row_num: number }> = [];
         for (const row of group) {
           const key = `${row.fact}\0${row.source ?? ''}`;
-          if (existingKeySet.has(key)) {
-            // Already fenced (idempotent re-run). Find the existing
-            // row_num and assign it to this DB row.
-            const existing = existingFence.facts.find(f =>
-              f.claim === row.fact && (f.source ?? '') === (row.source ?? ''),
-            );
-            if (existing) {
-              assignments.push({ id: row.id, row_num: existing.rowNum });
-              continue;
-            }
+          const existingRowNum = existingRowNumsByKey.get(key)?.shift();
+          if (existingRowNum !== undefined) {
+            assignments.push({ id: row.id, row_num: existingRowNum });
+            continue;
           }
           // Append a new row.
           const validFromStr = (row.valid_from instanceof Date ? row.valid_from : new Date(row.valid_from))
@@ -302,7 +301,6 @@ async function phaseBFenceFacts(
             context:    row.context ?? undefined,
           });
           body = updated;
-          existingKeySet.add(key);
           assignments.push({ id: row.id, row_num: rowNum });
         }
 
