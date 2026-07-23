@@ -6,7 +6,7 @@
  *   - assertTouchpoint surfaces chat-only providers correctly
  *   - getChatModel() default + override
  *   - chat_fallback_chain plumbing (config plumbing only — chatWithFallback ships in commit 3)
- *   - new openai-compat recipes (deepseek, groq, together) parse + resolve
+ *   - approved openai-compat recipes (r-hp, groq, together) parse + resolve
  *   - new ChatTouchpoint shape: supports_subagent_loop, supports_prompt_cache
  *   - mapStopReason via the chat() boundary (mocked client) — refusal / content_filter / tool_calls / end / length
  *
@@ -31,13 +31,16 @@ import { AIConfigError } from '../../src/core/ai/errors.ts';
 import { listRecipes, getRecipe } from '../../src/core/ai/recipes/index.ts';
 
 describe('chat touchpoint — recipe registry', () => {
-  test('all six chat-capable providers ship a chat touchpoint with supports_subagent_loop', () => {
-    const expected = ['anthropic', 'openai', 'google', 'deepseek', 'groq', 'together'];
+  test('approved chat-capable providers ship a chat touchpoint with supports_subagent_loop', () => {
+    const expected = ['anthropic', 'openai', 'google', 'r-hp', 'groq', 'together'];
     for (const id of expected) {
       const r = getRecipe(id);
       expect(r, `recipe missing: ${id}`).toBeDefined();
       expect(r!.touchpoints.chat, `${id} missing chat touchpoint`).toBeDefined();
-      expect(r!.touchpoints.chat!.models.length, `${id} chat models empty`).toBeGreaterThan(0);
+      // OpenAI-compatible private endpoints accept their operator-selected model id.
+      if (r!.tier !== 'openai-compat') {
+        expect(r!.touchpoints.chat!.models.length, `${id} chat models empty`).toBeGreaterThan(0);
+      }
       expect(r!.touchpoints.chat!.supports_subagent_loop, `${id} should support subagent loop`).toBe(true);
     }
   });
@@ -59,7 +62,7 @@ describe('chat touchpoint — recipe registry', () => {
   });
 
   test('openai-compat chat recipes have base_url_default', () => {
-    expect(getRecipe('deepseek')!.base_url_default).toBe('https://api.deepseek.com/v1');
+    expect(getRecipe('r-hp')!.base_url_default).toBe('http://100.107.145.48:8888/v1');
     expect(getRecipe('groq')!.base_url_default).toBe('https://api.groq.com/openai/v1');
     expect(getRecipe('together')!.base_url_default).toBe('https://api.together.xyz/v1');
   });
@@ -106,7 +109,7 @@ describe('chat touchpoint — model resolver + aliases (Codex F-OV-5)', () => {
     expect(() => assertTouchpoint(getRecipe('anthropic')!, 'chat', 'claude-opus-4-7')).not.toThrow();
     expect(() => assertTouchpoint(getRecipe('openai')!, 'chat', 'gpt-5.2')).not.toThrow();
     expect(() => assertTouchpoint(getRecipe('google')!, 'chat', 'gemini-2.0-flash')).not.toThrow();
-    expect(() => assertTouchpoint(getRecipe('deepseek')!, 'chat', 'deepseek-chat')).not.toThrow();
+    expect(() => assertTouchpoint(getRecipe('r-hp')!, 'chat', 'operator-selected-model')).not.toThrow();
   });
 
   test('assertTouchpoint rejects chat on embedding-only providers with a fix hint', () => {
@@ -152,13 +155,13 @@ describe('chat touchpoint — gateway config plumbing', () => {
     configureGateway({
       chat_fallback_chain: [
         'anthropic:claude-opus-4-7',
-        'deepseek:deepseek-chat',
+        'r-hp:operator-selected-model',
       ],
       env: {},
     });
     expect(getChatFallbackChain()).toEqual([
       'anthropic:claude-opus-4-7',
-      'deepseek:deepseek-chat',
+      'r-hp:operator-selected-model',
     ]);
   });
 
