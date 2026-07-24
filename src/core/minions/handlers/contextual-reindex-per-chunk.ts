@@ -40,7 +40,6 @@ import { UnrecoverableError } from '../types.ts';
 import type { BrainEngine } from '../../engine.ts';
 import {
   reembedPageWithContextualRetrieval,
-  resolveContextualChunkConcurrency,
   type ReembedPageResult,
 } from '../../contextual-retrieval-service.ts';
 import {
@@ -133,7 +132,7 @@ export function makeContextualReindexHandler(opts: MakeContextualReindexHandlerO
     // call inside the service acquires/releases a lease against the
     // shared key across all worker processes.
     const maxConcurrent = resolveMaxConcurrent();
-    const chunkConcurrency = resolveContextualChunkConcurrency();
+    let currentLeaseId: number | null = null;
 
     const result: ReembedPageResult = await reembedPageWithContextualRetrieval({
       engine,
@@ -142,32 +141,32 @@ export function makeContextualReindexHandler(opts: MakeContextualReindexHandlerO
       globalMode,
       killSwitchDisabled,
       abortSignal: ctx.signal,
-      chunkConcurrency,
       acquireSynopsisLease: async () => {
         // Poll-acquire with brief backoff. The service's per-chunk loop
-        // is bounded within a page; this guards against the cross-worker
-        // pile-up and remains the global rate governor.
+        // is sequential within a page; this guards against the cross-
+        // worker pile-up.
         let attempts = 0;
         const maxAttempts = 60; // ~1 min max wait per chunk before giving up
         while (attempts < maxAttempts) {
-          if (ctx.signal.aborted) throw abortError();
           const res = await acquireLease(engine, RATE_LEASE_KEY, ctx.id, maxConcurrent, {
             ttlMs: 60_000,
           });
           if (res.acquired && res.leaseId != null) {
-            return res.leaseId;
+            currentLeaseId = res.leaseId;
+            return;
           }
           attempts++;
-          await sleepWithAbort(1000, ctx.signal);
+          await new Promise((r) => setTimeout(r, 1000));
         }
         throw new Error(
           `Failed to acquire ${RATE_LEASE_KEY} lease after ${maxAttempts} attempts; ` +
             `Haiku rate limit pile-up too deep.`,
         );
       },
-      releaseSynopsisLease: async (lease) => {
-        if (typeof lease === 'number') {
-          await releaseLease(engine, lease);
+      releaseSynopsisLease: async () => {
+        if (currentLeaseId != null) {
+          await releaseLease(engine, currentLeaseId);
+          currentLeaseId = null;
         }
       },
     });
@@ -217,26 +216,6 @@ async function tryLoadPageAcrossSources(
     if (p) return { source_id: p.source_id };
   }
   return null;
-}
-
-function sleepWithAbort(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal.aborted) {
-      reject(abortError());
-      return;
-    }
-    const timer = setTimeout(resolve, ms);
-    signal.addEventListener('abort', () => {
-      clearTimeout(timer);
-      reject(abortError());
-    }, { once: true });
-  });
-}
-
-function abortError(): Error {
-  const err = new Error('aborted');
-  err.name = 'AbortError';
-  return err;
 }
 
 function classifyResult(

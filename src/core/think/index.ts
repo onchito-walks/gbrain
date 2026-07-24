@@ -23,6 +23,7 @@ import { runGather, renderPagesBlock, takesHitToTakeForPrompt } from './gather.t
 import { renderTakesBlock } from './sanitize.ts';
 import { buildThinkSystemPrompt, buildThinkUserMessage } from './prompt.ts';
 import { resolveCitations, type ParsedCitation } from './cite-render.ts';
+import { resolveOwnerHolder } from '../owner-holder.ts';
 import { resolveModel } from '../model-config.ts';
 import { chat as gatewayChat, probeChatModel, type ChatResult } from '../ai/gateway.ts';
 import { AIConfigError } from '../ai/errors.ts';
@@ -76,8 +77,8 @@ export interface RunThinkOpts {
    */
   withCalibration?: boolean;
   /**
-   * Holder to retrieve the calibration profile for. Default 'garry'. Only
-   * consulted when withCalibration=true.
+   * Holder to retrieve the calibration profile for. Resolves via resolveOwnerHolder
+   * (config emotional_weight.user_holder, else 'self'). Only consulted when withCalibration=true.
    */
   calibrationHolder?: string;
   /**
@@ -288,10 +289,10 @@ export async function runThink(
   });
 
   // Render evidence blocks for the prompt
-    const excerptLen = typeof engine.getConfig === 'function'
+  const excerptLen = typeof engine.getConfig === 'function'
     ? (Number(await engine.getConfig('think.excerpt_length')) || 3000)
     : 3000;
-  const pagesBlock = renderPagesBlock(gather.pages, excerptLen);
+  const pagesBlock = renderPagesBlock(gather.pages, excerptLen, opts.question);
   const takesForPrompt = gather.takes.map(takesHitToTakeForPrompt);
   const { rendered: takesBlock, sanitizedCount } = renderTakesBlock(takesForPrompt);
   if (sanitizedCount > 0) {
@@ -311,7 +312,10 @@ export async function runThink(
     try {
       const { getLatestProfile } = await import('../../commands/calibration.ts');
       const profile = await getLatestProfile(engine, {
-        holder: opts.calibrationHolder ?? 'garry',
+        holder: resolveOwnerHolder({
+          override: opts.calibrationHolder,
+          configValue: await engine.getConfig('emotional_weight.user_holder'),
+        }),
       });
       if (profile) {
         calibrationBlockOpts = {

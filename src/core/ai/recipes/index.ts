@@ -18,7 +18,6 @@ import { together } from './together.ts';
 import { llamaServer } from './llama-server.ts';
 import { minimax } from './minimax.ts';
 import { dashscope } from './dashscope.ts';
-import { dashscopeRerank } from './dashscope-rerank.ts';
 import { zhipu } from './zhipu.ts';
 import { azureOpenAI } from './azure-openai.ts';
 import { zeroentropyai } from './zeroentropyai.ts';
@@ -27,6 +26,7 @@ import { moonshot } from './moonshot.ts';
 import { mistral } from './mistral.ts';
 import { nvidia } from './nvidia.ts';
 import { rhp } from './r-hp.ts';
+import { perplexity } from './perplexity.ts';
 
 const ALL: Recipe[] = [
   openai,
@@ -43,13 +43,13 @@ const ALL: Recipe[] = [
   rhp,
   minimax,
   dashscope,
-  dashscopeRerank,
   zhipu,
   azureOpenAI,
   zeroentropyai,
   moonshot,
   mistral,
   nvidia,
+  perplexity,
 ];
 
 /** Map from `provider:id` key to recipe. */
