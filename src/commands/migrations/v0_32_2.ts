@@ -367,50 +367,32 @@ async function phaseCVerify(
   if (!engine) return { name: 'verify', status: 'skipped', detail: 'no_brain_configured' };
 
   try {
-    // Per touched page (= any page with a fenced row in the DB), re-parse
-    // the fence from disk and compare row counts to the DB.
-    const sources = await engine.executeRaw<SourceLookup>(
-      `SELECT id, local_path FROM sources`,
+    // v0.32.2 owns one invariant only: every *fenceable* pre-v51 fact has
+    // received a DB fence key. A full DB↔markdown reconciliation is broader
+    // than this migration: it includes post-v51 rows and independently
+    // missing/stale index rows, so using it here wedges a successful legacy
+    // backfill forever. Facts without an entity_slug are permanently legacy
+    // by design and must remain outside this completion predicate.
+    const rows = await engine.executeRaw<{ pending: string; permanently_legacy: string }>(
+      `SELECT
+         COUNT(*) FILTER (WHERE row_num IS NULL AND entity_slug IS NOT NULL) AS pending,
+         COUNT(*) FILTER (WHERE row_num IS NULL AND entity_slug IS NULL) AS permanently_legacy
+       FROM facts`,
     );
-    const localPathById = new Map<string, string | null>();
-    for (const s of sources) localPathById.set(s.id, s.local_path);
-
-    const groups = await engine.executeRaw<{ source_id: string; source_markdown_slug: string; n: string }>(
-      `SELECT source_id, source_markdown_slug, COUNT(*) AS n
-         FROM facts
-        WHERE row_num IS NOT NULL
-        GROUP BY source_id, source_markdown_slug`,
-    );
-
-    const mismatches: string[] = [];
-    let pagesChecked = 0;
-
-    for (const g of groups) {
-      const localPath = localPathById.get(g.source_id);
-      if (!localPath) continue;
-      const filePath = join(localPath, `${g.source_markdown_slug}.md`);
-      if (!existsSync(filePath)) {
-        mismatches.push(`${g.source_markdown_slug} (file missing)`);
-        continue;
-      }
-      const body = readFileSync(filePath, 'utf-8');
-      const parsed = parseFactsFence(body);
-      const fenceCount = parsed.facts.length;
-      const dbCount = parseInt(g.n, 10);
-      if (fenceCount !== dbCount) {
-        mismatches.push(`${g.source_markdown_slug} (fence=${fenceCount}, db=${dbCount})`);
-      }
-      pagesChecked += 1;
-    }
-
-    if (mismatches.length > 0) {
+    const pending = parseInt(rows[0]?.pending ?? '0', 10);
+    const permanentlyLegacy = parseInt(rows[0]?.permanently_legacy ?? '0', 10);
+    if (pending > 0) {
       return {
         name: 'verify',
         status: 'failed',
-        detail: `${mismatches.length} pages drifted: ${mismatches.slice(0, 3).join(' | ')}${mismatches.length > 3 ? '...' : ''}`,
+        detail: `fenceable_legacy_pending=${pending}; re-run after resolving source/page write failures`,
       };
     }
-    return { name: 'verify', status: 'complete', detail: `pages_checked=${pagesChecked}` };
+    return {
+      name: 'verify',
+      status: 'complete',
+      detail: `fenceable_legacy_pending=0 permanently_legacy=${permanentlyLegacy}`,
+    };
   } catch (e) {
     return { name: 'verify', status: 'failed', detail: e instanceof Error ? e.message : String(e) };
   }

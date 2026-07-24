@@ -253,33 +253,31 @@ describe('phaseBFenceFacts — happy path backfill', () => {
 });
 
 describe('phaseCVerify', () => {
-  test('returns complete when fence + DB row counts match', async () => {
+  test('returns complete after every fenceable legacy row is assigned', async () => {
     await seedLegacyFact({ entity_slug: 'people/alice', fact: 'F1' });
     await seedLegacyFact({ entity_slug: 'people/alice', fact: 'F2' });
     await __testing.phaseBFenceFacts(engine, OPTS);
 
     const r = await __testing.phaseCVerify(engine, OPTS);
     expect(r.status).toBe('complete');
-    expect(r.detail).toContain('pages_checked=1');
+    expect(r.detail).toContain('fenceable_legacy_pending=0');
   });
 
-  test('returns failed when fence row count drifts from DB', async () => {
+  test('fails only when a fenceable legacy row remains pending', async () => {
     await seedLegacyFact({ entity_slug: 'people/alice', fact: 'F1' });
-    await __testing.phaseBFenceFacts(engine, OPTS);
-
-    // Corrupt the fence: append a row manually that's not in the DB.
-    const path = join(brainDir, 'people/alice.md');
-    const body = readFileSync(path, 'utf-8');
-    const corrupted = body.replace(
-      '<!--- gbrain:facts:end -->',
-      '| 99 | extra row | fact | 1.0 | world | medium | 2026-01-01 |  | manual |  |\n<!--- gbrain:facts:end -->',
-    );
-    writeFileSync(path, corrupted, 'utf-8');
 
     const r = await __testing.phaseCVerify(engine, OPTS);
     expect(r.status).toBe('failed');
-    expect(r.detail).toContain('drifted');
-    expect(r.detail).toContain('people/alice');
+    expect(r.detail).toContain('fenceable_legacy_pending=1');
+  });
+
+  test('accepts permanently legacy NULL-entity rows without deleting them', async () => {
+    await seedLegacyFact({ entity_slug: null, fact: 'Unfenceable' });
+
+    const r = await __testing.phaseCVerify(engine, OPTS);
+    expect(r.status).toBe('complete');
+    expect(r.detail).toContain('fenceable_legacy_pending=0');
+    expect(r.detail).toContain('permanently_legacy=1');
   });
 });
 
@@ -292,6 +290,18 @@ describe('orchestrator end-to-end', () => {
     expect(result.status).toBe('complete');
     expect(result.phases.map(p => p.name)).toEqual(['schema', 'fence_facts', 'verify']);
     expect(result.phases.every(p => p.status === 'complete')).toBe(true);
+  });
+
+  test('NULL-entity legacy facts produce a truthful complete result and remain untouched', async () => {
+    await seedLegacyFact({ entity_slug: null, fact: 'Permanent legacy fact' });
+
+    const result = await v0_32_2.orchestrator(OPTS);
+    expect(result.status).toBe('complete');
+    expect(result.phases.at(-1)?.detail).toContain('permanently_legacy=1');
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rows = await (engine as any).db.query('SELECT entity_slug, row_num FROM facts');
+    expect(rows.rows).toEqual([{ entity_slug: null, row_num: null }]);
   });
 
   test('dry-run returns 3 phases all skipped (no FS or DB changes)', async () => {
