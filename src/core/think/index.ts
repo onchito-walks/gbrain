@@ -429,7 +429,7 @@ export async function runThink(
     willSave: opts.save,
     withCalibration: !!calibrationBlockOpts,
   });
-  const userMessage = buildThinkUserMessage({
+  const fullUserMessage = buildThinkUserMessage({
     question: opts.question,
     pagesBlock,
     takesBlock,
@@ -437,6 +437,16 @@ export async function runThink(
     ...(calibrationBlockOpts !== undefined ? { calibration: calibrationBlockOpts } : {}),
     ...(trajectoryBlock.length > 0 ? { trajectoryBlock } : {}),
   });
+  // The live HP Gemma appliance is deliberately constrained to 8K context.
+  // Keep the question and earliest gathered evidence intact, then make the
+  // truncation explicit instead of letting llama-server reject the request.
+  const compactGemma = /^r-hp:gemma-4-26b-a4b-it-qat-ud-q4_k_xl\.gguf$/i.test(modelUsed);
+  const userMessage = compactGemma && fullUserMessage.length > 20_000
+    ? `${fullUserMessage.slice(0, 20_000)}\n\n[Additional evidence omitted for the 8K local context window.]`
+    : fullUserMessage;
+  if (compactGemma && userMessage !== fullUserMessage) {
+    warnings.push('CONTEXT_TRUNCATED_FOR_R_HP_GEMMA_8192');
+  }
 
   // #1698: true only when an actual synthesis produced a non-empty answer. Set false
   // on the not-JSON branch (covers malformed output AND the buildGracefulMessage
@@ -503,7 +513,7 @@ export async function runThink(
     }
     const result = await client.create({
       model: modelUsed,
-      max_tokens: maxOutputTokensFor(normalizeModelId(modelUsed)),
+      max_tokens: compactGemma ? 1024 : maxOutputTokensFor(normalizeModelId(modelUsed)),
       system: systemPrompt,
       messages: [{ role: 'user', content: userMessage }],
     });
