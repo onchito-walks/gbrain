@@ -76,6 +76,14 @@ const SCORING_HEAD_TRIGGER_THRESHOLD = 0.3;
 const SCORING_MIN_ACCEPTANCE = 0.05;
 
 /**
+ * Large agent transcripts can contain thousands of tool-output, code, or
+ * attachment lines between real messages. Ten independently timestamped
+ * inline anchors are still strong evidence of a conversation. This bypass is
+ * deliberately unavailable to broad frontmatter/no-time patterns.
+ */
+const MIN_ABSOLUTE_INLINE_TIMESTAMPED_MESSAGES = 10;
+
+/**
  * Tie-breaker priority: lower index wins on score tie. Mirrors
  * BUILTIN_PATTERNS declaration order. User-declared patterns get
  * priority Infinity (lose every tie).
@@ -506,7 +514,7 @@ export function parseConversation(
     // attempts" (Codex P2 #7).
   }
 
-  const top = scored[0];
+  let top = scored[0];
   const patternsScored = scored.length;
 
   // v0.41.29.0 (Codex F1): broad no-time patterns (`bold-name-no-time`,
@@ -524,12 +532,35 @@ export function parseConversation(
     top.score = scoreFromLines(getNonBlankLines(body), top.entry);
   }
 
+  // When a noisy agent transcript pushes every percentage score below the
+  // floor, prefer a strong explicit-timestamp signal over a broader pattern
+  // that happened to match more prose labels. This cannot activate for
+  // no-time/frontmatter patterns.
+  if (top.score < SCORING_MIN_ACCEPTANCE) {
+    const explicitCandidates = scored
+      .filter(({ entry }) => entry.date_source === 'inline')
+      .map((candidate) => ({
+        candidate,
+        messageCount: applyPattern(body, candidate.entry, dateCtx).length,
+      }))
+      .filter(({ messageCount }) => messageCount >= MIN_ABSOLUTE_INLINE_TIMESTAMPED_MESSAGES)
+      .sort((a, b) => b.messageCount - a.messageCount);
+    if (explicitCandidates.length > 0) {
+      top = explicitCandidates[0].candidate;
+    }
+  }
+
+  const messages = applyPattern(body, top.entry, dateCtx);
+
   // Minimum acceptance floor (closes Codex P1 #2): an essay with
   // one stray `**Name** (date time):` line scores ~1/300 ≈ 0.003 —
   // below the 5% floor we stay no_match instead of returning a
-  // 1-message false positive. Real transcript pages typically score
-  // 0.5+ and sail through.
-  if (top.score < SCORING_MIN_ACCEPTANCE) {
+  // 1-message false positive. Ten explicit inline-timestamped messages are
+  // a separate high-confidence signal for noisy agent transcripts.
+  const hasEnoughExplicitTimestampedMessages =
+    top.entry.date_source === 'inline' &&
+    messages.length >= MIN_ABSOLUTE_INLINE_TIMESTAMPED_MESSAGES;
+  if (top.score < SCORING_MIN_ACCEPTANCE && !hasEnoughExplicitTimestampedMessages) {
     return {
       messages: [],
       phase: 'no_match',
@@ -539,8 +570,6 @@ export function parseConversation(
         : undefined,
     };
   }
-
-  const messages = applyPattern(body, top.entry, dateCtx);
 
   // Timezone warning surface (D19).
   let timezone_warning: string | undefined;

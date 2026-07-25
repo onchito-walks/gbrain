@@ -778,4 +778,53 @@ describe('parseConversation — full-body fallback', () => {
     expect(r.phase).toBe('no_match');
     expect(r.messages).toHaveLength(0);
   });
+
+  test('dense tool noise does not hide ten explicit timestamped messages', () => {
+    const noise = Array.from(
+      { length: 2_000 },
+      (_, i) => `tool output line ${i + 1}: unrelated diagnostic payload`,
+    );
+    const transcript = Array.from(
+      { length: 10 },
+      (_, i) => `**Operator** (2026-07-25 1:${String(i).padStart(2, '0')} PM): real message ${i + 1}`,
+    );
+    const r = parseConversation([...noise, ...transcript].join('\n'));
+    expect(r.phase).toBe('regex_match');
+    expect(r.matched_pattern_id).toBe('imessage-slack');
+    expect(r.messages).toHaveLength(10);
+  });
+
+  test('explicit timestamps beat incidental bold-label matches in dense tool noise', () => {
+    const proseNoise = Array.from(
+      { length: 2_000 },
+      (_, i) => `tool output line ${i}: diagnostic payload`,
+    );
+    const incidentalBoldLabels = Array.from(
+      { length: 20 },
+      (_, i) => `**Tool Label ${i}:** diagnostic output`,
+    );
+    const noise = [...proseNoise, ...incidentalBoldLabels];
+    const transcript = Array.from(
+      { length: 10 },
+      (_, i) => `**Operator** (2026-07-25 1:${String(i).padStart(2, '0')} PM): real message ${i + 1}`,
+    );
+    const r = parseConversation([...noise, ...transcript].join('\n'));
+    expect(r.phase).toBe('regex_match');
+    expect(r.matched_pattern_id).toBe('imessage-slack');
+    expect(r.messages).toHaveLength(10);
+  });
+
+  test('nine explicit timestamped lines in heavy prose remain below the safety threshold', () => {
+    const noise = Array.from(
+      { length: 2_000 },
+      (_, i) => `essay line ${i + 1}: unrelated prose`,
+    );
+    const transcript = Array.from(
+      { length: 9 },
+      (_, i) => `**Author** (2026-07-25 1:${String(i).padStart(2, '0')} PM): quoted snippet ${i + 1}`,
+    );
+    const r = parseConversation([...noise, ...transcript].join('\n'));
+    expect(r.phase).toBe('no_match');
+    expect(r.messages).toHaveLength(0);
+  });
 });
