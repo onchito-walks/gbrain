@@ -23,7 +23,7 @@
  *                               (e.g. cost-sensitive operators with rate limits)
  *
  * Per Codex F11 in plan review: no specific dollar cost claim. Probe uses
- * `max_tokens: 1` against each configured model; actual cost depends on
+ * `max_tokens: 16` against each configured model; actual cost depends on
  * provider billing minimums.
  */
 
@@ -514,7 +514,10 @@ async function probeModel(modelStr: string, touchpoint: 'chat' | 'expansion'): P
       await chat({
         model: modelStr,
         messages: [{ role: 'user', content: '.' }],
-        maxTokens: 1,
+        // OpenAI Responses rejects values below 16; 16 is also accepted by
+        // OpenAI-compatible local servers. This is a reachability probe, not a
+        // quality evaluation.
+        maxTokens: 16,
         abortSignal: controller.signal,
       });
       return { model: modelStr, touchpoint, status: 'ok', message: 'reachable', elapsed_ms: Date.now() - start };
