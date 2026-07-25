@@ -127,6 +127,19 @@ This is the compiled truth.
     expect(chunkCall).toBeTruthy();
   });
 
+  test('rejects README and index slugs typed as person or company', async () => {
+    for (const [slug, type] of [
+      ['people/readme', 'person'],
+      ['companies/index', 'company'],
+    ]) {
+      const engine = mockEngine();
+      const result = await importFromContent(engine, slug, `---\ntype: ${type}\ntitle: Readme\n---\nNavigation only.`, { noEmbed: true });
+      expect(result.status).toBe('error');
+      expect(result.error).toContain('Navigation page');
+      expect((engine as any)._calls.find((c: any) => c.method === 'putPage')).toBeUndefined();
+    }
+  });
+
   test('skips files larger than MAX_FILE_SIZE (5MB)', async () => {
     const filePath = join(TMP, 'big-file.md');
     const bigContent = '---\ntitle: Big\n---\n' + 'x'.repeat(5_100_000);

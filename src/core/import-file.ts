@@ -322,6 +322,21 @@ export async function importFromContent(
 
   const parsed = parseMarkdown(content, slug + '.md', { activePack: opts.activePack });
 
+  // README/index pages are navigation artifacts, not real entities. Remote
+  // agents previously wrote `people/readme` and `companies/readme` with a
+  // person/company frontmatter type, which polluted entity coverage, mention
+  // extraction, and timeline health. Reject this category error at the shared
+  // import boundary so CLI, sync, and MCP cannot reintroduce it.
+  const leaf = slug.split('/').at(-1)?.toLowerCase();
+  if ((leaf === 'readme' || leaf === 'index') && (parsed.type === 'person' || parsed.type === 'company')) {
+    return {
+      slug,
+      status: 'error',
+      chunks: 0,
+      error: `Navigation page '${slug}' cannot use entity type '${parsed.type}'. Use note, guide, or concept.`,
+    };
+  }
+
   // v0.42 (#1699 trust boundary): strip gate-owned markers from UNTRUSTED
   // input. parseMarkdown preserves every frontmatter key except type/title/
   // tags/slug, so a remote MCP put_page (ctx.remote !== false, threaded as
