@@ -507,9 +507,10 @@ async function probeModel(modelStr: string, touchpoint: 'chat' | 'expansion'): P
   const start = Date.now();
   try {
     const { chat } = await import('../core/ai/gateway.ts');
-    // Use AbortController so the 5s timeout doesn't hang on a stuck network.
+    // OpenAI and cold local runners often need more than five seconds for their
+    // first token; twenty seconds still bounds a dead-host probe.
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(new Error('probe timed out after 5s')), 5000);
+    const timeoutId = setTimeout(() => controller.abort(new Error('probe timed out after 20s')), 20_000);
     try {
       await chat({
         model: modelStr,
