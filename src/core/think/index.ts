@@ -513,7 +513,9 @@ export async function runThink(
     }
     const result = await client.create({
       model: modelUsed,
-      max_tokens: compactGemma ? 1024 : maxOutputTokensFor(normalizeModelId(modelUsed)),
+      // Gemma emits an internal reasoning block before its visible JSON. Keep
+      // enough headroom for both while remaining under the 8K appliance limit.
+      max_tokens: compactGemma ? 1800 : maxOutputTokensFor(normalizeModelId(modelUsed)),
       system: systemPrompt,
       messages: [{ role: 'user', content: userMessage }],
     });
