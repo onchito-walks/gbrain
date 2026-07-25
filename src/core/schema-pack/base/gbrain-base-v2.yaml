@@ -326,18 +326,28 @@ link_types:
     inverse: relates_to
   - name: mentions
   - name: discusses
+  # Preserve the relation inference rules from gbrain-base. The v2 taxonomy
+  # consolidated page types but must not discard the evidence-based NER layer.
   - name: founded
     inverse: founded_by
+    inference:
+      regex: \b(founded|founder of|co-?founded|started)\b
   - name: works_at
     inverse: employs
+    inference:
+      regex: \b(works? at|employed by|works? for|joined|hired by|ceo of|cto of|cmo of)\b
   - name: invested_in
     inverse: investor_of
+    inference:
+      regex: \b(invested in|backed|seeded|funded|wrote a check)\b
   - name: sourced_from
   - name: derived_from
   - name: supersedes
   - name: redirects_to
   - name: attended
     inverse: attended_by
+    inference:
+      page_type: meeting
   - name: authored
     inverse: authored_by
   - name: attributed_to
