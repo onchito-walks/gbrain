@@ -3181,12 +3181,16 @@ export function computeNightlyQualityProbeHealthCheck(
   events: ReadonlyArray<{ outcome: string; ts: string; detail?: string }>,
 ): Check {
   const name = 'nightly_quality_probe_health';
-  if (!probeEnabled && events.length === 0) {
-    // Quiet skip — surface enable hint only when explicitly asked to.
+  if (!probeEnabled) {
+    // This is an opt-in evaluation. Historical audit events remain evidence,
+    // but cannot make a deliberately disabled feature unhealthy.
+    const historical = events.length > 0
+      ? ` ${events.length} historical event${events.length === 1 ? '' : 's'} retained in audit.`
+      : '';
     return {
       name,
       status: 'ok',
-      message: `disabled (opt-in). Enable with: gbrain config set autopilot.nightly_quality_probe.enabled true`,
+      message: `disabled (opt-in).${historical} Enable with: gbrain config set autopilot.nightly_quality_probe.enabled true`,
     };
   }
   if (events.length === 0) {
