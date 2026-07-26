@@ -1010,9 +1010,13 @@ async function runPhaseExtract(
   // missing → 'default' and its pages JOIN drops every row on a federated
   // brain ("Links: created 0 from N pages" every cycle).
   sourceId?: string,
+  // Captured before sync begins. Mention extraction uses strict updated_at >
+  // this boundary, so pages imported by this cycle are included while an idle
+  // cycle does no body scan.
+  mentionSince?: string,
 ): Promise<PhaseResult> {
   try {
-    const { runExtractCore } = await import('../commands/extract.ts');
+    const { runExtractCore, extractMentionsFromDb } = await import('../commands/extract.ts');
     const { loadConfig } = await import('./config.ts');
     // Default off: the incremental cycle extracts body links only unless the
     // operator opts in to keeping externally-edited frontmatter links fresh too.
@@ -1052,6 +1056,12 @@ async function runPhaseExtract(
     });
     const linksCreated = result?.links_created ?? 0;
     const timelineCreated = result?.timeline_entries_created ?? 0;
+    // Ordinary extraction parses explicit markdown/frontmatter links. Keep
+    // body-text entity mentions in the cycle as an incremental DB subpass.
+    const mentionResult = await extractMentionsFromDb(
+      engine, false, false, undefined, mentionSince, { sourceIdFilter: sourceId },
+    );
+    const mentionLinksCreated = mentionResult.created;
     const incremental = changedSlugs !== undefined;
     return {
       phase: 'extract',
@@ -1061,7 +1071,7 @@ async function runPhaseExtract(
         ? `${linksCreated} link(s), ${timelineCreated} timeline entries (incremental: ${changedSlugs.length} slugs)`
         : `${linksCreated} link(s), ${timelineCreated} timeline entries`,
       details: {
-        linksCreated, timelineCreated,
+        linksCreated, mentionLinksCreated, timelineCreated,
         pages_processed: result?.pages_processed ?? 0,
         incremental,
         ...(incremental ? { slugs_targeted: changedSlugs.length } : {}),
@@ -1783,7 +1793,7 @@ export async function runCycle(
         // If sync didn't run (phases exclude it) or failed, syncPagesAffected
         // is undefined → extract falls back to full walk (safe default).
         progress.start('cycle.extract');
-        const { result, duration_ms } = await timePhase(() => runPhaseExtract(engine, brainDir, dryRun, syncPagesAffected, opts.signal, cycleSourceId));
+        const { result, duration_ms } = await timePhase(() => runPhaseExtract(engine, brainDir, dryRun, syncPagesAffected, opts.signal, cycleSourceId, timestamp));
         result.duration_ms = duration_ms;
         phaseResults.push(result);
         progress.finish();

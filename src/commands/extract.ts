@@ -1851,7 +1851,8 @@ export async function extractStaleFromDB(
  * source A mentions entity in source B → no link created. v1
  * conservative posture; relaxable in a future wave.
  */
-async function extractMentionsFromDb(
+/** Library entrypoint shared by the CLI and maintenance cycle. */
+export async function extractMentionsFromDb(
   engine: BrainEngine,
   dryRun: boolean,
   jsonMode: boolean,
