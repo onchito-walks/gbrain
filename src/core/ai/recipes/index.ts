@@ -9,6 +9,7 @@ import type { Recipe } from '../types.ts';
 import { openai } from './openai.ts';
 import { google } from './google.ts';
 import { anthropic } from './anthropic.ts';
+import { claudeCli } from './claude-cli.ts';
 import { ollama } from './ollama.ts';
 import { openrouter } from './openrouter.ts';
 import { voyage } from './voyage.ts';
@@ -18,6 +19,7 @@ import { together } from './together.ts';
 import { llamaServer } from './llama-server.ts';
 import { minimax } from './minimax.ts';
 import { dashscope } from './dashscope.ts';
+import { dashscopeRerank } from './dashscope-rerank.ts';
 import { zhipu } from './zhipu.ts';
 import { azureOpenAI } from './azure-openai.ts';
 import { zeroentropyai } from './zeroentropyai.ts';
@@ -32,6 +34,7 @@ const ALL: Recipe[] = [
   openai,
   google,
   anthropic,
+  claudeCli,
   ollama,
   openrouter,
   voyage,
@@ -43,6 +46,7 @@ const ALL: Recipe[] = [
   rhp,
   minimax,
   dashscope,
+  dashscopeRerank,
   zhipu,
   azureOpenAI,
   zeroentropyai,
