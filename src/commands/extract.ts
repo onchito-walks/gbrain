@@ -1927,11 +1927,13 @@ export async function extractMentionsFromDb(
       if (jsonMode) {
         process.stderr.write(JSON.stringify({ event: 'batch_error', size: batch.length, error: msg }) + '\n');
       } else {
-        console.error(`  batch error (${batch.length} link rows lost): ${msg}`);
+        console.error(`  batch error (${batch.length} mention-link rows not checkpointed): ${msg}`);
       }
-    } finally {
-      batch.length = 0;
+      // A successful CLI exit is the maintenance cursor's commit signal. Do
+      // not checkpoint pages or advance that cursor after a failed DB write.
+      throw e;
     }
+    batch.length = 0;
   }
 
   // v0.41.19.0 (T5 — codex fix #1): flush links FIRST, commit pending
