@@ -46,7 +46,8 @@ import {
   __setPackLocatorForTests,
   _resetPackLocatorForTests,
 } from '../core/schema-pack/index.ts';
-import type { SchemaPackManifest, PackPrimitive } from '../core/schema-pack/manifest-v1.ts';
+import type { SchemaPackManifest, PackPrimitive, PackRetypeMappingRule } from '../core/schema-pack/manifest-v1.ts';
+import { runRetypeCore, type RetypeRule } from '../core/schema-pack/retype.ts';
 import { PACK_PRIMITIVES } from '../core/schema-pack/manifest-v1.ts';
 import { gbrainPath, loadConfig, configPath, toEngineConfig } from '../core/config.ts';
 
@@ -73,6 +74,7 @@ export async function runSchema(args: string[]): Promise<void> {
     case 'usage':    return runUsageCmd(args.slice(1));
     case 'stats':    return runStatsCmd(args.slice(1));
     case 'sync':     return runSyncCmd(args.slice(1));
+    case 'retype':   return runRetypeCmd(args.slice(1));
     case 'reload':   return runReloadCmd(args.slice(1));
     case 'add-type': return runAddTypeCmd(args.slice(1));
     case 'remove-type': return runRemoveTypeCmd(args.slice(1));
@@ -149,6 +151,8 @@ Discovery + repair:
   review-orphans          List pages with no active-pack type match
   sync [--apply]          Backfill page.type for rows matching pack prefixes
                           (dry-run by default; chunked UPDATE on apply)
+  retype <from> <to>      Apply one explicit active-pack mapping only
+                          (dry-run by default; requires --apply)
 
 All new verbs accept --json. Verbs scoped by source accept --source <id>.
 Pass --force to bypass per-pack lock contention on writes.
@@ -992,6 +996,44 @@ async function runSyncCmd(args: string[]): Promise<void> {
     if (!apply && result.total_would_apply > 0) {
       console.log(`\nRun \`gbrain schema sync --apply\` to backfill page.type.`);
     }
+  });
+}
+
+
+async function runRetypeCmd(args: string[]): Promise<void> {
+  const positional = args.filter((arg, i) => !arg.startsWith('--') && args[i - 1] !== '--source');
+  const fromType = positional[0];
+  const toType = positional[1];
+  if (positional.length !== 2 || !fromType || !toType) {
+    console.error('Usage: gbrain schema retype <from> <to> [--source <id>] [--apply] [--json]');
+    process.exit(2);
+  }
+  const apply = args.includes('--apply');
+  const { json, source } = parseFlags(args);
+  const pack = await loadActivePack({ cfg: loadConfig(), remote: false });
+  const rules = (pack.manifest.mapping_rules ?? []).filter((rule): rule is PackRetypeMappingRule =>
+    rule.kind === 'retype' && rule.from_type !== '*unknown*' && rule.from_type === fromType && rule.to_type === toType,
+  );
+  if (rules.length !== 1) {
+    console.error(`Refusing retype ${fromType} → ${toType}: active pack '${pack.manifest.name}' does not declare exactly one matching explicit retype rule.`);
+    process.exit(2);
+  }
+  const rule = rules[0]!;
+  await withConnectedEngine(async (engine) => {
+    const ctx = { engine, config: {}, logger: console, dryRun: !apply, remote: false, sourceId: source } as never;
+    const result = await runRetypeCore(ctx, {
+      apply, sourceId: source,
+      rules: [{ from_type: rule.from_type, to_type: rule.to_type, subtype: rule.subtype, subtype_field: rule.subtype_field, path_filter: rule.path_filter } satisfies RetypeRule],
+      onProgress: (info: { appliedSoFar: number; ruleTotal: number }) => { if (!json) process.stderr.write(`  [retype] ${fromType} → ${toType}: ${info.appliedSoFar}/${info.ruleTotal}\n`); },
+    });
+    if (json) return void console.log(JSON.stringify(result, null, 2));
+    const entry = result.per_rule[0]!;
+    console.log(`Pack: ${result.pack_identity ?? pack.identity}`);
+    console.log(`Mode: ${apply ? 'APPLY' : 'DRY-RUN'}`);
+    console.log(`Mapping: ${fromType} → ${toType}`);
+    console.log(`Source: ${source ?? '(all sources)'}`);
+    console.log(`Total: would_apply=${entry.would_apply} applied=${entry.applied}`);
+    if (!apply && entry.sample_slugs.length) console.log(`Sample: ${entry.sample_slugs.join(', ')}`);
   });
 }
 
