@@ -26,7 +26,7 @@
  */
 
 import { writeFileSync, unlinkSync, existsSync } from 'fs';
-import { join } from 'path';
+import { join, isAbsolute } from 'path';
 import { createHash } from 'crypto';
 import type { BrainEngine } from '../core/engine.ts';
 import {
@@ -46,6 +46,7 @@ import {
   SourceOpError,
   type SourceRow as OpsSourceRow,
 } from '../core/sources-ops.ts';
+import { isInsideGitRepo } from '../core/git-remote.ts';
 import {
   resolveSourceWithTier,
   SOURCE_TIER_NAMES,
@@ -648,6 +649,61 @@ async function runRename(engine: BrainEngine, args: string[]): Promise<void> {
   }
   await engine.executeRaw(`UPDATE sources SET name = $1 WHERE id = $2`, [newName, id]);
   console.log(`Renamed source "${id}" display: ${src.name} → ${newName} (id is immutable).`);
+}
+
+// ── Subcommand: set-path ─────────────────────────────────────
+
+/**
+ * Rebind an existing source to a different local checkout without touching
+ * source-scoped pages, chunks, embeddings, links, or ingest history. This is
+ * deliberately separate from `sources add/remove`: those operations change
+ * source rows and can create or cascade-delete content.
+ */
+async function runSetPath(engine: BrainEngine, args: string[]): Promise<void> {
+  const id = args[0];
+  let path: string | undefined;
+  let dryRun = false;
+
+  if (!id) {
+    console.error('Usage: gbrain sources set-path <id> --path <absolute-path> [--dry-run]');
+    process.exit(2);
+  }
+  for (let i = 1; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--path') { path = args[++i]; continue; }
+    if (arg === '--dry-run') { dryRun = true; continue; }
+    console.error(`Unknown flag: ${arg}`);
+    process.exit(2);
+  }
+  if (!path || !isAbsolute(path)) {
+    console.error('Error: --path must be an absolute path.');
+    process.exit(2);
+  }
+  if (!existsSync(path)) {
+    console.error(`Error: source path does not exist: ${path}`);
+    process.exit(2);
+  }
+  if (!isInsideGitRepo(path)) {
+    console.error(`Error: source path is not inside a Git repository: ${path}`);
+    process.exit(2);
+  }
+
+  const src = await fetchSource(engine, id);
+  if (!src) {
+    console.error(`Source \"${id}\" not found.`);
+    process.exit(4);
+  }
+  if (src.local_path === path) {
+    console.log(`Source \"${id}\" is already bound to ${path}; no change.`);
+    return;
+  }
+  console.log(`Source \"${id}\" path: ${src.local_path ?? '(none)'} → ${path}`);
+  if (dryRun) {
+    console.log('(dry-run; source registration only; no pages or sync state changed)');
+    return;
+  }
+  await engine.executeRaw(`UPDATE sources SET local_path = $1 WHERE id = $2`, [path, id]);
+  console.log('Rebound source path only; no pages, chunks, embeddings, links, or sync were changed.');
 }
 
 // ── Subcommand: default ─────────────────────────────────────
@@ -1338,6 +1394,7 @@ export async function runSources(engine: BrainEngine, args: string[]): Promise<v
     case 'list':       return runList(engine, rest);
     case 'remove':     return runRemove(engine, rest);
     case 'rename':     return runRename(engine, rest);
+    case 'set-path':   return runSetPath(engine, rest);
     case 'default':    return runDefault(engine, rest);
     case 'attach':     runAttach(rest); return;
     case 'detach':     runDetach(); return;
@@ -1401,6 +1458,9 @@ Subcommands:
                                     Without <id>: purge all expired archives.
                                     With <id>: force-purge (requires --confirm-destructive).
   rename <id> <new-name>            Rename display name (id is immutable).
+  set-path <id> --path <absolute-path> [--dry-run]
+                                    Rebind local checkout only; validates Git path
+                                    and never deletes, imports, or syncs source data.
   default <id>                      Set the brain-level default source.
   attach <id>                       Write .gbrain-source in CWD (like kubectl context).
   detach                            Remove .gbrain-source from CWD.
