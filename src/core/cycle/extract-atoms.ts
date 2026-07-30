@@ -60,6 +60,14 @@ import { slugifySegment } from '../sync.ts';
 
 const DEFAULT_BUDGET_USD = 0.3;
 
+/**
+ * Conservative source-size cap for atom extraction prompts. Source text can
+ * tokenize much more densely than ordinary prose (for example, code or raw
+ * transcripts), so keep it well below the model context limit while reserving
+ * room for the extraction instructions and the 4,096-token response.
+ */
+export const EXTRACT_SOURCE_MAX_CHARS = 16_000;
+
 // v0.42+ TODO: read atom_type enum from active pack manifest at runtime.
 const ATOM_TYPES = [
   'insight', 'anecdote', 'quote', 'framework', 'statistic',
@@ -580,7 +588,7 @@ export async function runPhaseExtractAtoms(
         messages: [
           {
             role: 'user',
-            content: `Source: ${originLabel}\n\n---\n\n${item.content.slice(0, 50_000)}`,
+            content: `Source: ${originLabel}\n\n---\n\n${item.content.slice(0, EXTRACT_SOURCE_MAX_CHARS)}`,
           },
         ],
         maxTokens: 4096,

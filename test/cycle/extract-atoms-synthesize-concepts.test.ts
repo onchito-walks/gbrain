@@ -13,7 +13,11 @@
 
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
 import { PGLiteEngine } from '../../src/core/pglite-engine.ts';
-import { runPhaseExtractAtoms, parseAtomsResponse } from '../../src/core/cycle/extract-atoms.ts';
+import {
+  runPhaseExtractAtoms,
+  parseAtomsResponse,
+  EXTRACT_SOURCE_MAX_CHARS,
+} from '../../src/core/cycle/extract-atoms.ts';
 import { runPhaseSynthesizeConcepts } from '../../src/core/cycle/synthesize-concepts.ts';
 import { resetPgliteState } from '../helpers/reset-pglite.ts';
 import type { ChatResult, ChatOpts } from '../../src/core/ai/gateway.ts';
@@ -153,6 +157,26 @@ describe('v0.41 T5: runPhaseExtractAtoms via stubbed chat', () => {
 
     expect(result.status).toBe('ok');
     expect(receivedModel).toBe(specialistModel);
+  });
+
+  test('caps long source content in the extraction prompt', async () => {
+    let receivedPrompt = '';
+    const chat = async (opts: ChatOpts): Promise<ChatResult> => {
+      receivedPrompt = String(opts.messages?.[0]?.content ?? '');
+      return stubChat('[{"title":"capped","atom_type":"insight","body":"b"}]')(opts);
+    };
+    const source = 'A'.repeat(EXTRACT_SOURCE_MAX_CHARS) + 'TAIL_NOT_SENT';
+
+    const result = await runPhaseExtractAtoms(engine, {
+      _transcripts: [{ filePath: '/long.txt', content: source, contentHash: 'long-hash' }],
+      _pages: [],
+      _chat: chat,
+      dryRun: true,
+    });
+
+    expect(result.status).toBe('ok');
+    expect(receivedPrompt).toContain('A'.repeat(EXTRACT_SOURCE_MAX_CHARS));
+    expect(receivedPrompt).not.toContain('TAIL_NOT_SENT');
   });
 
   test('dry-run counts but does NOT write', async () => {
