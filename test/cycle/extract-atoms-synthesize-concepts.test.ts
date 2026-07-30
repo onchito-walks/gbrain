@@ -134,6 +134,27 @@ describe('v0.41 T5: runPhaseExtractAtoms via stubbed chat', () => {
     expect(rows.length).toBe(2);
   });
 
+  test('passes models.extract_atoms explicitly to the chat seam', async () => {
+    const specialistModel = 'r-hp-gemma:gemma-specialist-test';
+    await engine.setConfig('models.default', 'anthropic:global-chat-test');
+    await engine.setConfig('models.extract_atoms', specialistModel);
+    let receivedModel: string | undefined;
+    const chat = async (opts: ChatOpts): Promise<ChatResult> => {
+      receivedModel = opts.model;
+      return stubChat('[{"title":"specialist","atom_type":"insight","body":"b"}]')(opts);
+    };
+
+    const result = await runPhaseExtractAtoms(engine, {
+      _transcripts: [{ filePath: '/specialist.txt', content: 'content', contentHash: 'specialist-hash' }],
+      _pages: [],
+      _chat: chat,
+      dryRun: true,
+    });
+
+    expect(result.status).toBe('ok');
+    expect(receivedModel).toBe(specialistModel);
+  });
+
   test('dry-run counts but does NOT write', async () => {
     const chat = stubChat(`[{"title":"x","atom_type":"insight","body":"b"}]`);
     const result = await runPhaseExtractAtoms(engine, {

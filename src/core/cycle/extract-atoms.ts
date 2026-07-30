@@ -54,6 +54,7 @@ import type { ProgressReporter } from '../progress.ts';
 import { chat as gatewayChat } from '../ai/gateway.ts';
 import { writeReceipt } from '../extract/receipt-writer.ts';
 import { upsertExtractRollup } from '../extract/rollup-writer.ts';
+import { resolveModel } from '../model-config.ts';
 import { createHash } from 'crypto';
 import { slugifySegment } from '../sync.ts';
 
@@ -522,7 +523,15 @@ export async function runPhaseExtractAtoms(
     };
   }
 
-  // 4. Per work-item: extract atoms via Haiku
+  // Atom extraction is a specialist operation: do not let gateway chat fall
+  // back to the process-wide chat model when models.extract_atoms is set.
+  const model = await resolveModel(engine, {
+    configKey: 'models.extract_atoms',
+    tier: 'utility',
+    fallback: 'haiku',
+  });
+
+  // 4. Per work-item: extract atoms via the configured specialist model
   let totalAtomsExtracted = 0;
   let transcriptsProcessed = 0;
   let pagesProcessed = 0;
@@ -566,6 +575,7 @@ export async function runPhaseExtractAtoms(
     const originLabel = item.kind === 'transcript' ? item.filePath : item.slug;
     try {
       const result = await chat({
+        model,
         system: EXTRACT_PROMPT,
         messages: [
           {
