@@ -197,7 +197,7 @@ describe('shared wiring helper holds the cycle lock (5A)', () => {
   // not from `r.status` (which collapses partial and total failure into the
   // same 'warn' value — the exact discard the issue reports).
   it('runBatch derives providerFailure from failures.length + zero processed items, not r.status', () => {
-    const runBatchBlock = src.slice(src.indexOf('runBatch: async () => {'));
+    const runBatchBlock = src.slice(src.indexOf('runBatch: async'));
     expect(runBatchBlock).toContain('d.failures');
     expect(runBatchBlock).toContain('transcripts_processed');
     expect(runBatchBlock).toContain('pages_processed');

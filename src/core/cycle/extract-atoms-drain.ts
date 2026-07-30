@@ -40,7 +40,12 @@ export interface ExtractAtomsDrainDeps {
    * result was actually a total provider outage, not a partial/no-op batch.
    * Omit/false for the ordinary partial-success or nothing-to-do cases.
    */
-  runBatch: () => Promise<{ extracted: number; skipped: number; providerFailure?: boolean }>;
+  runBatch: (deadlineAtMs: number) => Promise<{
+    extracted: number;
+    skipped: number;
+    providerFailure?: boolean;
+    budgetExhausted?: boolean;
+  }>;
   /** Count remaining eligible-but-unextracted pages, or null on query error. */
   countRemaining: () => Promise<number | null>;
   /** Injectable clock. Production: Date.now. */
@@ -98,7 +103,7 @@ export async function runExtractAtomsDrain(
       const before = await deps.countRemaining();
       if (before === 0) { stopped = 'drained'; break; }
 
-      const r = await deps.runBatch();
+      const r = await deps.runBatch(deadline);
       extracted += r.extracted;
       skipped += r.skipped;
       batches++;
@@ -112,6 +117,13 @@ export async function runExtractAtomsDrain(
       if (r.providerFailure) {
         providerFailure = true;
         stopped = 'provider_failure';
+        break;
+      }
+
+      // The phase cooperatively stopped before starting another item. Do not
+      // rediscover and start another batch after its enclosing window elapsed.
+      if (r.budgetExhausted) {
+        stopped = 'window';
         break;
       }
 
@@ -192,11 +204,12 @@ export async function runExtractAtomsDrainForSource(
   return runExtractAtomsDrain(
     {
       withLock: (work) => withRefreshingLock(engine, lockId, work, { ttlMinutes: 5 }),
-      runBatch: async () => {
+      runBatch: async (deadlineAtMs) => {
         const r = await runPhaseExtractAtoms(engine, {
           sourceId: extractionSourceId,
           dryRun: false,
           brainDir: opts.brainDir,
+          deadlineAtMs,
         });
         const d = (r.details ?? {}) as Record<string, unknown>;
         // issue #3218: `r.status` collapses to 'warn' whether ONE item failed
@@ -215,6 +228,7 @@ export async function runExtractAtomsDrainForSource(
           extracted: Number(d.atoms_extracted ?? 0),
           skipped: Number(d.duplicates_skipped ?? 0),
           providerFailure: failures.length > 0 && itemsSucceeded === 0,
+          budgetExhausted: d.reason === 'time_budget_exhausted',
         };
       },
       countRemaining: () => countExtractAtomsBacklog(engine, extractionSourceId),

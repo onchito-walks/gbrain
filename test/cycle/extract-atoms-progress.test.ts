@@ -126,4 +126,44 @@ describe('extract_atoms progress wiring (T4)', () => {
     });
     expect(result.phase).toBe('extract_atoms');
   });
+
+  test('stops before the next item when the cooperative deadline expires', async () => {
+    const realNow = Date.now;
+    let now = realNow();
+    Date.now = () => now;
+    const deadlineAtMs = now + 10_000;
+    let calls = 0;
+    try {
+      const result = await runPhaseExtractAtoms(engine, {
+        sourceId: 'default',
+        _transcripts: [
+          { filePath: '/tmp/t1.txt', content: 'a', contentHash: 'budget-1'.repeat(4) },
+          { filePath: '/tmp/t2.txt', content: 'b', contentHash: 'budget-2'.repeat(4) },
+        ],
+        _pages: [],
+        _chat: async () => {
+          calls++;
+          now = deadlineAtMs + 1;
+          const text = JSON.stringify([{ title: 'A', atom_type: 'insight', body: 'body a' }]);
+          return {
+            text,
+            blocks: [{ type: 'text', text }],
+            stopReason: 'end',
+            usage: { input_tokens: 100, output_tokens: 50, cache_read_tokens: 0, cache_creation_tokens: 0 },
+            model: 'anthropic:claude-haiku-4-5',
+            providerId: 'anthropic',
+          };
+        },
+        deadlineAtMs,
+      });
+      expect(calls).toBe(1);
+      expect(result.status).toBe('warn');
+      expect(result.details?.transcripts_processed).toBe(1);
+      expect(result.details?.transcripts_skipped_budget).toBe(1);
+      expect(result.details?.reason).toBe('time_budget_exhausted');
+      expect(result.details?.stopped).toBe('deadline');
+    } finally {
+      Date.now = realNow;
+    }
+  });
 });

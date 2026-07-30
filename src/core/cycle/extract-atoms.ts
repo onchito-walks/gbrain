@@ -172,6 +172,12 @@ export interface ExtractAtomsOpts {
    * `heartbeat()` on the passed reporter.
    */
   progress?: ProgressReporter;
+  /**
+   * Absolute wall-clock deadline for this phase. The phase checks it before
+   * starting each work item so bounded callers can return a partial result
+   * without interrupting an in-flight LLM call or losing completed writes.
+   */
+  deadlineAtMs?: number | null;
 }
 
 interface ExtractedAtom {
@@ -545,6 +551,7 @@ export async function runPhaseExtractAtoms(
   let pagesProcessed = 0;
   let transcriptsSkipped = 0;
   let pagesSkipped = 0;
+  let stoppedAtDeadline = false;
   const failures: Array<{ source: string; error: string }> = [];
   let estimatedSpendUsd = 0;
   const budgetCap = DEFAULT_BUDGET_USD;
@@ -572,8 +579,17 @@ export async function runPhaseExtractAtoms(
     }
   }
 
-  for (const item of work) {
+  for (let workIndex = 0; workIndex < work.length; workIndex++) {
+    const item = work[workIndex];
     await maybeYield();
+    if (opts.deadlineAtMs != null && Date.now() >= opts.deadlineAtMs) {
+      stoppedAtDeadline = true;
+      for (const deferred of work.slice(workIndex)) {
+        if (deferred.kind === 'transcript') transcriptsSkipped++;
+        else pagesSkipped++;
+      }
+      break;
+    }
     if (estimatedSpendUsd >= budgetCap) {
       if (item.kind === 'transcript') transcriptsSkipped++;
       else pagesSkipped++;
@@ -695,7 +711,7 @@ export async function runPhaseExtractAtoms(
 
   return {
     phase: 'extract_atoms',
-    status: failures.length > 0 ? 'warn' : 'ok',
+    status: failures.length > 0 || stoppedAtDeadline ? 'warn' : 'ok',
     duration_ms: 0,
     summary:
       `extract_atoms: ${totalAtomsExtracted} atoms from ` +
@@ -703,8 +719,9 @@ export async function runPhaseExtractAtoms(
       `${pagesProcessed}/${pages.length} pages` +
       (failures.length > 0 ? ` (${failures.length} failed)` : '') +
       (transcriptsSkipped + pagesSkipped > 0
-        ? ` (${transcriptsSkipped + pagesSkipped} budget-skipped)`
-        : ''),
+        ? ` (${transcriptsSkipped + pagesSkipped} ${stoppedAtDeadline ? 'deferred by time budget' : 'budget-skipped'})`
+        : '') +
+      (stoppedAtDeadline ? ' (time budget exhausted)' : ''),
     details: {
       atoms_extracted: totalAtomsExtracted,
       transcripts_processed: transcriptsProcessed,
@@ -719,6 +736,7 @@ export async function runPhaseExtractAtoms(
       budget_usd: budgetCap,
       source_id: sourceId,
       dry_run: opts.dryRun ?? false,
+      ...(stoppedAtDeadline ? { reason: 'time_budget_exhausted', stopped: 'deadline' } : {}),
     },
   };
 }
