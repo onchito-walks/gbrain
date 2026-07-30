@@ -29,6 +29,7 @@ import { mistral } from './mistral.ts';
 import { nvidia } from './nvidia.ts';
 import { rhp } from './r-hp.ts';
 import { rhpGemma } from './r-hp-gemma.ts';
+import { deepseek } from './deepseek.ts';
 import { perplexity } from './perplexity.ts';
 
 const ALL: Recipe[] = [
@@ -46,6 +47,7 @@ const ALL: Recipe[] = [
   llamaServerReranker,
   rhp,
   rhpGemma,
+  deepseek,
   minimax,
   dashscope,
   dashscopeRerank,
