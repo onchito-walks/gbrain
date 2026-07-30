@@ -66,7 +66,7 @@ const DEFAULT_BUDGET_USD = 0.3;
  * transcripts), so keep it well below the model context limit while reserving
  * room for the extraction instructions and the 4,096-token response.
  */
-export const EXTRACT_SOURCE_MAX_CHARS = 16_000;
+export const EXTRACT_SOURCE_MAX_CHARS = 4_000;
 
 // v0.42+ TODO: read atom_type enum from active pack manifest at runtime.
 const ATOM_TYPES = [
