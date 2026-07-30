@@ -1,21 +1,14 @@
-// v0.33 whoknows eval fixture — 10 real routing queries from Garry's
-// brain. Each row: {query, expected_top_3_slugs, notes}.
-//
-// Source: reference/vc-intro-network ("Who Takes Intros from Garry") and
-// adjacent routing context Garry maintains in his brain. Slugs verified
-// against the markdown source at ~/git/brain/people/<slug>.md as of
-// 2026-05-11.
-//
-// Ground truth is "would Garry actually route this intro / consider this
-// person an expert here." A hit is achieved when ANY of the expected
-// top-3 slugs appears in the eval's top-3 returned slugs.
-{"query":"healthtech seed VC who takes intros from Garry","expected_top_3_slugs":["people/eric-vishria","people/kristina-shen","people/rebecca-kaden"],"notes":"Eric Vishria (Benchmark, 1-Best, healthtech), Kristina Shen (Chemistry, healthtech), Rebecca Kaden (USV)"}
-{"query":"fintech seed investor","expected_top_3_slugs":["people/nick-shalek","people/parul-singh","people/elad-gil"],"notes":"Nick Shalek (Ribbit Capital, fintech-focused), Parul Singh (645 Ventures), Elad Gil (angel)"}
-{"query":"AI angel investor early stage","expected_top_3_slugs":["people/elad-gil","people/lachy-groom","people/gokul-rajaram"],"notes":"Three top-rated angels for AI seed rounds"}
-{"query":"Founders Fund partner for defense and deep tech","expected_top_3_slugs":["people/trae-stephens"],"notes":"Trae Stephens, defense partner at FF"}
-{"query":"USV partner for consumer marketplaces","expected_top_3_slugs":["people/rebecca-kaden"],"notes":"Rebecca Kaden at USV"}
-{"query":"Accel partner who funds YC seed","expected_top_3_slugs":["people/amit-kumar"],"notes":"Amit Kumar at Accel, 102 YC deals"}
-{"query":"YC partner who advises on fintech","expected_top_3_slugs":["people/diana-hu","people/jon-xu"],"notes":"Diana Hu and Jon Xu, YC GPs"}
-{"query":"Menlo Ventures Series A lead","expected_top_3_slugs":["people/joff-redfern"],"notes":"Joff Redfern at Menlo, ex-CPO Atlassian"}
-{"query":"Quiet Capital partner","expected_top_3_slugs":["people/lee-edwards"],"notes":"Lee Edwards at Quiet Capital, 52 YC deals"}
-{"query":"Index Ventures partner for SaaS","expected_top_3_slugs":["people/nina-achadian"],"notes":"Nina Achadian at Index, 69 YC deals"}
+// Oracle-moncho GBrain Whoknows evaluation fixture — 2026-07-30.
+// Ground truth is deliberately scoped to the entity corpus that actually exists
+// in this brain. A hit requires any expected slug in the returned top three.
+// Labels were checked against the canonical pages and a live --explain query.
+{"query":"Voron 3D printer toolchanger","expected_top_3_slugs":["companies/voron-design"],"notes":"Canonical VORON ecosystem and toolchanger research entity."}
+{"query":"VORON StealthChanger","expected_top_3_slugs":["companies/voron-design"],"notes":"StealthChanger is an anchored Voron toolchanger topic."}
+{"query":"3D printer toolchanger documentation","expected_top_3_slugs":["companies/voron-design"],"notes":"Voron Design is the only current entity with evidence-backed toolchanger anchors."}
+{"query":"Voron build ecosystem","expected_top_3_slugs":["companies/voron-design"],"notes":"Canonical entity for the VORON build ecosystem."}
+{"query":"Oracle ARM infrastructure","expected_top_3_slugs":["companies/oracle"],"notes":"Oracle is the canonical infrastructure vendor entity in this brain."}
+{"query":"Oracle cloud VPS","expected_top_3_slugs":["companies/oracle"],"notes":"Oracle is the relevant provider entity for the live ARM VPS."}
+{"query":"Oracle storage operations","expected_top_3_slugs":["companies/oracle"],"notes":"Oracle entity is the routing target for the host/storage operational corpus."}
+{"query":"Hermes Agent architecture","expected_top_3_slugs":["people/hermes"],"notes":"Hermes is the current agent entity for architecture and operating knowledge."}
+{"query":"Hermes Trailhead research","expected_top_3_slugs":["people/hermes"],"notes":"Hermes owns the local Trailhead research workflow context."}
+{"query":"Nous Research Hermes","expected_top_3_slugs":["people/hermes"],"notes":"Hermes is the explicit agent entity for this framework context."}
