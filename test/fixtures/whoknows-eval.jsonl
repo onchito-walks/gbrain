@@ -7,8 +7,8 @@
 {"query":"3D printer toolchanger documentation","expected_top_3_slugs":["companies/voron-design"],"notes":"Voron Design is the only current entity with evidence-backed toolchanger anchors."}
 {"query":"Voron build ecosystem","expected_top_3_slugs":["companies/voron-design"],"notes":"Canonical entity for the VORON build ecosystem."}
 {"query":"Oracle ARM infrastructure","expected_top_3_slugs":["companies/oracle"],"notes":"Oracle is the canonical infrastructure vendor entity in this brain."}
-{"query":"Oracle cloud VPS","expected_top_3_slugs":["companies/oracle"],"notes":"Oracle is the relevant provider entity for the live ARM VPS."}
+{"query":"Oracle cloud VPS","expected_top_3_slugs":["people/raymond"],"notes":"Whoknows routes to the active canonical operator with direct, current Oracle VPS evidence; provider lookup is tested separately."}
 {"query":"Oracle storage operations","expected_top_3_slugs":["companies/oracle"],"notes":"Oracle entity is the routing target for the host/storage operational corpus."}
-{"query":"Hermes Agent architecture","expected_top_3_slugs":["people/hermes"],"notes":"Hermes is the current agent entity for architecture and operating knowledge."}
+{"query":"Hermes Agent architecture","expected_top_3_slugs":["people/raymond"],"notes":"Whoknows routes to the active architect with direct, current architecture evidence; Hermes entity lookup is tested separately."}
 {"query":"Hermes Trailhead research","expected_top_3_slugs":["people/hermes"],"notes":"Hermes owns the local Trailhead research workflow context."}
 {"query":"Nous Research Hermes","expected_top_3_slugs":["people/hermes"],"notes":"Hermes is the explicit agent entity for this framework context."}
