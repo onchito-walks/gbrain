@@ -28,6 +28,7 @@ import { moonshot } from './moonshot.ts';
 import { mistral } from './mistral.ts';
 import { nvidia } from './nvidia.ts';
 import { rhp } from './r-hp.ts';
+import { rhpGemma } from './r-hp-gemma.ts';
 import { perplexity } from './perplexity.ts';
 
 const ALL: Recipe[] = [
@@ -44,6 +45,7 @@ const ALL: Recipe[] = [
   llamaServer,
   llamaServerReranker,
   rhp,
+  rhpGemma,
   minimax,
   dashscope,
   dashscopeRerank,
