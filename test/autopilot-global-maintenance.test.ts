@@ -85,6 +85,7 @@ describe('dispatchGlobalMaintenance — single-flight gate', () => {
     expect(r.dispatched).toBe(true);
     expect(added.length).toBe(1);
     expect(added[0].name).toBe('autopilot-global-maintenance');
+    expect(added[0].opts.queue).toBe('maintenance');
     expect(added[0].opts.idempotency_key).toBe('autopilot-global:s1');
     expect(added[0].opts.maxWaiting).toBe(1); // structural single-flight
     expect(added[0].data.phases).toEqual(GLOBAL_PHASES);

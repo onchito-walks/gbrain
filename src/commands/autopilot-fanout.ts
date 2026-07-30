@@ -553,7 +553,10 @@ export async function dispatchGlobalMaintenance(
     'autopilot-global-maintenance',
     { repoPath: opts.repoPath, phases: GLOBAL_PHASES },
     {
-      queue: 'default',
+      // Keep brain-wide maintenance off the source-cycle queue so a slow global
+      // pass cannot block source-scoped autopilot work. It is consumed by a
+      // dedicated low-priority maintenance worker.
+      queue: 'maintenance',
       // Structural single-flight: one global job per slot; maxWaiting:1 coalesces
       // any surplus so a slow brain-wide pass never stacks duplicates.
       idempotency_key: `autopilot-global:${opts.slot}`,
