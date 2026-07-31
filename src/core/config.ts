@@ -1002,6 +1002,9 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'emotional_weight.high_tags',
   'emotional_weight.user_holder',
   // Cycle phase config
+  // Global concept synthesis is default-on upstream; operators can temporarily
+  // contain unclosed concept growth without disabling the whole autopilot.
+  'cycle.synthesize_concepts.enabled',
   'cycle.grade_takes.write_gstack_learnings',
   // Content sanity (v0.41)
   'content_sanity.bytes_warn',

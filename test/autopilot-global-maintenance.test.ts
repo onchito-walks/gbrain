@@ -132,6 +132,27 @@ describe('autopilot-global-maintenance handler stamps last_global_at (PGLite)', 
     return handlers;
   }
 
+  test('cycle.synthesize_concepts.enabled=false excludes synthesis but reports the containment', async () => {
+    await engine.setConfig('cycle.synthesize_concepts.enabled', 'false');
+    const repoPath = mkdtempSync(join(tmpdir(), 'gbrain-global-maintenance-disabled-synthesis-'));
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name, local_path) VALUES ($1, $2, $3)`,
+      ['repo-disabled', 'repo-disabled', repoPath],
+    );
+    const handlers = await captureHandlers();
+    const result = await handlers.get('autopilot-global-maintenance')!({
+      data: { phases: ['synthesize_concepts', 'orphans'], repoPath },
+      signal: undefined,
+    });
+    const synthesis = result.report.phases.find((p: any) => p.phase === 'synthesize_concepts');
+    expect(synthesis).toMatchObject({
+      status: 'ok',
+      summary: 'disabled by cycle.synthesize_concepts.enabled',
+      details: { enabled: false, skipped: true },
+    });
+    expect(result.report.phases.find((p: any) => p.phase === 'orphans')).toBeTruthy();
+  });
+
   test('runs global phases (no source_id) and stamps autopilot.last_global_at on success', async () => {
     expect(await engine.getConfig(LAST_GLOBAL_AT_KEY)).toBeNull();
     const repoPath = mkdtempSync(join(tmpdir(), 'gbrain-global-maintenance-'));

@@ -1877,7 +1877,15 @@ export async function registerBuiltinHandlers(
     const requested = Array.isArray(job.data.phases)
       ? (job.data.phases as string[]).filter((p) => validPhases.has(p as never))
       : GLOBAL_PHASES;
-    const phases = (requested.length > 0 ? requested : GLOBAL_PHASES) as typeof GLOBAL_PHASES;
+    const requestedPhases = requested.length > 0 ? requested : GLOBAL_PHASES;
+    // Default-on containment gate: synthesis writes durable concept pages, but
+    // some deployments intentionally pause it while their post-synthesis graph
+    // closure is repaired. Preserve every other global maintenance phase.
+    const synthesizeConfig = await engine.getConfig('cycle.synthesize_concepts.enabled');
+    const synthesizeEnabled = !['false', '0', 'off', 'no'].includes(String(synthesizeConfig ?? 'true').toLowerCase());
+    const phases = (synthesizeEnabled
+      ? requestedPhases
+      : requestedPhases.filter((phase) => phase !== 'synthesize_concepts')) as typeof GLOBAL_PHASES;
 
     const report = await runCycle(engine, {
       brainDir: repoPath,
@@ -1888,6 +1896,16 @@ export async function registerBuiltinHandlers(
       forceGlobalOrphans: true,
       yieldBetweenPhases: async () => { await new Promise<void>((r) => setImmediate(r)); },
     });
+
+    if (!synthesizeEnabled && requestedPhases.includes('synthesize_concepts')) {
+      report.phases.push({
+        phase: 'synthesize_concepts',
+        status: 'ok',
+        duration_ms: 0,
+        summary: 'disabled by cycle.synthesize_concepts.enabled',
+        details: { enabled: false, skipped: true },
+      });
+    }
 
     // Stamp last_global_at only on a non-failed run so a failed pass stays stale
     // and re-dispatches next tick (self-healing retry).
