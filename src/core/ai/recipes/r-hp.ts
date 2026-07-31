@@ -23,7 +23,10 @@ export const rhp: Recipe = {
       supports_tools: true,
       supports_subagent_loop: true,
       supports_prompt_cache: false,
-      max_context_tokens: 32768,
+      // The promoted Qwen runtime serves a quantized 65,536-token KV cache.
+      // Keep this aligned with the appliance health contract; lower stale
+      // declarations make otherwise-valid GBrain prompts fail before inference.
+      max_context_tokens: 65536,
       cost_per_1m_input_usd: 0,
       cost_per_1m_output_usd: 0,
       price_last_verified: '2026-07-21',
