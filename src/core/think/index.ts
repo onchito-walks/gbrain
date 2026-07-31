@@ -158,7 +158,7 @@ const DEFAULT_MAX_OUTPUT_TOKENS = 4000;
  * job. Keep its bounded JSON responses operational while the normal/provider
  * defaults retain their larger budget.
  */
-const R_HP_MAX_OUTPUT_TOKENS = 1024;
+const R_HP_MAX_OUTPUT_TOKENS = 256;
 
 // Thinking-by-default Claude 5 models (`anthropic:claude-*-5`) spend a large
 // share of the output budget on internal reasoning before emitting any answer,

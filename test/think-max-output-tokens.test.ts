@@ -10,8 +10,8 @@ import { maxOutputTokensFor } from '../src/core/think/index.ts';
 
 describe('maxOutputTokensFor — thinking-default headroom', () => {
   test('the local r-hp appliance has a bounded practical output budget', () => {
-    expect(maxOutputTokensFor('r-hp:unsloth/Qwen3.5-9B-GGUF')).toBe(1024);
-    expect(maxOutputTokensFor('r-hp-gemma:gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf')).toBe(1024);
+    expect(maxOutputTokensFor('r-hp:unsloth/Qwen3.5-9B-GGUF')).toBe(256);
+    expect(maxOutputTokensFor('r-hp-gemma:gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf')).toBe(256);
   });
 
   test('Claude 5 family gets 16000', () => {
