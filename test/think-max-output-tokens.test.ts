@@ -9,6 +9,11 @@ import { describe, test, expect } from 'bun:test';
 import { maxOutputTokensFor } from '../src/core/think/index.ts';
 
 describe('maxOutputTokensFor — thinking-default headroom', () => {
+  test('the local r-hp appliance has a bounded practical output budget', () => {
+    expect(maxOutputTokensFor('r-hp:unsloth/Qwen3.5-9B-GGUF')).toBe(1024);
+    expect(maxOutputTokensFor('r-hp-gemma:gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf')).toBe(1024);
+  });
+
   test('Claude 5 family gets 16000', () => {
     expect(maxOutputTokensFor('anthropic:claude-sonnet-5')).toBe(16000);
     expect(maxOutputTokensFor('anthropic:claude-opus-5')).toBe(16000);
@@ -17,7 +22,7 @@ describe('maxOutputTokensFor — thinking-default headroom', () => {
     expect(maxOutputTokensFor('anthropic/claude-sonnet-5')).toBe(16000); // slash form
   });
 
-  test('non-Claude-5 and non-Anthropic keep 4000', () => {
+  test('other non-Claude-5 models keep 4000', () => {
     expect(maxOutputTokensFor('anthropic:claude-opus-4-8')).toBe(4000);
     expect(maxOutputTokensFor('anthropic:claude-haiku-4-5')).toBe(4000);
     expect(maxOutputTokensFor('anthropic:claude-sonnet-4-6')).toBe(4000);

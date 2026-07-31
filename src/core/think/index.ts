@@ -152,6 +152,13 @@ export interface ThinkResult {
 }
 
 const DEFAULT_MAX_OUTPUT_TOKENS = 4000;
+/**
+ * The single RTX 3060 Ti appliance is a useful local synthesis lane, but a
+ * 4k-token ceiling can turn an ordinary structured answer into a many-minute
+ * job. Keep its bounded JSON responses operational while the normal/provider
+ * defaults retain their larger budget.
+ */
+const R_HP_MAX_OUTPUT_TOKENS = 1024;
 
 // Thinking-by-default Claude 5 models (`anthropic:claude-*-5`) spend a large
 // share of the output budget on internal reasoning before emitting any answer,
@@ -161,6 +168,7 @@ const DEFAULT_MAX_OUTPUT_TOKENS = 4000;
 const THINKING_DEFAULT_MAX_OUTPUT_TOKENS = 16000;
 const THINKING_BY_DEFAULT_MODEL_RE = /^anthropic[:/]claude-[a-z0-9]+-5(?:[.-]|$)/i;
 export function maxOutputTokensFor(modelStr: string): number {
+  if (/^r-hp(?:-gemma)?(?::|\/)/i.test(modelStr)) return R_HP_MAX_OUTPUT_TOKENS;
   return THINKING_BY_DEFAULT_MODEL_RE.test(modelStr)
     ? THINKING_DEFAULT_MAX_OUTPUT_TOKENS
     : DEFAULT_MAX_OUTPUT_TOKENS;
