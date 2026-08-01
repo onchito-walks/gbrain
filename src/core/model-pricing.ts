@@ -93,6 +93,11 @@ export const CANONICAL_PRICING: Record<string, ModelPricing> = {
   // ── Together / DeepSeek (cross-modal-eval panel) ───────────────────────
   'together:meta-llama/Llama-3.3-70B-Instruct-Turbo': { input: 0.88, output: 0.88 },
   'deepseek:deepseek-chat':               { input:  0.14, output:  0.28 },
+  // v0.42.x local tuning (2026-08-01): DeepSeek V4 Flash is the hard-locked
+  // routing model on this host; without an entry the BudgetTracker hard-fails
+  // every chat call under --max-cost with "no pricing entry for model".
+  // Rate parity with deepseek-chat until upstream publishes V4 Flash rates.
+  'deepseek:deepseek-v4-flash':            { input:  0.14, output:  0.28 },
 };
 
 /**
