@@ -77,11 +77,19 @@ const SCORING_MIN_ACCEPTANCE = 0.05;
 
 /**
  * Large agent transcripts can contain thousands of tool-output, code, or
- * attachment lines between real messages. Ten independently timestamped
+ * attachment lines between real messages. Independently timestamped
  * inline anchors are still strong evidence of a conversation. This bypass is
  * deliberately unavailable to broad frontmatter/no-time patterns.
+ *
+ * v0.42.x local tuning (2026-08-01): 10 was too strict for vaulted
+ * Telegram/CLI transcripts that were already split into small parts —
+ * a 3-message part in a 145-line markdown page scored 0.021 (below the
+ * 5% floor) and was permanently skipped as no_match, leaving the page
+ * stuck in the conversation-facts backlog with no terminal audit row.
+ * 3 is the smallest count that still distinguishes a real exchange from
+ * one-off prose that happens to look like a chat anchor.
  */
-const MIN_ABSOLUTE_INLINE_TIMESTAMPED_MESSAGES = 10;
+const MIN_ABSOLUTE_INLINE_TIMESTAMPED_MESSAGES = 3;
 
 /**
  * Tie-breaker priority: lower index wins on score tie. Mirrors
