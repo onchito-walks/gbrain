@@ -22,10 +22,12 @@ export const rhp: Recipe = {
       models: [],
       supports_tools: true,
       supports_subagent_loop: true,
-      supports_prompt_cache: false,
-      // The promoted Qwen runtime serves a quantized 65,536-token KV cache.
-      // Keep this aligned with the appliance health contract; lower stale
-      // declarations make otherwise-valid GBrain prompts fail before inference.
+      // r-hp retains the Qwen KV/prefix cache locally for the promoted runtime.
+      // This is real local prompt reuse (not an Anthropic billing feature):
+      // repeated subagent turns share the appliance's stable prompt prefix at
+      // zero marginal token cost.  Keep it aligned with the r-hp health
+      // contract; declaring this false incorrectly blocks the local loop.
+      supports_prompt_cache: true,
       max_context_tokens: 65536,
       cost_per_1m_input_usd: 0,
       cost_per_1m_output_usd: 0,
