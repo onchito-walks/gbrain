@@ -5419,8 +5419,8 @@ export class PostgresEngine implements BrainEngine {
     // Archive (raw/), generated, and daily-log pages are not expected to
     // participate in the curated graph. Filtered in TS because the policy
     // includes per-brain config overrides. PGLite path has the same logic.
-    const pageScopeRows = await sql<{ slug: string; islanded: boolean; has_timeline: boolean }[]>`
-      SELECT p.slug,
+    const pageScopeRows = await sql<{ slug: string; type: string; islanded: boolean; has_timeline: boolean }[]>`
+      SELECT p.slug, p.type,
              (NOT EXISTS (SELECT 1 FROM links l WHERE l.to_page_id = p.id)
               AND NOT EXISTS (SELECT 1 FROM links l WHERE l.from_page_id = p.id)) as islanded,
              EXISTS (SELECT 1 FROM timeline_entries te WHERE te.page_id = p.id) as has_timeline
@@ -5435,6 +5435,15 @@ export class PostgresEngine implements BrainEngine {
     const linkablePageCount = linkablePages.length;
     const orphanPages = linkablePages.filter(row => row.islanded).length;
     const linkableTimelinePages = linkablePages.filter(row => row.has_timeline).length;
+    // The orphan component measures the curated graph, not every standalone
+    // document. Doctor's orphan_ratio and graph_coverage already use this
+    // entity scope; aligning the score removes the contradiction where a fully
+    // connected entity graph is penalized by intentionally standalone notes,
+    // receipts, and imported reference pages.
+    const graphEntityPages = linkablePages.filter(row =>
+      row.type === 'entity' || row.type === 'person' || row.type === 'company' || row.type === 'organization',
+    );
+    const orphanGraphEntities = graphEntityPages.filter(row => row.islanded).length;
     const deadLinks = Number(h.dead_links);
     const linkCount = Number(h.link_count);
 
@@ -5445,7 +5454,7 @@ export class PostgresEngine implements BrainEngine {
     // an all-archive brain has no curated graph to penalize.
     const timelineCoverageWhole =
       linkablePageCount > 0 ? Math.min(linkableTimelinePages / linkablePageCount, 1) : 1;
-    const noOrphans = linkablePageCount > 0 ? 1 - (orphanPages / linkablePageCount) : 1;
+    const noOrphans = graphEntityPages.length > 0 ? 1 - (orphanGraphEntities / graphEntityPages.length) : 1;
     const noDeadLinks = pageCount > 0 ? 1 - Math.min(deadLinks / pageCount, 1) : 1;
     // Per-component points. Sum equals brainScore by construction.
     //
