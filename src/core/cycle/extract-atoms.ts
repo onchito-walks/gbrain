@@ -579,8 +579,44 @@ export async function runPhaseExtractAtoms(
     }
   }
 
-  for (let workIndex = 0; workIndex < work.length; workIndex++) {
-    const item = work[workIndex];
+  // Chat calls dominate this phase. Bounded parallelism preserves the shared
+  // cycle lock and serializes DB writes per item, while avoiding one slow
+  // provider response serializing an entire catch-up run. Default remains 1;
+  // catch-up workers opt in through GBRAIN_EXTRACT_ATOMS_WORKERS.
+  const configuredWorkers = Number(process.env.GBRAIN_EXTRACT_ATOMS_WORKERS ?? '1');
+  const workers = Number.isFinite(configuredWorkers)
+    ? Math.max(1, Math.min(4, Math.floor(configuredWorkers)))
+    : 1;
+
+  type ItemResult = {
+    item: AtomWorkItem;
+    atoms: ReturnType<typeof parseAtomsResponse>;
+    spend: number;
+    error?: string;
+  };
+  async function extractOne(item: AtomWorkItem): Promise<ItemResult> {
+    const originLabel = item.kind === 'transcript' ? item.filePath : item.slug;
+    try {
+      const result = await chat({
+        model,
+        system: EXTRACT_PROMPT,
+        messages: [{ role: 'user', content: `Source: ${originLabel}\n\n---\n\n${item.content.slice(0, EXTRACT_SOURCE_MAX_CHARS)}` }],
+        // Atom JSON is deliberately compact; 1,024 avoids reserving a
+        // multi-thousand-token completion per 4K source page.
+        maxTokens: 1024,
+      });
+      await maybeYield();
+      return {
+        item,
+        atoms: parseAtomsResponse(result.text),
+        spend: (result.usage.input_tokens * 0.8 + result.usage.output_tokens * 4.0) / 1_000_000,
+      };
+    } catch (err) {
+      return { item, atoms: [], spend: 0, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  for (let workIndex = 0; workIndex < work.length; workIndex += workers) {
     await maybeYield();
     if (opts.deadlineAtMs != null && Date.now() >= opts.deadlineAtMs) {
       stoppedAtDeadline = true;
@@ -591,125 +627,52 @@ export async function runPhaseExtractAtoms(
       break;
     }
     if (estimatedSpendUsd >= budgetCap) {
-      if (item.kind === 'transcript') transcriptsSkipped++;
-      else pagesSkipped++;
-      continue;
+      for (const deferred of work.slice(workIndex)) {
+        if (deferred.kind === 'transcript') transcriptsSkipped++;
+        else pagesSkipped++;
+      }
+      break;
     }
 
-    const originLabel = item.kind === 'transcript' ? item.filePath : item.slug;
-    try {
-      const result = await chat({
-        model,
-        system: EXTRACT_PROMPT,
-        messages: [
-          {
-            role: 'user',
-            content: `Source: ${originLabel}\n\n---\n\n${item.content.slice(0, EXTRACT_SOURCE_MAX_CHARS)}`,
-          },
-        ],
-        // Atom JSON is deliberately compact; 1,024 avoids reserving a
-        // multi-thousand-token completion per 4K source page, which was
-        // serializing catch-up drains behind unnecessary provider latency.
-        maxTokens: 1024,
-      });
-      // Post-await yield: closes the "long LLM call past TTL" hazard
-      // codex flagged. The 30s throttle inside maybeYield bounds the
-      // actual refresh rate so this is cheap when calls are fast.
-      await maybeYield();
-
-      // Rough cost estimate — Haiku at ~$0.80/M input + $4/M output
-      estimatedSpendUsd +=
-        (result.usage.input_tokens * 0.8 + result.usage.output_tokens * 4.0) / 1_000_000;
-
-      const atoms = parseAtomsResponse(result.text);
-      if (atoms.length === 0) {
-        if (item.kind === 'transcript') transcriptsProcessed++;
-        else pagesProcessed++;
+    const results = await Promise.all(work.slice(workIndex, workIndex + workers).map(extractOne));
+    for (const result of results) {
+      const item = result.item;
+      const originLabel = item.kind === 'transcript' ? item.filePath : item.slug;
+      estimatedSpendUsd += result.spend;
+      if (result.error) {
+        failures.push({ source: originLabel, error: result.error });
         continue;
       }
-
-      if (!opts.dryRun) {
+      const atoms = result.atoms;
+      if (atoms.length > 0 && !opts.dryRun) {
         for (const atom of atoms) {
           const srcRef = item.kind === 'transcript' ? item.filePath : item.slug;
           const slug = atomSlug(atom.title, srcRef);
-          const originFrontmatter =
-            item.kind === 'transcript'
-              ? { source_path: item.filePath }
-              : { source_slug: item.slug };
-          // v0.41.2.1 D9 #1 — thread sourceId through every putPage so
-          // atoms land in the source we discovered them from. Pre-fix
-          // the third arg was missing and atoms always wrote to 'default'.
-          await engine.putPage(
-            slug,
-            {
-              title: atom.title,
-              type: 'atom',
-              compiled_truth: atom.body,
-              frontmatter: {
-                type: 'atom',
-                atom_type: atom.atom_type,
-                ...originFrontmatter,
-                source_hash: item.contentHash.slice(0, 16),
-                ...(atom.source_quote && { source_quote: atom.source_quote }),
-                ...(atom.lesson && { lesson: atom.lesson }),
-                ...(atom.concepts && atom.concepts.length > 0 && { concepts: atom.concepts }),
-                ...(atom.virality_score !== undefined && { virality_score: atom.virality_score }),
-                ...(atom.emotional_register && { emotional_register: atom.emotional_register }),
-                extracted_at: new Date().toISOString(),
-                extracted_by: 'extract_atoms-v0.41.2.1',
-              },
-              timeline: '',
-            },
-            { sourceId },
-          );
-          totalAtomsExtracted++;
+          const originFrontmatter = item.kind === 'transcript'
+            ? { source_path: item.filePath }
+            : { source_slug: item.slug };
+          await engine.putPage(slug, {
+            title: atom.title,
+            type: 'atom',
+            compiled_truth: atom.body,
+            frontmatter: {
+              type: 'atom', atom_type: atom.atom_type, ...originFrontmatter,
+              source_hash: item.contentHash.slice(0, 16),
+              ...(atom.source_quote && { source_quote: atom.source_quote }),
+              ...(atom.lesson && { lesson: atom.lesson }),
+              ...(atom.concepts && atom.concepts.length > 0 && { concepts: atom.concepts }),
+              ...(atom.virality_score !== undefined && { virality_score: atom.virality_score }),
+              ...(atom.emotional_register && { emotional_register: atom.emotional_register }),
+              extracted_at: new Date().toISOString(), extracted_by: 'extract_atoms-v0.41.2.1',
+            }, timeline: '',
+          }, { sourceId });
         }
-      } else {
-        totalAtomsExtracted += atoms.length; // count for dry-run reporting
       }
+      totalAtomsExtracted += atoms.length;
       if (item.kind === 'transcript') transcriptsProcessed++;
       else pagesProcessed++;
-      // v0.41.19.0 (T4): one tick per processed item, with a count note.
-      // Reporter rate-limits to ~1 line/sec; safe to tick every iter.
       opts.progress?.tick(1, `${totalAtomsExtracted} atoms / ${duplicatesSkipped} skipped`);
-    } catch (err) {
-      failures.push({
-        source: originLabel,
-        error: err instanceof Error ? err.message : String(err),
-      });
     }
-  }
-
-  // v0.42 Wave B2: write extract receipt + rollup row when the phase
-  // actually extracted atoms. Both are best-effort per F-OUT-19 —
-  // audit-trail / search-visibility surfaces don't block the phase result.
-  if (!opts.dryRun && totalAtomsExtracted > 0) {
-    const runId = `atoms-${Date.now().toString(36)}-${sourceId.slice(0, 4)}`;
-    try {
-      await writeReceipt(engine, {
-        kind: 'atoms',
-        source_id: sourceId,
-        run_id: runId,
-        round: 'single',
-        extracted_at: new Date().toISOString(),
-        total_rows: totalAtomsExtracted,
-        cost_usd: estimatedSpendUsd,
-        summary:
-          `Extracted ${totalAtomsExtracted} atoms from ` +
-          `${transcriptsProcessed} transcripts + ${pagesProcessed} pages.`,
-      });
-    } catch (err) {
-      console.error(`[extract_atoms] receipt write failed: ${(err as Error).message}`);
-    }
-  }
-  if (!opts.dryRun) {
-    await upsertExtractRollup(engine, {
-      kind: 'atoms',
-      source_id: sourceId,
-      cost_delta: estimatedSpendUsd,
-      round_completed_delta: failures.length === 0 ? 1 : 0,
-      halt_delta: failures.length > 0 ? 1 : 0,
-    });
   }
 
   return {
