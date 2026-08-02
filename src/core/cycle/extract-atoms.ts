@@ -607,7 +607,10 @@ export async function runPhaseExtractAtoms(
             content: `Source: ${originLabel}\n\n---\n\n${item.content.slice(0, EXTRACT_SOURCE_MAX_CHARS)}`,
           },
         ],
-        maxTokens: 4096,
+        // Atom JSON is deliberately compact; 1,024 avoids reserving a
+        // multi-thousand-token completion per 4K source page, which was
+        // serializing catch-up drains behind unnecessary provider latency.
+        maxTokens: 1024,
       });
       // Post-await yield: closes the "long LLM call past TTL" hazard
       // codex flagged. The 30s throttle inside maybeYield bounds the
