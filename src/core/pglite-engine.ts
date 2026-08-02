@@ -5315,7 +5315,7 @@ export class PGLiteEngine implements BrainEngine {
     // participate in the curated graph. Filtered in TS because the policy
     // includes per-brain config overrides.
     const { rows: pageScopeRows } = await this.db.query(`
-      SELECT p.slug,
+      SELECT p.slug, p.type,
              (NOT EXISTS (SELECT 1 FROM links l WHERE l.to_page_id = p.id)
               AND NOT EXISTS (SELECT 1 FROM links l WHERE l.from_page_id = p.id)) as islanded,
              EXISTS (SELECT 1 FROM timeline_entries te WHERE te.page_id = p.id) as has_timeline
@@ -5327,11 +5327,15 @@ export class PGLiteEngine implements BrainEngine {
     const embedCoverage = Number(r.embed_coverage);
     const stalePages = await this.countStalePagesForExtraction({ versionTs: LINK_EXTRACTOR_VERSION_TS });
     const orphanOverrides = await loadOrphanPolicyOverrides(this);
-    const linkablePages = (pageScopeRows as { slug: string; islanded: boolean; has_timeline: boolean }[])
+    const linkablePages = (pageScopeRows as { slug: string; type: string; islanded: boolean; has_timeline: boolean }[])
       .filter(row => !shouldExcludeFromOrphanReporting(row.slug, orphanOverrides));
     const linkablePageCount = linkablePages.length;
     const orphanPages = linkablePages.filter(row => row.islanded).length;
     const linkableTimelinePages = linkablePages.filter(row => row.has_timeline).length;
+    const graphEntityPages = linkablePages.filter(row =>
+      row.type === 'entity' || row.type === 'person' || row.type === 'company' || row.type === 'organization',
+    );
+    const orphanGraphEntities = graphEntityPages.filter(row => row.islanded).length;
     const deadLinks = Number(r.dead_links);
     const linkCount = Number(r.link_count);
 
@@ -5341,7 +5345,7 @@ export class PGLiteEngine implements BrainEngine {
     // an all-archive brain has no curated graph to penalize.
     const timelineCoverageDensity =
       linkablePageCount > 0 ? Math.min(linkableTimelinePages / linkablePageCount, 1) : 1;
-    const noOrphans = linkablePageCount > 0 ? 1 - (orphanPages / linkablePageCount) : 1;
+    const noOrphans = graphEntityPages.length > 0 ? 1 - (orphanGraphEntities / graphEntityPages.length) : 1;
     const noDeadLinks = pageCount > 0 ? 1 - Math.min(deadLinks / pageCount, 1) : 1;
     // Bug 11 — per-component points. Sum equals brainScore by construction
     // so `doctor` can render a breakdown that adds up to the total.

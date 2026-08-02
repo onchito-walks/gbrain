@@ -181,6 +181,24 @@ describe('linkable scope — archive pages do not drag the score', () => {
     expect(h.timeline_coverage_score).toBe(15); // 1/1 linkable pages covered
   });
 
+  test('standalone notes do not dilute the curated entity orphan score', async () => {
+    await engine.putPage('people/alice-example', { type: 'person', title: 'Alice', compiled_truth: 'x', frontmatter: {} });
+    await engine.putPage('companies/acme-example', { type: 'company', title: 'Acme', compiled_truth: 'x', frontmatter: {} });
+    const { rows } = await (engine as any).db.query(`SELECT id, slug FROM pages`);
+    const ids = Object.fromEntries(rows.map((r: any) => [r.slug, r.id]));
+    await (engine as any).db.query(
+      `INSERT INTO links (from_page_id, to_page_id, link_type) VALUES ($1, $2, 'works_at')`,
+      [ids['people/alice-example'], ids['companies/acme-example']],
+    );
+    const before = await engine.getHealth();
+    await engine.putPage('notes/standalone-reference', { type: 'note', title: 'Reference', compiled_truth: 'x', frontmatter: {} });
+    const after = await engine.getHealth();
+    // The note remains visible to orphan reporting, but cannot dilute the
+    // weighted component for the curated entity graph.
+    expect(after.orphan_pages).toBe(before.orphan_pages + 1);
+    expect(after.no_orphans_score).toBe(before.no_orphans_score);
+  });
+
   test('an islanded curated page still counts as an orphan', async () => {
     await engine.putPage('people/forgotten-example', { type: 'person', title: 'F', compiled_truth: 'x', frontmatter: {} });
     const h = await engine.getHealth();
