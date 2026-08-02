@@ -585,7 +585,7 @@ export async function runPhaseExtractAtoms(
   // catch-up workers opt in through GBRAIN_EXTRACT_ATOMS_WORKERS.
   const configuredWorkers = Number(process.env.GBRAIN_EXTRACT_ATOMS_WORKERS ?? '1');
   const workers = Number.isFinite(configuredWorkers)
-    ? Math.max(1, Math.min(4, Math.floor(configuredWorkers)))
+    ? Math.max(1, Math.min(12, Math.floor(configuredWorkers)))
     : 1;
 
   type ItemResult = {
