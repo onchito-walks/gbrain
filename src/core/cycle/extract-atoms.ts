@@ -270,6 +270,7 @@ export async function discoverExtractablePages(
       ${RAW_SOURCE_HOLDER_EXCLUSION_SQL}
       AND length(COALESCE(p.compiled_truth, '')) >= $3
       ${hasFilter ? "AND p.slug = ANY($5::text[])" : ''}
+      AND COALESCE(p.frontmatter->>'atoms_extracted_source_hash', '') <> substring(p.content_hash from 1 for 16)
       AND NOT EXISTS (
         SELECT 1
         FROM pages atom
@@ -342,6 +343,7 @@ export async function countExtractAtomsBacklog(
            AND COALESCE(p.frontmatter->>'dream_generated', '') <> 'true'
            ${RAW_SOURCE_HOLDER_EXCLUSION_SQL}
            AND length(COALESCE(p.compiled_truth, '')) >= $3
+           AND COALESCE(p.frontmatter->>'atoms_extracted_source_hash', '') <> substring(p.content_hash from 1 for 16)
            AND NOT EXISTS (
              SELECT 1 FROM pages atom
              WHERE atom.type = 'atom' AND atom.source_id = $1
@@ -356,6 +358,7 @@ export async function countExtractAtomsBacklog(
            AND COALESCE(p.frontmatter->>'dream_generated', '') <> 'true'
            ${RAW_SOURCE_HOLDER_EXCLUSION_SQL}
            AND length(COALESCE(p.compiled_truth, '')) >= $2
+           AND COALESCE(p.frontmatter->>'atoms_extracted_source_hash', '') <> substring(p.content_hash from 1 for 16)
            AND NOT EXISTS (
              SELECT 1 FROM pages atom
              WHERE atom.type = 'atom' AND atom.source_id = p.source_id
@@ -644,6 +647,18 @@ export async function runPhaseExtractAtoms(
         continue;
       }
       const atoms = result.atoms;
+      // A valid empty extraction is terminal for this exact source revision.
+      // Without this receipt, truthfully atom-free pages re-enter discovery
+      // forever and turn the backlog check into a no-progress loop.
+      if (atoms.length === 0 && item.kind === 'page' && !opts.dryRun) {
+        await engine.executeRaw(
+          `UPDATE pages SET frontmatter = jsonb_set(
+             COALESCE(frontmatter, '{}'::jsonb),
+             '{atoms_extracted_source_hash}', to_jsonb($1::text), true
+           ) WHERE source_id = $2 AND slug = $3 AND deleted_at IS NULL`,
+          [item.contentHash.slice(0, 16), sourceId, item.slug],
+        );
+      }
       if (atoms.length > 0 && !opts.dryRun) {
         for (const atom of atoms) {
           const srcRef = item.kind === 'transcript' ? item.filePath : item.slug;
