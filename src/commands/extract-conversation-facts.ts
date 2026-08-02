@@ -694,6 +694,28 @@ async function processPage(
   }
   const segments = splitIntoSegments(messages, { sinceIso });
   if (segments.length === 0) {
+    // Two distinct zero-segment outcomes:
+    //  (1) Fresh pass (no sinceIso): the page parsed but has no segment
+    //      of >= MIN_SEGMENT_MESSAGES messages (single-message transcript,
+    //      all messages below the gap/size floor, or unparseable body).
+    //      There is genuinely nothing to extract -- mark it complete with
+    //      a terminal audit row (0 facts) + checkpoint so the doctor
+    //      backlog stops flagging it forever. New messages arriving later
+    //      produce a new terminal row on the next incremental pass.
+    //  (2) Resume pass (sinceIso set from a prior checkpoint): zero new
+    //      segments means "no new messages since checkpoint" -- plain skip.
+    if (!sinceIso) {
+      try {
+        await writeTerminalAuditRow(state.engine, state.sourceId, page.slug, 0);
+        state.cpMap.set(cpMapKey(state.sourceId, page.slug), page.updated_at ?? '1970-01-01T00:00:00Z');
+      } catch (err) {
+        if (isAbortError(err)) throw err;
+        process.stderr.write(
+          `[extract-conversation-facts] ${page.slug} zero-segment terminal audit write failed: ${(err as Error).message}
+`,
+        );
+      }
+    }
     state.result.pages_skipped++;
     return { newEndIso: null };
   }
