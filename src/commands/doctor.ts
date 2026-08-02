@@ -5229,6 +5229,14 @@ export async function buildChecks(
         for (const page of sample) {
           const body = await readConversationBodyForParsing(engine, page);
           const result = parseConversation(body, { page, noPolish: true, noFallback: true });
+          // Zero-message pages are index/collection parents (transcript
+          // split parents, stubs) or sub-threshold fragments -- not format
+          // misses. The extractor already terminal-rows them; counting
+          // them as _no_match makes the coverage warning untriagable.
+          if (result.messages.length === 0) {
+            hitsByPattern['empty'] = (hitsByPattern['empty'] ?? 0) + 1;
+            continue;
+          }
           const id = result.matched_pattern_id ?? '_no_match';
           hitsByPattern[id] = (hitsByPattern[id] ?? 0) + 1;
           if (result.phase === 'no_match') unmatched++;
