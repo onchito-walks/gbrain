@@ -6,11 +6,11 @@ export const rhp: Recipe = {
   name: 'r-hp Unsloth Studio (private local inference)',
   tier: 'openai-compat',
   implementation: 'openai-compatible',
-  base_url_default: 'http://100.107.145.48:8888/v1',
+  base_url_default: 'http://100.107.145.48:8082/v1',
   // The appliance endpoint is selected by environment so service units can
   // promote a different compatible runner without patching the recipe.
   resolveOpenAICompatConfig: (env) => ({
-    baseURL: (env.R_HP_BASE_URL || 'http://100.107.145.48:8888/v1').replace(/\/+$/, ''),
+    baseURL: (env.R_HP_BASE_URL || 'http://100.107.145.48:8082/v1').replace(/\/+$/, ''),
   }),
   auth_env: {
     required: ['R_HP_API_KEY'],
