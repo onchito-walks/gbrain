@@ -10,7 +10,7 @@ import type { PageType } from '../core/types.ts';
 
 export async function runExport(engine: BrainEngine, args: string[]) {
   const dirIdx = args.indexOf('--dir');
-  const outDir = dirIdx !== -1 ? args[dirIdx + 1] : './export';
+  const requestedOutDir = dirIdx !== -1 ? args[dirIdx + 1] : './export';
 
   const repoIdx = args.indexOf('--repo');
   const explicitRepoPath = repoIdx !== -1 ? args[repoIdx + 1] : null;
@@ -22,13 +22,17 @@ export async function runExport(engine: BrainEngine, args: string[]) {
   const slugPrefix = slugPrefixIdx !== -1 ? args[slugPrefixIdx + 1] : undefined;
 
   const restoreOnly = args.includes('--restore-only');
+  // Restore every missing file-plane page without treating it as db_only.
+  // This is the recovery path for pages that were ingested into the DB but
+  // never materialized in the canonical source repository.
+  const restoreMissing = args.includes('--restore-missing');
 
   // Resolution chain (D5): explicit --repo → typed sources.getDefault() →
   // hard-error for restore-only paths (never fall through to cwd).
   // For non-restore exports, repoPath stays null because regular export
   // doesn't need a brain repo to run (D26 — exports include everything).
   let repoPath: string | null = explicitRepoPath;
-  if (restoreOnly && !repoPath) {
+  if ((restoreOnly || restoreMissing) && !repoPath) {
     repoPath = await getDefaultSourcePath(engine);
     if (!repoPath) {
       console.error(
@@ -42,6 +46,9 @@ export async function runExport(engine: BrainEngine, args: string[]) {
 
   // Load storage configuration if repo path is provided
   const storageConfig = repoPath ? loadStorageConfig(repoPath) : null;
+  // --restore-missing restores directly into the canonical repo by default.
+  // A supplied --dir keeps the operation usable for a staged recovery preview.
+  const outDir = restoreMissing && dirIdx === -1 ? repoPath! : requestedOutDir;
 
   // D5 + Codex P0: refuse --restore-only when there's no storage config to
   // scope the restore. Without storageConfig, the selective filter (db_only
@@ -70,7 +77,14 @@ export async function runExport(engine: BrainEngine, args: string[]) {
   // of loading every page in the brain. On a 200K-page brain where 95% is
   // db_only, this is roughly the same load — but on brains where only 5K
   // out of 200K are db_only, this is a ~40x reduction.
-  if (restoreOnly && repoPath && storageConfig) {
+  if (restoreMissing && repoPath) {
+    // Deliberately enumerate all live pages here: the defect class is a missing
+    // file mirror, not a storage-tier membership problem. Existing files are
+    // never overwritten.
+    pages = (await engine.listPages(filters)).filter(
+      (p) => !existsSync(join(repoPath!, p.slug + '.md')),
+    );
+  } else if (restoreOnly && repoPath && storageConfig) {
     const seen = new Set<string>();
     pages = [];
     for (const dir of storageConfig.db_only) {
@@ -95,7 +109,9 @@ export async function runExport(engine: BrainEngine, args: string[]) {
   } else {
     pages = await engine.listPages(filters);
   }
-  if (restoreOnly) {
+  if (restoreMissing) {
+    console.log(`Restoring ${pages.length} missing file-plane pages to ${outDir}/`);
+  } else if (restoreOnly) {
     console.log(`Restoring ${pages.length} db_only pages to ${outDir}/`);
   } else {
     console.log(`Exporting ${pages.length} pages to ${outDir}/`);
@@ -141,7 +157,7 @@ export async function runExport(engine: BrainEngine, args: string[]) {
 
   progress.finish();
   // Stdout summary preserved so scripts that grep for "Exported N pages" keep working.
-  if (restoreOnly) {
+  if (restoreMissing || restoreOnly) {
     console.log(`Restored ${exported} pages to ${outDir}/`);
   } else {
     console.log(`Exported ${exported} pages to ${outDir}/`);
