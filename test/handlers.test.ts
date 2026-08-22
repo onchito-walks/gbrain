@@ -12,7 +12,7 @@
 import { describe, test, expect, beforeAll, afterAll, mock } from 'bun:test';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { MinionWorker } from '../src/core/minions/worker.ts';
-import { registerBuiltinHandlers } from '../src/commands/jobs.ts';
+import { registerBuiltinHandlers, autonomousLlmAllowed, filterAutonomousCyclePhases } from '../src/commands/jobs.ts';
 import { configureGateway, getChatModel, resetGateway } from '../src/core/ai/gateway.ts';
 
 let engine: PGLiteEngine;
@@ -28,6 +28,22 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await engine.disconnect();
+});
+
+describe('autonomous LLM firebreak', () => {
+  test('fails closed unless the worker is explicitly opted in', () => {
+    expect(autonomousLlmAllowed({})).toBe(false);
+    expect(autonomousLlmAllowed({ GBRAIN_ALLOW_AUTONOMOUS_LLM: '1' })).toBe(true);
+  });
+
+  test('keeps deterministic cycle phases while removing paid phases by default', () => {
+    expect(filterAutonomousCyclePhases(['lint', 'sync', 'extract_atoms', 'propose_takes', 'extract'])).toEqual([
+      'lint', 'sync', 'extract',
+    ]);
+    expect(filterAutonomousCyclePhases(['extract_atoms'], { GBRAIN_ALLOW_AUTONOMOUS_LLM: '1' })).toEqual([
+      'extract_atoms',
+    ]);
+  });
 });
 
 describe('registerBuiltinHandlers', () => {
@@ -158,11 +174,15 @@ describe('autopilot-cycle handler — phase passthrough', () => {
     expect(handler).toBeDefined();
 
     const oldModel = await engine.getConfig('models.chat');
+    const oldAutonomousLlm = process.env.GBRAIN_ALLOW_AUTONOMOUS_LLM;
     configureGateway({
       chat_model: 'anthropic:claude-sonnet-4-6',
       env: { ANTHROPIC_API_KEY: 'stale-key', OPENAI_API_KEY: 'fresh-key' },
     });
     await engine.setConfig('models.chat', 'openai:gpt-5');
+    // This test covers the normal validation path. Production workers must
+    // explicitly opt in before any LLM-bearing handler can run.
+    process.env.GBRAIN_ALLOW_AUTONOMOUS_LLM = '1';
 
     try {
       await expect(handler({
@@ -174,6 +194,11 @@ describe('autopilot-cycle handler — phase passthrough', () => {
       expect(getChatModel()).toBe('openai:gpt-5');
     } finally {
       resetGateway();
+      if (oldAutonomousLlm === undefined) {
+        delete process.env.GBRAIN_ALLOW_AUTONOMOUS_LLM;
+      } else {
+        process.env.GBRAIN_ALLOW_AUTONOMOUS_LLM = oldAutonomousLlm;
+      }
       if (oldModel === null) {
         await engine.unsetConfig('models.chat');
       } else {
@@ -265,7 +290,7 @@ describe('autopilot-cycle handler — phase passthrough', () => {
     expect(phaseNames).toContain('sync');
   }, 30_000);
 
-  test('non-array phases value is ignored (falls back to all)', async () => {
+  test('non-array phases value defaults to the unattended safe phase set', async () => {
     const handler = (worker as any).handlers.get('autopilot-cycle');
     // String instead of array — should be ignored
     const result = await handler({
@@ -276,9 +301,29 @@ describe('autopilot-cycle handler — phase passthrough', () => {
 
     const report = (result as any).report;
     const phaseNames = report.phases.map((p: any) => p.phase);
-    // Should have all phases since the string was ignored
+    // The invalid value defaults to all phases, then the autonomous firebreak
+    // removes LLM-bearing phases such as embed.
     expect(phaseNames).toContain('lint');
     expect(phaseNames).toContain('sync');
-    expect(phaseNames).toContain('embed');
+    expect(phaseNames).not.toContain('embed');
   }, 30_000);
+
+  test('paid minion handlers fail closed without explicit operator opt-in', async () => {
+    const handler = (worker as any).handlers.get('enrich');
+    expect(handler).toBeDefined();
+
+    const oldAutonomousLlm = process.env.GBRAIN_ALLOW_AUTONOMOUS_LLM;
+    delete process.env.GBRAIN_ALLOW_AUTONOMOUS_LLM;
+    try {
+      await expect(handler({
+        data: { sourceId: 'default' },
+        signal: { aborted: false } as any,
+        job: { id: 14, name: 'enrich' } as any,
+      })).resolves.toMatchObject({ status: 'skipped', reason: 'autonomous_llm_disabled' });
+    } finally {
+      if (oldAutonomousLlm === undefined) delete process.env.GBRAIN_ALLOW_AUTONOMOUS_LLM;
+      else process.env.GBRAIN_ALLOW_AUTONOMOUS_LLM = oldAutonomousLlm;
+    }
+  });
+
 });

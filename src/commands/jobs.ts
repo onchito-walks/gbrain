@@ -47,7 +47,63 @@ const GATEWAY_REFRESH_JOB_NAMES = new Set([
   'embed-backfill',
   'extract-takes-from-pages',
   'embed-catch-up',
+  'skillopt',
+  'subagent',
+  'subagent_aggregator',
 ]);
+
+/**
+ * Paid inference must be an explicit operational choice for a long-lived
+ * worker.  A worker is normally a scheduler-owned process: permitting it to
+ * claim an LLM job merely because one was queued turns a stale timer, retry,
+ * or autopilot regression into unattended spend.
+ *
+ * Operators enable an intentionally bounded inference run with
+ * `GBRAIN_ALLOW_AUTONOMOUS_LLM=1` on that process.  The default is fail-closed.
+ * Direct foreground CLI commands are unaffected; this gate is only at the
+ * Minion worker boundary.
+ */
+const AUTONOMOUS_LLM_JOB_NAMES = new Set([
+  'subagent',
+  'subagent_aggregator',
+  'synthesize',
+  'patterns',
+  'consolidate',
+  'contextual_reindex_per_chunk',
+  'extract-conversation-facts',
+  'enrich',
+  'extract-atoms-drain',
+  'embed-backfill',
+  'embed-catch-up',
+  'extract-takes-from-pages',
+  'skillopt',
+]);
+
+const AUTONOMOUS_LLM_PHASES = new Set([
+  'synthesize',
+  'patterns',
+  'consolidate',
+  'propose_takes',
+  'grade_takes',
+  'calibration_profile',
+  'drift',
+  'extract_atoms',
+  'synthesize_concepts',
+  'conversation_facts_backfill',
+  'enrich_thin',
+  'skillopt',
+  'embed',
+  'schema-suggest',
+]);
+
+export function autonomousLlmAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.GBRAIN_ALLOW_AUTONOMOUS_LLM === '1';
+}
+
+export function filterAutonomousCyclePhases<T extends string>(phases: T[], env: NodeJS.ProcessEnv = process.env): T[] {
+  if (autonomousLlmAllowed(env)) return phases;
+  return phases.filter((phase) => !AUTONOMOUS_LLM_PHASES.has(phase));
+}
 
 function registerBuiltinJob(
   worker: MinionWorker,
@@ -55,13 +111,32 @@ function registerBuiltinJob(
   name: string,
   handler: MinionHandler,
 ): void {
+  const guarded: MinionHandler = async (job) => {
+    if (AUTONOMOUS_LLM_JOB_NAMES.has(name) && !autonomousLlmAllowed()) {
+      return {
+        status: 'skipped',
+        reason: 'autonomous_llm_disabled',
+        job: name,
+        hint: 'Set GBRAIN_ALLOW_AUTONOMOUS_LLM=1 only for an explicitly bounded worker run.',
+      };
+    }
+    return await handler(job);
+  };
   if (!GATEWAY_REFRESH_JOB_NAMES.has(name)) {
-    worker.register(name, handler);
+    worker.register(name, guarded);
     return;
   }
   worker.register(name, async (job) => {
+    if (AUTONOMOUS_LLM_JOB_NAMES.has(name) && !autonomousLlmAllowed()) {
+      return {
+        status: 'skipped',
+        reason: 'autonomous_llm_disabled',
+        job: name,
+        hint: 'Set GBRAIN_ALLOW_AUTONOMOUS_LLM=1 only for an explicitly bounded worker run.',
+      };
+    }
     await refreshGatewayForJob(engine);
-    return await handler(job);
+    return await guarded(job);
   });
 }
 
@@ -1854,6 +1929,16 @@ export async function registerBuiltinHandlers(
     const requestedPhases = Array.isArray(job.data.phases)
       ? (job.data.phases as string[]).filter(p => validPhases.has(p as any))
       : undefined;
+    const phases = filterAutonomousCyclePhases(
+      requestedPhases && requestedPhases.length > 0 ? requestedPhases : ALL_PHASES,
+    );
+    if (phases.length === 0) {
+      return {
+        partial: false,
+        status: 'skipped',
+        report: { reason: 'autonomous_llm_disabled', skipped_phases: requestedPhases ?? ALL_PHASES },
+      };
+    }
 
     // Pull default: legacy `true` for back-compat; explicit boolean wins.
     const pull = typeof job.data.pull === 'boolean' ? job.data.pull : true;
@@ -1879,7 +1964,7 @@ export async function registerBuiltinHandlers(
       signal: job.signal, // propagate abort so cycle bails on timeout/cancel
       deadlineAtMs: job.deadlineAtMs, // #2781: phases budget sub-work from remaining time
       ...(sourceId ? { sourceId } : {}),
-      ...(requestedPhases && requestedPhases.length > 0 ? { phases: requestedPhases as any } : {}),
+      phases: phases as any,
       yieldBetweenPhases: async () => {
         // Yield to the event loop so worker lock-renewal can fire.
         await new Promise<void>(r => setImmediate(r));
@@ -1915,9 +2000,17 @@ export async function registerBuiltinHandlers(
     // closure is repaired. Preserve every other global maintenance phase.
     const synthesizeConfig = await engine.getConfig('cycle.synthesize_concepts.enabled');
     const synthesizeEnabled = !['false', '0', 'off', 'no'].includes(String(synthesizeConfig ?? 'true').toLowerCase());
-    const phases = (synthesizeEnabled
+    const configuredPhases = (synthesizeEnabled
       ? requestedPhases
       : requestedPhases.filter((phase) => phase !== 'synthesize_concepts')) as typeof GLOBAL_PHASES;
+    const phases = filterAutonomousCyclePhases(configuredPhases);
+    if (phases.length === 0) {
+      return {
+        partial: false,
+        status: 'skipped',
+        report: { reason: 'autonomous_llm_disabled', skipped_phases: configuredPhases },
+      };
+    }
 
     const report = await runCycle(engine, {
       brainDir: repoPath,
@@ -1980,8 +2073,8 @@ export async function registerBuiltinHandlers(
   // cost-ceremony env flag needed.
   const { makeSubagentHandler } = await import('../core/minions/handlers/subagent.ts');
   const { subagentAggregatorHandler } = await import('../core/minions/handlers/subagent-aggregator.ts');
-  worker.register('subagent', makeSubagentHandler({ engine }));
-  worker.register('subagent_aggregator', subagentAggregatorHandler);
+  registerBuiltinJob(worker, engine, 'subagent', makeSubagentHandler({ engine }));
+  registerBuiltinJob(worker, engine, 'subagent_aggregator', subagentAggregatorHandler);
   process.stderr.write('[minion worker] subagent handlers enabled\n');
 
   // ============================================================
@@ -2248,7 +2341,7 @@ export async function registerBuiltinHandlers(
   // v0.42.0.0 SkillOpt Minion handler — for --background CLI invocations.
   // PROTECTED by name so MCP submission rejects (only trusted CLI can
   // submit). Threaded SkillOptOpts JSON in job.data.
-  worker.register('skillopt', async (job) => {
+  registerBuiltinJob(worker, engine, 'skillopt', async (job) => {
     const { runSkillOpt } = await import('../core/skillopt/orchestrator.ts');
     const data = (job.data ?? {}) as Record<string, unknown>;
     const skillsDir = String(data.skills_dir ?? '');
