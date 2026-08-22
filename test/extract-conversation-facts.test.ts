@@ -833,6 +833,67 @@ describe('runExtractConversationFactsCore', () => {
     });
   });
 
+  test('internal runtime-limit abort is a controlled partial completion, not a failure', async () => {
+    await engine.setConfig('conversation_parser.llm_fallback_enabled', 'true');
+    // Reproduce what reaching the --max-runtime-minutes deadline does: the
+    // runtime controller aborts its signal with this exact AbortError reason
+    // AND an in-flight gateway call rejects with the same error. Signal the
+    // caller controller with the runtime-limit reason so the internal
+    // runtimeController (wired via callerAbort) observes the abort exactly
+    // as the real timer does. It must surface as a CONTROLLED partial
+    // completion (`runtime_aborted`), NOT a failure.
+    const runtimeErr = Object.assign(
+      new Error('extract-conversation-facts exceeded 25 minute runtime limit'),
+      { name: 'AbortError' },
+    );
+    fallbackControlError = runtimeErr;
+    const controller = new AbortController();
+    controller.abort(runtimeErr);
+    await withEnv({ ANTHROPIC_API_KEY: 'sk-test' }, async () => {
+      const result = await runExtractConversationFactsCore(
+        engine,
+        {
+          sourceId: 'default',
+          slug: 'conversations/novel-format-example',
+          sleepMs: 0,
+          maxRuntimeMinutes: 25,
+          force: true,
+        },
+        controller.signal,
+      );
+      expect(result.runtime_aborted).toBe(true);
+      expect(result.pages_failed).toBe(0);
+    });
+  });
+
+  test('a genuine provider AbortError is NOT masked as a runtime abort', async () => {
+    await engine.setConfig('conversation_parser.llm_fallback_enabled', 'true');
+    // A real provider/caller timeout is an AbortError but does NOT carry the
+    // runtime-limit message — it must keep behaving as a failure (reject),
+    // never be converted into a controlled partial completion.
+    const providerErr = Object.assign(new Error('provider timeout'), {
+      name: 'AbortError',
+    });
+    fallbackControlError = providerErr;
+    const controller = new AbortController();
+    controller.abort(providerErr);
+    await withEnv({ ANTHROPIC_API_KEY: 'sk-test' }, async () => {
+      await expect(
+        runExtractConversationFactsCore(
+          engine,
+          {
+            sourceId: 'default',
+            slug: 'conversations/novel-format-example',
+            sleepMs: 0,
+            maxRuntimeMinutes: 25,
+            force: true,
+          },
+          controller.signal,
+        ),
+      ).rejects.toBe(providerErr);
+    });
+  });
+
   test('sinceIso filters already-processed history', async () => {
     const result = await runExtractConversationFactsCore(engine, {
       sourceId: 'default',
