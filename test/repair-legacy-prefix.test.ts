@@ -139,6 +139,41 @@ describe('stripGeneratedTimelineAppendix + semanticallyTimelineOnly (pure)', () 
     expect(stripGeneratedTimelineAppendix(body + APPENDIX)).toBe('REAL BODY');
   });
 
+  test('strips a NON-bold auto-generated Timeline appendix (generated `- YYYY-MM-DD | ...` form)', () => {
+    const nonBold = [
+      '\n---\n\n## Timeline',
+      '- 2026-05-19 | first',
+      '- 2026-08-22 | second',
+    ].join('\n');
+    expect(stripGeneratedTimelineAppendix('REAL BODY' + nonBold)).toBe('REAL BODY');
+  });
+
+  test('strips a mixed bold/non-bold Timeline appendix and preserves indented continuation lines', () => {
+    const mixed = [
+      '\n---\n\n## Timeline',
+      '- 2026-05-19 | first',
+      '    continuation detail under first',
+      '- **2026-08-22** | second (bold)',
+      '    continuation detail under second',
+    ].join('\n');
+    expect(stripGeneratedTimelineAppendix('REAL BODY' + mixed)).toBe('REAL BODY');
+  });
+
+  test('returns null (does not strip) when a non-timeline bullet list follows the heading', () => {
+    const badBullets = 'BODY\n\n## Timeline\n- **2026-05-19** | entry\n- a random non-dated bullet\n- another bullet';
+    expect(stripGeneratedTimelineAppendix(badBullets)).toBeNull();
+  });
+
+  test('returns null (does not strip) when the bullet has no leading ISO date even if it ends with a pipe', () => {
+    const bad = 'BODY\n\n## Timeline\n- entry with | pipe but no date';
+    expect(stripGeneratedTimelineAppendix(bad)).toBeNull();
+  });
+
+  test('returns null (does not strip) when a heading sits inside the candidate timeline block', () => {
+    const bad = 'BODY\n\n## Timeline\n- **2026-05-19** | entry\n## A Subsection';
+    expect(stripGeneratedTimelineAppendix(bad)).toBeNull();
+  });
+
   test('returns null when there is no Timeline section', () => {
     expect(stripGeneratedTimelineAppendix('just some prose')).toBeNull();
   });
@@ -280,6 +315,25 @@ describe('repair-legacy-prefix plan + apply (PGLite)', () => {
     expect(canon?.compiled_truth).toBe(realBody + timelineAppendix);
     const softDeleted = await engine.getPage(`${PREFIX}projects/hermes/system-dashboard`, { includeDeleted: true });
     expect(softDeleted?.deleted_at).not.toBeNull();
+  });
+
+  test('COLLAPSE_TIMELINE_ONLY_DB also applies to the generated NON-bold `- YYYY-MM-DD | ...` appendix grammar', async () => {
+    vault = makeVault();
+    const realBody = 'REAL CONTENT';
+    const nonBoldAppendix = [
+      `\n---\n\n## Timeline`,
+      `- 2026-05-19 | added system dashboard`,
+      `- 2026-08-22 | reconciled legacy prefix`,
+    ].join('\n');
+    const canonFm = { title: 'System Dashboard', timeline: ['2026-05-19 added system dashboard'] };
+    const legacyFm = { title: 'System Dashboard' };
+    await seed('projects/hermes/system-dashboard', realBody + nonBoldAppendix, canonFm);
+    await seed(`${PREFIX}projects/hermes/system-dashboard`, realBody, legacyFm);
+
+    const plan = await buildRepairPlan(engine, { prefix: PREFIX, vaultRoot: vault });
+    const item = plan.items.find(i => i.slug === `${PREFIX}projects/hermes/system-dashboard`);
+    expect(item).toBeDefined();
+    expect(item!.outcome).toBe(COLLAPSE_TIMELINE_ONLY_DB);
   });
 
   test('BLOCK_DIVERGENT_DB preserved for real content difference (e.g. bounty-market-reality)', async () => {

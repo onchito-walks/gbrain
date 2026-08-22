@@ -130,13 +130,24 @@ export function stripYamlFrontmatter(s: string): string {
  *     - **YYYY-MM-DD** | first entry
  *     - **YYYY-MM-DD** | second entry
  *
+ * (The canonical serialize path also emits the same entries as a NON-bold
+ * form — `- YYYY-MM-DD | first entry` — when the timeline entries were
+ * generated without the historical double-star date markup. Both exact
+ * generated grammars are accepted; see the entry-bullet regex below.)
+ *
  * This helper is deliberately CONSERVATIVE: it returns `null` (i.e. "do not
  * treat as timeline-only") unless EVERY line after the `## Timeline` heading is
- * a timeline entry bullet of the documented shape `- **YYYY-MM-DD** | ...`
+ * a timeline entry bullet of a documented generated shape
+ * (`- YYYY-MM-DD | ...` or `- **YYYY-MM-DD** | ...`, with an optional leading
+ * `* `/`- ` marker and `|`/`-`/`--`/`–`/`—` separator)
  * (or a blank/continuation line belonging to an entry). Any other content is
  * left untouched — the caller then correctly classifies the case as a real
  * divergence (BLOCK_DIVERGENT_DB). The section is only ever the trailing
  * appendix, never interior content.
+ *
+ * The date is non-negotiable: a bullet must START with a real `YYYY-MM-DD`
+ * (bold or not) before the separator, so arbitrary bullet lists and headings
+ * under the heading are never mistaken for a generated timeline.
  */
 export function stripGeneratedTimelineAppendix(body: string): string | null {
   const lines = body.split('\n');
@@ -159,10 +170,12 @@ export function stripGeneratedTimelineAppendix(body: string): string | null {
     const ln = lines[i];
     const t = ln.trim();
     if (t.length === 0) continue; // blank/separator whitespace allowed
-    // A timeline entry bullet: `- **YYYY-MM-DD** | ...` or `**YYYY-MM-DD** | ...`.
-    // Allow an optional leading `* `/`- ` then a `**date**` then `|`/`-`/`--`.
-    // (matches link-extraction.ts TIMELINE_LINE_RE).
-    if (/^-?\s*-?\s*\*\*\d{4}-\d{2}-\d{2}\*\*\s*[|\-–—]+/.test(t)) {
+    // A timeline entry bullet: `- YYYY-MM-DD | ...` (generated non-bold form)
+    // or `- **YYYY-MM-DD** | ...` (historical bold form). Allow an optional
+    // leading `* `/`- ` then an ISO date (double-star bold markers OPTIONAL,
+    // matching the generated grammar) then `|`/`-`/`--`/`–`/`—`.
+    // The leading date is required so arbitrary bullets/headings never match.
+    if (/^-?\s*-?\s*(?:\*\*)?\d{4}-\d{2}-\d{2}(?:\*\*)?\s*[|\-–—]+/.test(t)) {
       sawEntry = true;
       continue;
     }
