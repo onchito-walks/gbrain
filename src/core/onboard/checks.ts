@@ -387,14 +387,10 @@ export async function checkPackUpgradeAvailable(
   try {
     const { loadActivePack, findPackSuccessors } = await import('../schema-pack/load-active.ts');
     const { loadConfig } = await import('../config.ts');
-    // Read the engine's DB-side schema_pack so a post-unify flip is visible
-    // here even before the file-plane config catches up. Use the same resolved
-    // config path as schema commands so doctor and runtime agree on the pack.
-    let dbConfig: string | undefined;
-    try {
-      dbConfig = (await engine.getConfig('schema_pack')) ?? undefined;
-    } catch { /* engine.config may not exist on very old brains */ }
-    const active = await loadActivePack({ cfg: loadConfig(), remote: false, dbConfig })
+    // Doctor must use the same resolved file/env configuration as runtime
+    // schema commands. A stale DB-plane schema_pack is explicitly shadowed by
+    // home config and must not manufacture a false type-proliferation warning.
+    const active = await loadActivePack({ cfg: loadConfig(), remote: false })
       .catch(() => null);
     if (!active) {
       return {
@@ -467,11 +463,8 @@ export async function checkTypeProliferation(
   try {
     const { loadActivePack } = await import('../schema-pack/load-active.ts');
     const { loadConfig } = await import('../config.ts');
-    let dbConfig: string | undefined;
-    try {
-      dbConfig = (await engine.getConfig('schema_pack')) ?? undefined;
-    } catch { /* tolerate pre-config brains */ }
-    const active = await loadActivePack({ cfg: loadConfig(), remote: false, dbConfig })
+    // Match runtime schema resolution: file/env config shadows stale DB state.
+    const active = await loadActivePack({ cfg: loadConfig(), remote: false })
       .catch(() => null);
     if (active) declared = active.manifest.page_types.length;
   } catch {
