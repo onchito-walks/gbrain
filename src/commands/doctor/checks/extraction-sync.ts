@@ -910,6 +910,7 @@ export async function computeExtractHealthCheck(
       halt_count: number;
       round_completed_count: number;
       expected_limit_count: number;
+      controlled_partial_count: number;
       rollup_write_failures: number;
       last_updated_at: Date | string | null;
     };
@@ -918,29 +919,39 @@ export async function computeExtractHealthCheck(
     // at an EXPECTED budget/deadline cap — successful partial progress, not
     // failures. Pre-v141 brains lack the column; retry without it (caps read
     // as 0, i.e. "unknown" — old conflated halt rows keep today's semantics).
-    const rollupQuery = (withExpected: boolean) =>
+    // v146: controlled_partial_count (migration v146) counts --max-runtime-
+    // minutes CONTROLLED partial completions distinctly from halts. Pre-v146
+    // brains lack it; retry without it (controlled partials read as 0).
+    const rollupQuery = (withExpected: boolean, withControlled: boolean) =>
       `SELECT
-         kind,
-         SUM(cost_usd) AS cost_7d_usd,
-         SUM(eval_pass_count) AS eval_pass_count,
-         SUM(eval_fail_count) AS eval_fail_count,
-         SUM(halt_count) AS halt_count,
-         SUM(round_completed_count) AS round_completed_count,
-         ${withExpected ? 'SUM(expected_limit_count)' : '0'} AS expected_limit_count,
-         SUM(rollup_write_failures) AS rollup_write_failures,
-         MAX(updated_at) AS last_updated_at
-       FROM extract_rollup_7d
-       WHERE day >= CURRENT_DATE - 7
-       GROUP BY kind
-       ORDER BY kind`;
+        kind,
+        SUM(cost_usd) AS cost_7d_usd,
+        SUM(eval_pass_count) AS eval_pass_count,
+        SUM(eval_fail_count) AS eval_fail_count,
+        SUM(halt_count) AS halt_count,
+        SUM(round_completed_count) AS round_completed_count,
+        ${withExpected ? 'SUM(expected_limit_count)' : '0'} AS expected_limit_count,
+        ${withControlled ? 'SUM(controlled_partial_count)' : '0'} AS controlled_partial_count,
+        SUM(rollup_write_failures) AS rollup_write_failures,
+        MAX(updated_at) AS last_updated_at
+      FROM extract_rollup_7d
+      WHERE day >= CURRENT_DATE - 7
+      GROUP BY kind
+      ORDER BY kind`;
     let rows: RollupRow[];
     try {
-      rows = await engine.executeRaw<RollupRow>(rollupQuery(true), []);
+      rows = await engine.executeRaw<RollupRow>(rollupQuery(true, true), []);
     } catch (err) {
       const msg = (err as Error).message || String(err);
-      if (!/expected_limit_count/i.test(msg)) throw err;
-      rows = await engine.executeRaw<RollupRow>(rollupQuery(false), []);
+      if (/expected_limit_count/i.test(msg)) {
+        rows = await engine.executeRaw<RollupRow>(rollupQuery(false, false), []);
+      } else if (/controlled_partial_count/i.test(msg)) {
+        rows = await engine.executeRaw<RollupRow>(rollupQuery(true, false), []);
+      } else {
+        throw err;
+      }
     }
+
 
     if (rows.length === 0) {
       return {
@@ -962,25 +973,30 @@ export async function computeExtractHealthCheck(
       halt_count: number;
       round_completed_count: number;
       expected_limit_count: number;
+      controlled_partial_count: number;
       halt_rate: number;
       last_updated_at: string | null;
     };
 
     const kinds: KindAggregate[] = rows.map(r => {
       const halts = Number(r.halt_count) || 0;
+      const controlled = Number(r.controlled_partial_count) || 0;
       const completed = Number(r.round_completed_count) || 0;
       const expectedLimits = Number(r.expected_limit_count) || 0;
       // #4482: cap stops join the DENOMINATOR (they are runs, and successful
       // ones) but not the numerator — the failure rate measures failures,
       // not self-imposed capacity limits. A backlog-bigger-than-budget brain
       // whose every run banks progress and stops at the cap reads 0%.
-      const total = halts + completed + expectedLimits;
+      // v146: controlled partial completions (--max-runtime-minutes designed
+      // stops) are capacity/progress too — denominator only, never numerator.
+      const total = halts + controlled + completed + expectedLimits;
       return {
         kind: r.kind,
         cost_7d_usd: Number(r.cost_7d_usd) || 0,
         eval_pass_count: Number(r.eval_pass_count) || 0,
         eval_fail_count: Number(r.eval_fail_count) || 0,
         halt_count: halts,
+        controlled_partial_count: controlled,
         round_completed_count: completed,
         expected_limit_count: expectedLimits,
         halt_rate: total > 0 ? halts / total : 0,
@@ -995,8 +1011,9 @@ export async function computeExtractHealthCheck(
       0,
     );
 
-    // High halt rates: per F-OUT-19 doctor surfaces extractor health
-    // distinctly from rollup write health.
+    // High unexpected-halt rates: per F-OUT-19 doctor surfaces extractor
+    // health distinctly from rollup write health. Controlled partials never
+    // trigger this (they're not in halt_count).
     const highHaltKinds = kinds.filter(k => k.halt_rate > 0.10);
 
     if (highHaltKinds.length > 0) {
@@ -1022,7 +1039,7 @@ export async function computeExtractHealthCheck(
       return {
         name,
         status: 'warn',
-        message: `${highHaltKinds.length} kind(s) with halt rate > 10% (top: ${top3})`,
+        message: `${highHaltKinds.length} kind(s) with unexpected halt rate > 10% (top: ${top3})`,
         details: {
           schema_version: 1,
           kinds,
@@ -1055,10 +1072,17 @@ export async function computeExtractHealthCheck(
     const capNote = totalExpectedLimits > 0
       ? `; ${totalExpectedLimits} run(s) stopped at expected budget/deadline caps (capacity, not failures)`
       : '';
+    // v146: surface capacity/progress info — controlled partial completions
+    // are an expected artifact of --max-runtime-minutes planning, reported
+    // alongside (in kinds[].controlled_partial_count). Aggregate for message.
+    const controlledTotal = kinds.reduce((acc, k) => acc + k.controlled_partial_count, 0);
+    const progressNote = controlledTotal > 0
+      ? `; ${controlledTotal} controlled partial completion(s) recorded as capacity/progress`
+      : '';
     return {
       name,
       status: 'ok',
-      message: `${kinds.length} kind(s) tracked, all halt rates below 10%${capNote}`,
+      message: `${kinds.length} kind(s) tracked, all unexpected halt rates below 10%${capNote}${progressNote}`,
       details: {
         schema_version: 1,
         kinds,

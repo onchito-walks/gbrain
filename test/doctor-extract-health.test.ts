@@ -177,3 +177,65 @@ describe('computeExtractHealthCheck — 7-day window', () => {
     expect((check.details as any)?.kinds).toHaveLength(1);
   });
 });
+
+describe('computeExtractHealthCheck — controlled partials (v126 EXTRACT-HEALTH)', () => {
+  test('controlled partials do NOT inflate halt_rate (live 13% regression)', async () => {
+    await clearRollup();
+    // A clean CONTROLLED partial (--max-runtime-minutes) is recorded in
+    // controlled_partial_count, not halt_count. With 0 unexpected halts the
+    // halt_rate must be 0 — never a doctor WARN — while the progress is still
+    // visible as a capacity/progress metric.
+    await engine.executeRaw(
+      `INSERT INTO extract_rollup_7d (kind, source_id, day, cost_usd, eval_pass_count, eval_fail_count, halt_count, controlled_partial_count, round_completed_count, rollup_write_failures, updated_at)
+       VALUES ('facts.conversation', 'default', CURRENT_DATE, 0.42, 0, 0, 0, 6, 40, 0, NOW())`,
+      [],
+    );
+    const check = await computeExtractHealthCheck(engine);
+    expect(check.status).toBe('ok');
+    expect((check.details as any)?.kinds[0].halt_rate).toBe(0);
+    expect((check.details as any)?.kinds[0].halt_count).toBe(0);
+    expect((check.details as any)?.kinds[0].controlled_partial_count).toBe(6);
+    // Controlled partials are surfaced as capacity/progress info.
+    expect(check.message).toContain('controlled partial');
+    expect(check.message).toContain('capacity/progress');
+  });
+
+  test('true unexpected halts alongside controlled partials still warn', async () => {
+    await clearRollup();
+    // 6 controlled partials (progress) + 3 REAL halts + 3 completed → the
+    // unexpected-halt rate is 3/(3+6+3)=25% → still WARN.
+    await engine.executeRaw(
+      `INSERT INTO extract_rollup_7d (kind, source_id, day, cost_usd, eval_pass_count, eval_fail_count, halt_count, controlled_partial_count, round_completed_count, rollup_write_failures, updated_at)
+       VALUES ('facts.conversation', 'default', CURRENT_DATE, 0.50, 0, 0, 3, 6, 3, 0, NOW())`,
+      [],
+    );
+    const check = await computeExtractHealthCheck(engine);
+    expect(check.status).toBe('warn');
+    expect((check.details as any)?.kinds[0].halt_rate).toBeCloseTo(0.25, 4);
+    expect((check.details as any)?.kinds[0].controlled_partial_count).toBe(6);
+  });
+
+  test('pre-v126 brain (column absent) degrades gracefully to OK', async () => {
+    await clearRollup();
+    await engine.executeRaw(
+      `INSERT INTO extract_rollup_7d (kind, source_id, day, cost_usd, eval_pass_count, eval_fail_count, halt_count, round_completed_count, rollup_write_failures, updated_at)
+       VALUES ('facts.conversation', 'default', CURRENT_DATE, 0.20, 0, 0, 1, 9, 0, NOW())`,
+      [],
+    );
+    // Simulate a pre-v126 brain: drop the controlled-partial column. Doctor
+    // must fall back and still report halt/completed (controlled=0).
+    try {
+      await engine.executeRaw('ALTER TABLE extract_rollup_7d DROP COLUMN controlled_partial_count', []);
+      const check = await computeExtractHealthCheck(engine);
+      expect(check.status).toBe('ok');
+      expect((check.details as any)?.kinds[0].halt_rate).toBe(0.1);
+      expect((check.details as any)?.kinds[0].controlled_partial_count).toBe(0);
+    } finally {
+      // Restore the column so later tests in this file see the v126 schema.
+      await engine.executeRaw(
+        'ALTER TABLE extract_rollup_7d ADD COLUMN IF NOT EXISTS controlled_partial_count INT NOT NULL DEFAULT 0',
+        [],
+      );
+    }
+  });
+});

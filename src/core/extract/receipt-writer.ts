@@ -76,6 +76,14 @@ export interface ExtractReceiptInput {
   eval_pass?: boolean;
   /** Eval gate score (optional; companion to eval_pass). */
   eval_score?: number;
+  /**
+   * v126 — CONTROLLED partial completion (--max-runtime-minutes deadline).
+   * Records that this round was stopped by its designed wall-clock limit
+   * with committed writes durable — a capacity/progress event, NOT an
+   * extraction halt/failure. Optional + additive; only stamped when true so
+   * older receipts (and deterministic extractors) are unaffected.
+   */
+  controlled_partial?: boolean;
   /** Human-readable summary line (1-2 sentences). */
   summary?: string;
 }
@@ -155,6 +163,9 @@ function buildReceiptBody(input: ExtractReceiptInput): string {
       : '';
     lines.push(`Eval gate: **${verdict}**${score}`);
   }
+  if (input.controlled_partial === true) {
+    lines.push('Completion: **controlled partial** (--max-runtime-minutes deadline; committed writes durable, not a halt/failure)');
+  }
   return lines.join('\n') + '\n';
 }
 
@@ -183,6 +194,7 @@ function buildReceiptFrontmatter(input: ExtractReceiptInput): Record<string, unk
   if (input.model_id) fm.model_id = input.model_id;
   if (typeof input.eval_pass === 'boolean') fm.eval_pass = input.eval_pass;
   if (typeof input.eval_score === 'number') fm.eval_score = input.eval_score;
+  if (input.controlled_partial === true) fm.controlled_partial = true;
   return fm;
 }
 

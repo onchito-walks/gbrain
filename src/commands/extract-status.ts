@@ -19,6 +19,25 @@
  */
 
 import type { BrainEngine } from '../core/engine.ts';
+import { isUndefinedColumnError } from '../core/utils.ts';
+
+/**
+ * Per-kind rollup row loaded from extract_rollup_7d. `controlled_partial_count`
+ * (v126) reflects --max-runtime-minutes CONTROLLED partial completions —
+ * capacity/progress, not halts. Present (defaulting to 0) on the fallback path
+ * for pre-v126 brains.
+ */
+interface RollupRawRow {
+  kind: string;
+  source_id: string;
+  cost_7d_usd: number | string | null;
+  eval_pass_count: number | string | null;
+  eval_fail_count: number | string | null;
+  halt_count: number | string | null;
+  controlled_partial_count: number | string | null;
+  round_completed_count: number | string | null;
+  last_updated_at: Date | string | null;
+}
 
 export interface ExtractStatusRow {
   kind: string;
@@ -27,6 +46,7 @@ export interface ExtractStatusRow {
   eval_pass_count: number;
   eval_fail_count: number;
   halt_count: number;
+  controlled_partial_count: number;
   round_completed_count: number;
   halt_rate: number;
   last_updated_at: string | null;
@@ -45,22 +65,17 @@ export interface ExtractStatusReport {
  * Pure helper: build the report from raw rollup rows. Exported for tests.
  */
 export function buildStatusReport(
-  rollupRows: Array<{
-    kind: string;
-    source_id: string;
-    cost_7d_usd: number | string | null;
-    eval_pass_count: number | string | null;
-    eval_fail_count: number | string | null;
-    halt_count: number | string | null;
-    round_completed_count: number | string | null;
-    last_updated_at: Date | string | null;
-  }>,
+  rollupRows: RollupRawRow[],
   filters: { source_id?: string; kind?: string },
 ): ExtractStatusReport {
   const rows: ExtractStatusRow[] = rollupRows.map(r => {
+    // Unexpected halts drive halt_rate. Controlled partials (v126,
+    // --max-runtime-minutes) are capacity/progress and fold into the
+    // denominator only.
     const halts = Number(r.halt_count) || 0;
+    const controlled = Number(r.controlled_partial_count) || 0;
     const completed = Number(r.round_completed_count) || 0;
-    const total = halts + completed;
+    const total = halts + controlled + completed;
     return {
       kind: r.kind,
       source_id: r.source_id,
@@ -68,6 +83,7 @@ export function buildStatusReport(
       eval_pass_count: Number(r.eval_pass_count) || 0,
       eval_fail_count: Number(r.eval_fail_count) || 0,
       halt_count: halts,
+      controlled_partial_count: controlled,
       round_completed_count: completed,
       halt_rate: total > 0 ? halts / total : 0,
       last_updated_at: r.last_updated_at
@@ -111,6 +127,7 @@ export function formatStatusTable(report: ExtractStatusReport, verbose: boolean)
     `${'COST_7D_USD'.padStart(11)}  ` +
     `${'COMPLETED'.padStart(9)}  ` +
     `${'HALTS'.padStart(5)}  ` +
+    `${'CONTROL'.padStart(7)}  ` +
     `${'HALT_RATE'.padStart(9)}  ` +
     `${'EVAL_PASS'.padStart(9)}  ` +
     `${'EVAL_FAIL'.padStart(9)}  ` +
@@ -124,6 +141,7 @@ export function formatStatusTable(report: ExtractStatusReport, verbose: boolean)
       `${('$' + r.cost_7d_usd.toFixed(4)).padStart(11)}  ` +
       `${String(r.round_completed_count).padStart(9)}  ` +
       `${String(r.halt_count).padStart(5)}  ` +
+      `${String(r.controlled_partial_count).padStart(7)}  ` +
       `${(r.halt_rate * 100).toFixed(1).padStart(8) + '%'}  ` +
       `${String(r.eval_pass_count).padStart(9)}  ` +
       `${String(r.eval_fail_count).padStart(9)}  ` +
@@ -163,34 +181,50 @@ export async function runExtractStatus(
     params.push(kind);
   }
 
-  type Row = {
-    kind: string;
-    source_id: string;
-    cost_7d_usd: number | string | null;
-    eval_pass_count: number | string | null;
-    eval_fail_count: number | string | null;
-    halt_count: number | string | null;
-    round_completed_count: number | string | null;
-    last_updated_at: Date | string | null;
-  };
-
-  let rows: Row[] = [];
+  let rows: RollupRawRow[] = [];
   try {
-    rows = await engine.executeRaw<Row>(
-      `SELECT
-         kind,
-         source_id,
-         SUM(cost_usd) AS cost_7d_usd,
-         SUM(eval_pass_count) AS eval_pass_count,
-         SUM(eval_fail_count) AS eval_fail_count,
-         SUM(halt_count) AS halt_count,
-         SUM(round_completed_count) AS round_completed_count,
-         MAX(updated_at) AS last_updated_at
-       FROM extract_rollup_7d
-       WHERE ${conds.join(' AND ')}
-       GROUP BY kind, source_id`,
-      params,
-    );
+    try {
+      rows = await engine.executeRaw<RollupRawRow>(
+        `SELECT
+           kind,
+           source_id,
+           SUM(cost_usd) AS cost_7d_usd,
+           SUM(eval_pass_count) AS eval_pass_count,
+           SUM(eval_fail_count) AS eval_fail_count,
+           SUM(halt_count) AS halt_count,
+           SUM(controlled_partial_count) AS controlled_partial_count,
+           SUM(round_completed_count) AS round_completed_count,
+           MAX(updated_at) AS last_updated_at
+         FROM extract_rollup_7d
+         WHERE ${conds.join(' AND ')}
+         GROUP BY kind, source_id`,
+        params,
+      );
+    } catch (e) {
+      // Pre-v126 brain: rollup table exists but the controlled-partial column
+      // is absent. Degrade to the legacy query, reporting controlled partials
+      // as 0, so `gbrain extract status` keeps working on unmigrated brains.
+      if (isUndefinedColumnError(e, 'controlled_partial_count')) {
+        rows = await engine.executeRaw<RollupRawRow>(
+          `SELECT
+             kind,
+             source_id,
+             SUM(cost_usd) AS cost_7d_usd,
+             SUM(eval_pass_count) AS eval_pass_count,
+             SUM(eval_fail_count) AS eval_fail_count,
+             SUM(halt_count) AS halt_count,
+             0::int AS controlled_partial_count,
+             SUM(round_completed_count) AS round_completed_count,
+             MAX(updated_at) AS last_updated_at
+           FROM extract_rollup_7d
+           WHERE ${conds.join(' AND ')}
+           GROUP BY kind, source_id`,
+          params,
+        );
+      } else {
+        throw e;
+      }
+    }
   } catch (err) {
     const msg = (err as Error).message || String(err);
     if (/extract_rollup_7d.*does not exist|no such table/i.test(msg)) {

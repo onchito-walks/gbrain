@@ -21,6 +21,7 @@ const SAMPLE_ROWS = [
     eval_pass_count: 5,
     eval_fail_count: 0,
     halt_count: 0,
+    controlled_partial_count: 4,
     round_completed_count: 10,
     last_updated_at: '2026-05-27T14:00:00Z',
   },
@@ -31,6 +32,7 @@ const SAMPLE_ROWS = [
     eval_pass_count: 3,
     eval_fail_count: 0,
     halt_count: 5,
+    controlled_partial_count: 0,
     round_completed_count: 5,
     last_updated_at: '2026-05-27T13:00:00Z',
   },
@@ -41,6 +43,7 @@ const SAMPLE_ROWS = [
     eval_pass_count: 1,
     eval_fail_count: 0,
     halt_count: 1,
+    controlled_partial_count: 0,
     round_completed_count: 9,
     last_updated_at: '2026-05-27T12:00:00Z',
   },
@@ -58,8 +61,25 @@ describe('buildStatusReport — pure aggregation', () => {
     // 5 halts + 5 completed = 50% halt rate
     expect(atoms.halt_rate).toBe(0.5);
     const fc = report.rows.find(r => r.kind === 'facts.conversation')!;
-    // 0 halts + 10 completed = 0% halt rate
+    // 0 halts + 4 controlled partials + 10 completed = 0% halt rate
     expect(fc.halt_rate).toBe(0);
+    expect(fc.controlled_partial_count).toBe(4);
+  });
+
+  test('controlled partials are capacity/progress, not halts (v126)', () => {
+    const report = buildStatusReport(
+      [{
+        kind: 'facts.conversation', source_id: 'default',
+        cost_7d_usd: 0.4, eval_pass_count: 0, eval_fail_count: 0,
+        halt_count: 0, controlled_partial_count: 6, round_completed_count: 40,
+        last_updated_at: null,
+      }],
+      {},
+    );
+    const fc = report.rows[0];
+    // 6 controlled partials + 0 real halts → 0% halt rate, progress visible.
+    expect(fc.halt_rate).toBe(0);
+    expect(fc.controlled_partial_count).toBe(6);
   });
 
   test('sorts by halt_rate desc, then cost desc', () => {
@@ -73,7 +93,7 @@ describe('buildStatusReport — pure aggregation', () => {
       [{
         kind: 'empty', source_id: 'default',
         cost_7d_usd: 0, eval_pass_count: 0, eval_fail_count: 0,
-        halt_count: 0, round_completed_count: 0,
+        halt_count: 0, controlled_partial_count: 0, round_completed_count: 0,
         last_updated_at: null,
       }],
       {},
@@ -89,6 +109,7 @@ describe('buildStatusReport — pure aggregation', () => {
         eval_pass_count: '3' as unknown as number,
         eval_fail_count: '0' as unknown as number,
         halt_count: '2' as unknown as number,
+        controlled_partial_count: '0' as unknown as number,
         round_completed_count: '8' as unknown as number,
         last_updated_at: null,
       }],
@@ -105,7 +126,7 @@ describe('buildStatusReport — pure aggregation', () => {
       [{
         kind: 'atoms', source_id: 'default',
         cost_7d_usd: 0, eval_pass_count: 0, eval_fail_count: 0,
-        halt_count: 0, round_completed_count: 1,
+        halt_count: 0, controlled_partial_count: 0, round_completed_count: 1,
         last_updated_at: dateObj,
       }],
       {},
@@ -118,7 +139,7 @@ describe('buildStatusReport — pure aggregation', () => {
       [{
         kind: 'a', source_id: 'b',
         cost_7d_usd: 0, eval_pass_count: 0, eval_fail_count: 0,
-        halt_count: 0, round_completed_count: 0,
+        halt_count: 0, controlled_partial_count: 0, round_completed_count: 0,
         last_updated_at: null,
       }],
       {},
@@ -155,6 +176,7 @@ describe('formatStatusTable — human output', () => {
     expect(out).toContain('KIND');
     expect(out).toContain('SOURCE');
     expect(out).toContain('COST_7D_USD');
+    expect(out).toContain('CONTROL');
     expect(out).toContain('HALT_RATE');
   });
 
@@ -166,6 +188,7 @@ describe('formatStatusTable — human output', () => {
       eval_pass_count: 0,
       eval_fail_count: 0,
       halt_count: 0,
+      controlled_partial_count: 0,
       round_completed_count: 1,
       halt_rate: 0,
       last_updated_at: null,
@@ -190,6 +213,7 @@ describe('formatStatusTable — human output', () => {
       eval_pass_count: 0,
       eval_fail_count: 0,
       halt_count: 0,
+      controlled_partial_count: 0,
       round_completed_count: 1,
       halt_rate: 0,
       last_updated_at: null,

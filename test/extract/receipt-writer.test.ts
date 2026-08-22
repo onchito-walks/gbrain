@@ -207,4 +207,25 @@ describe('writeReceipt — frontmatter D-EXTRACT-19 belt+suspenders', () => {
     expect(page.compiled_truth).toContain('claude-haiku-4-5');
     expect(page.compiled_truth).toMatch(/PASS/);
   });
+
+  test('stamps controlled_partial frontmatter + body when true (v126)', async () => {
+    const { page } = await writeReceipt(engine, {
+      ...BASE_INPUT,
+      run_id: 'controlled-partial-run',
+      controlled_partial: true,
+    });
+    // Explicit receipt field — the controlled partial is NOT hidden.
+    expect(page.frontmatter?.controlled_partial).toBe(true);
+    expect(page.compiled_truth).toContain('controlled partial');
+    expect(page.compiled_truth).toMatch(/--max-runtime-minutes/);
+  });
+
+  test('omits controlled_partial when not supplied (backwards-compatible)', async () => {
+    const { page } = await writeReceipt(engine, {
+      ...BASE_INPUT,
+      run_id: 'plain-run',
+    });
+    expect(page.frontmatter?.controlled_partial).toBeUndefined();
+    expect(page.compiled_truth).not.toContain('controlled partial');
+  });
 });
