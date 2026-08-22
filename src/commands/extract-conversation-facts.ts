@@ -376,6 +376,15 @@ export interface ExtractConversationFactsResult {
   fallback_slugify_count: number;
   /** Entity values kept raw after a best-effort resolution failure. */
   resolution_errors: number;
+  /**
+   * True when the invocation was stopped by the internal
+   * `--max-runtime-minutes` deadline. This is a CONTROLLED partial
+   * completion, not a failure: every per-page write that landed before
+   * the deadline is already committed and durable, and the run's halt is
+   * recorded in the extract rollup (`halt_delta=1`). Distinct from a true
+   * provider/extraction failure, which throws (→ exit 1).
+   */
+  runtime_aborted?: boolean;
   budget_exhausted?: boolean;
   spent_usd?: number;
 }
@@ -1601,8 +1610,24 @@ export async function runExtractConversationFactsCore(
       // still observable in extract_health doctor + extracts/ pages.
       // ...but not under --dry-run: a preview must not persist cache state.
       if (!dryRun) await writeRunReceiptAndRollup(engine, sourceId, result, /* halted */ true);
-      // Return partial result — caller (CLI / Minion) decides how to
-      // surface. NOT a thrown failure.
+      return result;
+    }
+    // v0.42 — internal `--max-runtime-minutes` deadline: the run reached its
+    // designed wall-clock limit and aborted in-flight gateway calls. All
+    // per-page writes that committed before the deadline are preserved and
+    // durable (per-batch checkpoint flush + terminal audit rows already
+    // landed), so this is a CONTROLLED partial completion — NOT a failure.
+    // Record the halt in the rollup, flag `runtime_aborted`, and return the
+    // partial result so the CLI reports a clean, explicit partial/aborted
+    // outcome instead of surfacing as a systemd-failed unit. Genuine
+    // provider/extraction errors (including non-runtime-limit aborts) still
+    // fall through to `throw` and remain failures (exit 1).
+    if (isRuntimeLimitAbort(err)) {
+      result.runtime_aborted = true;
+      // Normal rollup/receipt path reflects the halt (`halt_delta=1`) so the
+      // partial run is observable in doctor; a --dry-run preview persists
+      // nothing.
+      if (!dryRun) await writeRunReceiptAndRollup(engine, sourceId, result, /* halted */ true);
       return result;
     }
     throw err;
@@ -1851,6 +1876,11 @@ Options:
                          serialized. At workers=20 × ~$0.02/page that's ~$0.40 over.
                          Pin --workers 1 if you need exact-ceiling compliance.
   --workers N            Parallel page workers within a single source. Default 1.
+  --max-runtime-minutes N Abort the run (including in-flight gateway calls) after N minutes.
+                         Reaching the deadline is a CONTROLLED partial completion: all
+                         writes before it are preserved, the halt is recorded in the
+                         extract rollup, and the command exits 0 (not a failure).
+                         Genuine provider/extraction errors still exit 1.
                          Recommended 5-20 for LLM-bound work on Postgres. PGLite
                          silently clamps to 1 (single-writer engine). Cross-process
                          safety is guaranteed by the per-page advisory lock + replay
@@ -1955,6 +1985,7 @@ export async function runExtractConversationFacts(
   };
   let totalSpent = 0;
   let anyBudgetExhausted = false;
+  let anyRuntimeAborted = false;
 
   const progress = createProgress(cliOptsToProgressOptions(getCliOptions()));
 
@@ -2001,6 +2032,7 @@ export async function runExtractConversationFacts(
       aggregate.fallback_slugify_count += perSource.fallback_slugify_count;
       aggregate.resolution_errors += perSource.resolution_errors;
       if (perSource.budget_exhausted) anyBudgetExhausted = true;
+      if (perSource.runtime_aborted) anyRuntimeAborted = true;
       if (perSource.spent_usd) totalSpent += perSource.spent_usd;
 
       progress.tick(1, `${sourceId}: ${perSource.facts_inserted} facts inserted`);
@@ -2059,6 +2091,12 @@ export async function runExtractConversationFacts(
   if (anyBudgetExhausted) {
     console.log(`  Budget cap reached. Re-run with a higher --max-cost-usd to continue.`);
   }
+  if (anyRuntimeAborted) {
+    console.error(
+      `  Runtime limit reached; run stopped as a CONTROLLED partial completion. ` +
+      `All writes prior to the deadline are preserved. Re-run to continue.`,
+    );
+  }
 
   // v0.41.15.0 (codex #3): exit 3 when pages were skipped due to
   // lock-busy AND no hard failures fired. "Incomplete run, please
@@ -2068,6 +2106,17 @@ export async function runExtractConversationFacts(
   // signal for "ran to the cap intentionally."
   if (aggregate.pages_failed > 0) {
     process.exit(1);
+  }
+  // v0.42 — the internal --max-runtime-minutes deadline is an EXPECTED,
+  // controlled partial completion (each per-page write is committed; the
+  // run's halt is recorded in the rollup). When no genuine hard failure
+  // fired, report it as clean (exit 0) so a systemd-managed invocation is
+  // NOT marked failed — this is the abort that's supposed to happen. It
+  // also suppresses the lock-skip "exit 3" hint: a re-run is still welcome,
+  // but this unit must not be flagged failed. Genuine provider / extraction
+  // failures still exit 1 via the branch above.
+  if (anyRuntimeAborted) {
+    process.exit(0);
   }
   if (aggregate.pages_lock_skipped > 0 && !anyBudgetExhausted) {
     process.exit(3);
@@ -2097,4 +2146,20 @@ function sleep(ms: number): Promise<void> {
 export function isAbortError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   return err.name === 'AbortError' || /aborted|cancell?ed/i.test(err.message);
+}
+
+/**
+ * Detect the INTERNAL `--max-runtime-minutes` deadline abort specifically.
+ *
+ * This is the AbortError reason constructed in runExtractConversationFactsCore
+ * (`extract-conversation-facts exceeded N minute runtime limit`). It is the
+ * only abort we treat as a CONTROLLED partial completion; genuine provider /
+ * caller aborts must keep their existing behavior (fail open, or throw →
+ * exit 1). We match on name + our distinctive message, and walk `.cause` a
+ * couple of hops in case a gateway transport wraps the reason it rejects with.
+ */
+function isRuntimeLimitAbort(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  if (err.name !== 'AbortError') return false;
+  return /extract-conversation-facts exceeded \d+ minute runtime limit/i.test(err.message);
 }
