@@ -16,11 +16,14 @@ import { resetPgliteState } from './helpers/reset-pglite.ts';
 import {
   classifyRepair,
   stripYamlFrontmatter,
+  stripGeneratedTimelineAppendix,
+  semanticallyTimelineOnly,
   pageToInput,
   walkVault,
   buildRepairPlan,
   applyRepair,
   COLLAPSE_IDENTICAL_DB,
+  COLLAPSE_TIMELINE_ONLY_DB,
   COLLAPSE_IDENTICAL_FILE,
   SAFE_RENAME,
   BLOCK_DIVERGENT_DB,
@@ -46,13 +49,13 @@ beforeEach(async () => {
   await resetPgliteState(engine);
 });
 
-async function seed(slug: string, body: string): Promise<void> {
+async function seed(slug: string, body: string, frontmatter: Record<string, unknown> = {}): Promise<void> {
   await engine.putPage(slug, {
     type: 'note' as any,
     title: slug.split('/').pop() ?? slug,
     compiled_truth: body,
     timeline: '',
-    frontmatter: {},
+    frontmatter,
   });
 }
 
@@ -124,6 +127,61 @@ describe('walkVault', () => {
   });
 });
 
+describe('stripGeneratedTimelineAppendix + semanticallyTimelineOnly (pure)', () => {
+  const APPENDIX = [
+    '\n---\n\n## Timeline',
+    '- **2026-05-19** | first',
+    '- **2026-08-22** | second',
+  ].join('\n');
+
+  test('strips a pure auto-generated Timeline appendix, leaving the real body', () => {
+    const body = 'REAL BODY';
+    expect(stripGeneratedTimelineAppendix(body + APPENDIX)).toBe('REAL BODY');
+  });
+
+  test('returns null when there is no Timeline section', () => {
+    expect(stripGeneratedTimelineAppendix('just some prose')).toBeNull();
+  });
+
+  test('returns null (does not strip) when non-timeline content follows the heading', () => {
+    const bad = 'BODY\n\n## Timeline\n- **2026-05-19** | entry\nThis is real prose after the heading, not a timeline entry.';
+    expect(stripGeneratedTimelineAppendix(bad)).toBeNull();
+  });
+
+  test('returns null when the timeline heading has no entries', () => {
+    expect(stripGeneratedTimelineAppendix('BODY\n\n## Timeline\n')).toBeNull();
+  });
+
+  test('semanticallyTimelineOnly true iff canonical = legacy once appendix + timeline frontmatter stripped', () => {
+    const canonFm = { title: 'X', timeline: ['2026-05-19 first'] };
+    const legacyFm = { title: 'X' };
+    expect(semanticallyTimelineOnly({
+      canonicalBody: 'REAL' + APPENDIX,
+      legacyBody: 'REAL',
+      canonicalFrontmatter: canonFm,
+      legacyFrontmatter: legacyFm,
+    })).toBe(true);
+  });
+
+  test('semanticallyTimelineOnly false when real content differs even if appendix matches', () => {
+    expect(semanticallyTimelineOnly({
+      canonicalBody: 'REAL A' + APPENDIX,
+      legacyBody: 'REAL B',
+      canonicalFrontmatter: null,
+      legacyFrontmatter: null,
+    })).toBe(false);
+  });
+
+  test('semanticallyTimelineOnly false when frontmatter differs beyond the timeline field', () => {
+    expect(semanticallyTimelineOnly({
+      canonicalBody: 'REAL' + APPENDIX,
+      legacyBody: 'REAL',
+      canonicalFrontmatter: { title: 'X', timeline: ['x'] },
+      legacyFrontmatter: { title: 'Y' },
+    })).toBe(false);
+  });
+});
+
 describe('repair-legacy-prefix plan + apply (PGLite)', () => {
   let vault: string;
 
@@ -192,6 +250,61 @@ describe('repair-legacy-prefix plan + apply (PGLite)', () => {
     expect(item).toBeDefined();
     await applyRepair(engine, plan);
     expect((await engine.getPage(`${PREFIX}notes/conflict`, { sourceId: 'default' }))?.compiled_truth).toBe('DB BODY DIFFERS');
+  });
+
+  test('COLLAPSE_TIMELINE_ONLY_DB: soft-deletes legacy, keeps file-backed canonical, no canonical refresh', async () => {
+    vault = makeVault();
+    const realBody = 'REAL CONTENT';
+    const timelineAppendix = [
+      `\n---\n\n## Timeline`,
+      `- **2026-05-19** | added system dashboard`,
+      `- **2026-08-22** | reconciled legacy prefix`,
+    ].join('\n');
+    // Canonical DB page carries the auto-generated Timeline appendix + matching
+    // frontmatter timeline metadata; legacy carries only the real content.
+    const canonFm = { title: 'System Dashboard', timeline: ['2026-05-19 added system dashboard'] };
+    const legacyFm = { title: 'System Dashboard' };
+    await seed('projects/hermes/system-dashboard', realBody + timelineAppendix, canonFm);
+    await seed(`${PREFIX}projects/hermes/system-dashboard`, realBody, legacyFm);
+
+    const plan = await buildRepairPlan(engine, { prefix: PREFIX, vaultRoot: vault });
+    const item = plan.items.find(i => i.slug === `${PREFIX}projects/hermes/system-dashboard`);
+    expect(item).toBeDefined();
+    expect(item!.outcome).toBe(COLLAPSE_TIMELINE_ONLY_DB);
+
+    await applyRepair(engine, plan);
+    // Legacy duplicate soft-deleted; canonical DB row untouched (still has the
+    // timeline appendix — the command never rewrote/refreshed canonical).
+    expect(await engine.getPage(`${PREFIX}projects/hermes/system-dashboard`)).toBeNull();
+    const canon = await engine.getPage('projects/hermes/system-dashboard', { sourceId: 'default' });
+    expect(canon?.compiled_truth).toBe(realBody + timelineAppendix);
+    const softDeleted = await engine.getPage(`${PREFIX}projects/hermes/system-dashboard`, { includeDeleted: true });
+    expect(softDeleted?.deleted_at).not.toBeNull();
+  });
+
+  test('BLOCK_DIVERGENT_DB preserved for real content difference (e.g. bounty-market-reality)', async () => {
+    vault = makeVault();
+    // Canonical and legacy share real content prefix but differ substantively
+    // (an extra meaningful paragraph), so even after the timeline appendix is
+    // stripped the bodies disagree → must stay blocked.
+    const canonBody = [
+      'Bounty market reality summary.',
+      'Distinct canonical analysis paragraph.',
+      '\n---\n\n## Timeline',
+      '- **2026-05-19** | updated outlook',
+    ].join('\n');
+    const legacyBody = 'Bounty market reality summary.\nDifferent legacy note about pricing.';
+    await seed('projects/bounty-hunting/bounty-market-reality-may-2026', canonBody);
+    await seed(`${PREFIX}projects/bounty-hunting/bounty-market-reality-may-2026`, legacyBody);
+
+    const plan = await buildRepairPlan(engine, { prefix: PREFIX, vaultRoot: vault });
+    const item = plan.items.find(i => i.slug === `${PREFIX}projects/bounty-hunting/bounty-market-reality-may-2026`);
+    expect(item).toBeDefined();
+    expect(item!.outcome).toBe(BLOCK_DIVERGENT_DB);
+
+    await applyRepair(engine, plan);
+    expect((await engine.getPage(`projects/bounty-hunting/bounty-market-reality-may-2026`, { sourceId: 'default' }))?.compiled_truth).toBe(canonBody);
+    expect((await engine.getPage(`${PREFIX}projects/bounty-hunting/bounty-market-reality-may-2026`, { sourceId: 'default' }))?.compiled_truth).toBe(legacyBody);
   });
 });
 
