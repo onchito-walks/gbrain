@@ -866,6 +866,45 @@ describe('runExtractConversationFactsCore', () => {
     });
   });
 
+  test('bulk multi-page runtime-limit abort is a controlled partial, not a failure (live wrapper)', async () => {
+    // Reproduce the LIVE bulk-mode failure after bb7999fee. Multi-page
+    // enumeration + sliding pool (no `slug`), where the internal deadline
+    // fires AFTER a gateway call returns: core/facts/extract.ts's post-parse
+    // guard then throws a BARE AbortError('aborted') that does NOT carry the
+    // runtime-limit reason. bb7999fee only recognized a clean re-thrown
+    // runtime-limit AbortError, so this wrapper escaped isRuntimeLimitAbort and
+    // surfaced as an exit-1 failure. It must resolve as a CONTROLLED partial
+    // (runtime_aborted=true, pages_failed=0), never reject.
+    const runtimeErr = Object.assign(
+      new Error('extract-conversation-facts exceeded 25 minute runtime limit'),
+      { name: 'AbortError' },
+    );
+    const controller = new AbortController();
+    // Fire the runtime deadline the way the live path does: abort the runtime
+    // controller (via the external signal) while the first gateway call is in
+    // flight. The transport returns success, so the abort is observed by the
+    // post-`await` guard (`input.abortSignal?.aborted`) which throws the BARE
+    // wrapper — exactly the exit-1 wrapper seen live in bulk mode.
+    chatHook = async () => {
+      controller.abort(runtimeErr);
+    };
+    await withEnv({ ANTHROPIC_API_KEY: 'sk-test' }, async () => {
+      const result = await runExtractConversationFactsCore(
+        engine,
+        {
+          sourceId: 'default',
+          types: ['conversation'],
+          workers: 1,
+          sleepMs: 0,
+          maxRuntimeMinutes: 25,
+        },
+        controller.signal,
+      );
+      expect(result.runtime_aborted).toBe(true);
+      expect(result.pages_failed).toBe(0);
+    });
+  });
+
   test('a genuine provider AbortError is NOT masked as a runtime abort', async () => {
     await engine.setConfig('conversation_parser.llm_fallback_enabled', 'true');
     // A real provider/caller timeout is an AbortError but does NOT carry the
