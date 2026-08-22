@@ -1651,9 +1651,11 @@ export async function runExtractConversationFactsCore(
         isRuntimeLimitAbort(effectiveSignal.reason))
     ) {
       result.runtime_aborted = true;
-      // Normal rollup/receipt path reflects the halt (`halt_delta=1`) so the
-      // partial run is observable in doctor; a --dry-run preview persists
-      // nothing.
+      // The rollup/receipt path records this as a CONTROLLED partial
+      // completion (`controlled_partial_delta=1`, NOT `halt_delta=1`) so the
+      // expected --max-runtime-minutes stop is visible in doctor as capacity/
+      // progress info without inflating the halt rate; a --dry-run preview
+      // persists nothing.
       if (!dryRun) await writeRunReceiptAndRollup(engine, sourceId, result, /* halted */ true);
       return result;
     }
@@ -1698,9 +1700,15 @@ export async function runExtractConversationFactsCore(
  * extracted ZERO facts (no-op runs don't need brain memory) but always
  * UPSERTs the rollup row so doctor sees the cycle ran.
  *
- * `halted` true means the run hit a budget cap mid-flight; receipt
- * carries that state in its frontmatter (round='full' regardless; the
- * halt is recorded as a halt_delta=1 in the rollup table).
+ * `halted` true means the run stopped early (budget cap / runtime-limit /
+ * page failures); receipt carries that state in its frontmatter
+ * (round='full' regardless).
+ *
+ * EXTRACT-HEALTH distinction (v126): a `--max-runtime-minutes` CONTROLLED
+ * partial completion (`result.runtime_aborted === true`) is an EXPECTED
+ * capacity/progress event, NOT an extraction halt. It is recorded as
+ * `controlled_partial_delta=1` (and stamped `controlled_partial` on the
+ * receipt) so doctor's halt_rate reflects only true unexpected halts.
  */
 async function writeRunReceiptAndRollup(
   engine: BrainEngine,
@@ -1714,6 +1722,10 @@ async function writeRunReceiptAndRollup(
   // receipt slug. shortRunId() truncates to 8 chars.
   const runId = `ecf-${Date.now().toString(36)}-${sourceId.slice(0, 4)}`;
 
+  // A controlled (--max-runtime-minutes) partial completion is a capacity /
+  // progress event, not a halt. It stays out of halt_count entirely.
+  const controlledPartial = result.runtime_aborted === true;
+
   // Receipt write: only when the run actually inserted facts.
   if (result.facts_inserted > 0) {
     try {
@@ -1725,12 +1737,16 @@ async function writeRunReceiptAndRollup(
         extracted_at: now,
         total_rows: result.facts_inserted,
         cost_usd: result.spent_usd ?? 0,
+        controlled_partial: controlledPartial,
         summary:
           `Extracted ${result.facts_inserted} facts from ` +
           `${result.pages_processed}/${result.pages_considered} eligible pages` +
           (result.pages_failed > 0
             ? `; ${result.pages_failed} page(s) failed and remain unfinished.`
-            : '.'),
+            : '.') +
+          (controlledPartial
+            ? ' Stopped at the --max-runtime-minutes deadline (controlled partial completion).'
+            : ''),
       });
     } catch (err) {
       // Best-effort: receipt write failure shouldn't kill the run.
@@ -1758,6 +1774,13 @@ async function writeRunReceiptAndRollup(
       budget_exhausted: halted,
       error: result.pages_failed > 0,
     }),
+    // A controlled --max-runtime-minutes partial completion is a designed
+    // stop, recorded distinctly as controlled_partial_count (capacity/
+    // progress) — NEVER as a halt, and never conflated with a budget/backlog
+    // expected-limit stop either.
+    ...(controlledPartial
+      ? { controlled_partial_delta: 1, halt_delta: 0, expected_limit_delta: 0, round_completed_delta: 0 }
+      : {}),
   });
 }
 
