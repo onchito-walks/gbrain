@@ -1666,6 +1666,7 @@ export async function registerBuiltinHandlers(
       // `gbrain extract-conversation-facts --background --workers 20`
       // works end-to-end.
       workers: typeof job.data.workers === 'number' ? job.data.workers : undefined,
+      maxRuntimeMinutes: typeof job.data.maxRuntimeMinutes === 'number' ? job.data.maxRuntimeMinutes : undefined,
     });
     return result;
   });

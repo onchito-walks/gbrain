@@ -286,6 +286,8 @@ export interface ExtractConversationFactsCoreOpts {
    * if you need exact-ceiling compliance.
    */
   workers?: number;
+  /** Hard wall-clock limit for this invocation; aborts in-flight gateway calls. */
+  maxRuntimeMinutes?: number;
 }
 
 export interface ExtractConversationFactsResult {
@@ -1181,6 +1183,26 @@ export async function runExtractConversationFactsCore(
     throw new Error('runExtractConversationFactsCore: opts.sourceId is required');
   }
 
+  // An external supervisor may bound the process, but a per-run controller is
+  // required to abort an in-flight gateway call before it can keep refreshing
+  // its advisory lock forever. The limit is opt-in to preserve existing API
+  // behavior for callers that already own their cancellation policy.
+  const runtimeController = opts.maxRuntimeMinutes ? new AbortController() : null;
+  const callerAbort = () => runtimeController?.abort(signal?.reason);
+  if (runtimeController && signal) {
+    if (signal.aborted) callerAbort();
+    else signal.addEventListener('abort', callerAbort, { once: true });
+  }
+  const runtimeTimer = runtimeController
+    ? setTimeout(() => {
+        runtimeController.abort(Object.assign(
+          new Error(`extract-conversation-facts exceeded ${opts.maxRuntimeMinutes} minute runtime limit`),
+          { name: 'AbortError' },
+        ));
+      }, opts.maxRuntimeMinutes! * 60_000)
+    : undefined;
+  const effectiveSignal = runtimeController?.signal ?? signal;
+
   const result: ExtractConversationFactsResult = {
     pages_considered: 0,
     pages_processed: 0,
@@ -1257,7 +1279,7 @@ export async function runExtractConversationFactsCore(
     sleepMs,
     segmentLimit,
     types,
-    signal,
+    signal: effectiveSignal,
     cpMap: new Map(),
     llmFallbackModel,
   };
@@ -1448,6 +1470,7 @@ export async function runExtractConversationFactsCore(
 
   let ownedTracker: BudgetTracker | null = null;
   try {
+    try {
     if (opts.budgetTracker) {
       // Caller-managed scope — use as-is, no wrap (nested wrap REPLACES
       // tracker per gateway.ts AsyncLocalStorage semantics).
@@ -1511,6 +1534,10 @@ export async function runExtractConversationFactsCore(
   }
 
   return result;
+    } finally {
+      if (runtimeTimer) clearTimeout(runtimeTimer);
+      if (runtimeController && signal) signal.removeEventListener('abort', callerAbort);
+    }
 }
 
 /**
@@ -1619,6 +1646,7 @@ interface ParsedArgs {
   overrideDisabled?: boolean;
   /** v0.41.15.0 (D9): in-process parallel workers per source. */
   workers?: number;
+  maxRuntimeMinutes?: number;
   yes?: boolean;
   help?: boolean;
   error?: string;
@@ -1665,6 +1693,15 @@ function parseArgs(args: string[]): ParsedArgs {
     if (a === '--max-cost-usd') {
       const n = parseFloat(args[++i] ?? '');
       if (Number.isFinite(n) && n > 0) out.maxCostUsd = n;
+      continue;
+    }
+    if (a === '--max-runtime-minutes') {
+      const n = parseInt(args[++i] ?? '', 10);
+      if (!Number.isFinite(n) || n < 1 || n > 720) {
+        out.error = '--max-runtime-minutes must be an integer from 1 to 720';
+        return out;
+      }
+      out.maxRuntimeMinutes = n;
       continue;
     }
     if (a === '--workers' || a === '--concurrency') {
@@ -1717,6 +1754,7 @@ Options:
                          serialized. At workers=20 × ~$0.02/page that's ~$0.40 over.
                          Pin --workers 1 if you need exact-ceiling compliance.
   --workers N            Parallel page workers within a single source. Default 1.
+  --max-runtime-minutes N Abort the run (including in-flight gateway calls) after N minutes.
                          Recommended 5-20 for LLM-bound work on Postgres. PGLite
                          silently clamps to 1 (single-writer engine). Cross-process
                          safety is guaranteed by the per-page advisory lock + replay
@@ -1755,6 +1793,7 @@ function buildJobParams(args: string[]): Record<string, unknown> {
     // round-trips. The handler in src/commands/jobs.ts reads
     // job.data.workers and passes to runExtractConversationFactsCore.
     workers: parsed.workers,
+    maxRuntimeMinutes: parsed.maxRuntimeMinutes,
   };
 }
 
@@ -1837,6 +1876,7 @@ export async function runExtractConversationFacts(
         maxCostUsd: parsed.maxCostUsd,
         overrideDisabled: parsed.overrideDisabled,
         workers: parsed.workers,
+        maxRuntimeMinutes: parsed.maxRuntimeMinutes,
       });
 
       aggregate.pages_considered += perSource.pages_considered;
