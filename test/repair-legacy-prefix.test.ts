@@ -215,6 +215,54 @@ describe('stripGeneratedTimelineAppendix + semanticallyTimelineOnly (pure)', () 
       legacyFrontmatter: { title: 'Y' },
     })).toBe(false);
   });
+
+  test('semanticallyTimelineOnly true when legacy carries a legacy-only validate:false and canonical lacks validate (the five-like collapse)', () => {
+    expect(semanticallyTimelineOnly({
+      canonicalBody: 'REAL' + APPENDIX,
+      legacyBody: 'REAL',
+      canonicalFrontmatter: { title: 'X', timeline: ['2026-05-19 first'] },
+      legacyFrontmatter: { title: 'X', validate: false },
+    })).toBe(true);
+  });
+
+  test('semanticallyTimelineOnly false when legacy validate:true and canonical lacks validate', () => {
+    expect(semanticallyTimelineOnly({
+      canonicalBody: 'REAL' + APPENDIX,
+      legacyBody: 'REAL',
+      canonicalFrontmatter: { title: 'X', timeline: ['2026-05-19 first'] },
+      legacyFrontmatter: { title: 'X', validate: true },
+    })).toBe(false);
+  });
+
+  test('semanticallyTimelineOnly false when legacy validate uses a non-false value and canonical lacks validate', () => {
+    expect(semanticallyTimelineOnly({
+      canonicalBody: 'REAL' + APPENDIX,
+      legacyBody: 'REAL',
+      canonicalFrontmatter: { title: 'X', timeline: ['2026-05-19 first'] },
+      legacyFrontmatter: { title: 'X', validate: 'bypass' },
+    })).toBe(false);
+  });
+
+  test('semanticallyTimelineOnly false when canonical ALSO has validate:false but other keys differ', () => {
+    // validate:false is only a collapse aid when it is legacy-only (absent on
+    // canonical). When canonical carries its own validate key, the flag is not
+    // treated as a no-op and any other delta (e.g. title) still blocks.
+    expect(semanticallyTimelineOnly({
+      canonicalBody: 'REAL' + APPENDIX,
+      legacyBody: 'REAL',
+      canonicalFrontmatter: { title: 'X', timeline: ['2026-05-19 first'], validate: false },
+      legacyFrontmatter: { title: 'Y', validate: false },
+    })).toBe(false);
+  });
+
+  test('semanticallyTimelineOnly false when validate:false coexists with arbitrary frontmatter on legacy', () => {
+    expect(semanticallyTimelineOnly({
+      canonicalBody: 'REAL' + APPENDIX,
+      legacyBody: 'REAL',
+      canonicalFrontmatter: { title: 'X', timeline: ['2026-05-19 first'] },
+      legacyFrontmatter: { title: 'X', validate: false, arbitrary: 'field' },
+    })).toBe(false);
+  });
 });
 
 describe('repair-legacy-prefix plan + apply (PGLite)', () => {
@@ -359,6 +407,58 @@ describe('repair-legacy-prefix plan + apply (PGLite)', () => {
     await applyRepair(engine, plan);
     expect((await engine.getPage(`projects/bounty-hunting/bounty-market-reality-may-2026`, { sourceId: 'default' }))?.compiled_truth).toBe(canonBody);
     expect((await engine.getPage(`${PREFIX}projects/bounty-hunting/bounty-market-reality-may-2026`, { sourceId: 'default' }))?.compiled_truth).toBe(legacyBody);
+  });
+
+  test('COLLAPSE_TIMELINE_ONLY_DB: five-like legacy metadata (validate:false) collapses', async () => {
+    vault = makeVault();
+    const realBody = 'REAL CONTENT';
+    const timelineAppendix = [
+      `\n---\n\n## Timeline`,
+      `- **2026-05-19** | added system dashboard`,
+      `- **2026-08-22** | reconciled legacy prefix`,
+    ].join('\n');
+    // Canonical carries the auto-generated Timeline appendix + matching
+    // `timeline` frontmatter; legacy carries only the real content PLUS a
+    // legacy-only `validate: false` write-process artifact the canonical page
+    // dropped. Equivalent after stripping timeline + legacy-only validate:false
+    // → collapsible.
+    const canonFm = { title: 'System Dashboard', timeline: ['2026-05-19 added system dashboard'] };
+    const legacyFm = { title: 'System Dashboard', validate: false };
+    await seed('projects/hermes/system-dashboard', realBody + timelineAppendix, canonFm);
+    await seed(`${PREFIX}projects/hermes/system-dashboard`, realBody, legacyFm);
+
+    const plan = await buildRepairPlan(engine, { prefix: PREFIX, vaultRoot: vault });
+    const item = plan.items.find(i => i.slug === `${PREFIX}projects/hermes/system-dashboard`);
+    expect(item).toBeDefined();
+    expect(item!.outcome).toBe(COLLAPSE_TIMELINE_ONLY_DB);
+
+    await applyRepair(engine, plan);
+    expect(await engine.getPage(`${PREFIX}projects/hermes/system-dashboard`)).toBeNull();
+    const canon = await engine.getPage('projects/hermes/system-dashboard', { sourceId: 'default' });
+    expect(canon?.compiled_truth).toBe(realBody + timelineAppendix);
+  });
+
+  test('BLOCK_DIVERGENT_DB: validate:true on legacy (canonical lacks validate) still blocks', async () => {
+    vault = makeVault();
+    const realBody = 'REAL CONTENT';
+    const timelineAppendix = [
+      `\n---\n\n## Timeline`,
+      `- **2026-05-19** | added system dashboard`,
+    ].join('\n');
+    const canonFm = { title: 'System Dashboard', timeline: ['2026-05-19 added system dashboard'] };
+    const legacyFm = { title: 'System Dashboard', validate: true };
+    await seed('projects/hermes/system-dashboard', realBody + timelineAppendix, canonFm);
+    await seed(`${PREFIX}projects/hermes/system-dashboard`, realBody, legacyFm);
+
+    const plan = await buildRepairPlan(engine, { prefix: PREFIX, vaultRoot: vault });
+    const item = plan.items.find(i => i.slug === `${PREFIX}projects/hermes/system-dashboard`);
+    expect(item).toBeDefined();
+    expect(item!.outcome).toBe(BLOCK_DIVERGENT_DB);
+
+    await applyRepair(engine, plan);
+    // Legacy row untouched (not a clean timeline-only collapse).
+    expect((await engine.getPage(`${PREFIX}projects/hermes/system-dashboard`, { sourceId: 'default' }))?.compiled_truth).toBe(realBody);
+    expect((await engine.getPage('projects/hermes/system-dashboard', { sourceId: 'default' }))?.compiled_truth).toBe(realBody + timelineAppendix);
   });
 });
 
