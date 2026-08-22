@@ -3746,7 +3746,9 @@ function collectMarkdownSlugs(root: string): Set<string> {
       continue;
     }
     for (const e of entries) {
-      if (e.name.startsWith('.') || e.name === 'node_modules') continue;
+      // Dot-prefixed content directories are valid source data (for example
+      // drafts/.tmp-archive/). Exclude repository/runtime internals only.
+      if (e.name === '.git' || e.name === '.gbrain' || e.name === 'node_modules') continue;
       const childRel = rel ? `${rel}/${e.name}` : e.name;
       if (e.isDirectory()) stack.push(childRel);
       else if (/\.mdx?$/i.test(e.name)) out.add(slugifyPath(childRel).toLowerCase());
