@@ -61,6 +61,12 @@ describe('CANONICAL_PRICING — table integrity', () => {
       CANONICAL_PRICING['google:gemini-2.0-flash'],
     );
   });
+
+  test('OpenCode LiteLLM DeepSeek Flash route uses the native DeepSeek rate', () => {
+    expect(CANONICAL_PRICING['litellm:deepseek-v4-flash']).toEqual(
+      CANONICAL_PRICING['deepseek:deepseek-v4-flash'],
+    );
+  });
 });
 
 describe('canonicalLookup — id normalization', () => {
@@ -70,6 +76,10 @@ describe('canonicalLookup — id normalization', () => {
 
   test('colon form → hit', () => {
     expect(canonicalLookup('anthropic:claude-opus-4-8')).toEqual({ input: 5.0, output: 25.0 });
+  });
+
+  test('managed LiteLLM DeepSeek Flash route → hit', () => {
+    expect(canonicalLookup('litellm:deepseek-v4-flash')).toEqual({ input: 0.14, output: 0.28 });
   });
 
   test('slash form → hit', () => {

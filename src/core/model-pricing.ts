@@ -101,6 +101,10 @@ export const CANONICAL_PRICING: Record<string, ModelPricing> = {
   'deepseek:deepseek-chat':               { input:  0.14, output:  0.28 },
   // DeepSeek v4 (verified 2026-07-27 at api-docs.deepseek.com): cache-miss rates.
   'deepseek:deepseek-v4-flash':           { input:  0.14, output:  0.28 },
+  // The managed OpenCode GO route exposes this native DeepSeek model through
+  // the GBrain LiteLLM provider. It is the same billable model, so it needs
+  // the same canonical rate for budget-gated extraction to run.
+  'litellm:deepseek-v4-flash':             { input:  0.14, output:  0.28 },
   'deepseek:deepseek-v4-pro':             { input:  0.435, output: 0.87 },
 };
 
