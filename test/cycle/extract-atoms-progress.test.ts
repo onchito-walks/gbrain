@@ -117,6 +117,26 @@ describe('extract_atoms progress wiring (T4)', () => {
     expect(ticks[0].note).toMatch(/atoms.*skipped/);
   });
 
+  test('passes an explicit Haiku model to chat calls', async () => {
+    const seenModels: Array<string | undefined> = [];
+    const validAtomJson = JSON.stringify([
+      { title: 'A', atom_type: 'insight', body: 'body a' },
+    ]);
+    await runPhaseExtractAtoms(engine, {
+      sourceId: 'default',
+      _transcripts: [
+        { filePath: '/tmp/t1.txt', content: 'transcript 1 body', contentHash: 'h1'.repeat(8) },
+      ],
+      _pages: [],
+      _chat: async (o: ChatOpts) => {
+        seenModels.push(o.model);
+        return stubChat(validAtomJson)(o);
+      },
+    });
+    expect(seenModels).toEqual(['anthropic:claude-haiku-4-5-20251001']);
+  });
+
+
   test('no progress wiring required — opts.progress is optional', async () => {
     // Sanity: phase works without a reporter.
     const result = await runPhaseExtractAtoms(engine, {

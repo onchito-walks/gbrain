@@ -592,12 +592,12 @@ export async function runPhaseExtractAtoms(
     : 1;
 
   type ItemResult = {
-    item: AtomWorkItem;
+    item: WorkItem;
     atoms: ReturnType<typeof parseAtomsResponse>;
     spend: number;
     error?: string;
   };
-  async function extractOne(item: AtomWorkItem): Promise<ItemResult> {
+  async function extractOne(item: WorkItem): Promise<ItemResult> {
     const originLabel = item.kind === 'transcript' ? item.filePath : item.slug;
     try {
       const result = await chat({
