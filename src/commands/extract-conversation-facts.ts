@@ -1075,7 +1075,13 @@ async function processPage(
 
   for (const seg of segments) {
     if (state.segmentLimit > 0 && segmentsThisPage >= state.segmentLimit) break;
-    if (state.signal?.aborted) throw new Error('aborted');
+    if (state.signal?.aborted) {
+      // Preserve the abort reason: when the runtime-limit deadline fired, this
+      // is the runtime-limit AbortError whose identity isRuntimeLimitAbort relies
+      // on. A bare `new Error('aborted')` would escape that check.
+      if (state.signal.reason instanceof Error) throw state.signal.reason;
+      throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+    }
 
     const text = renderSegmentForExtraction(page.title || page.slug, seg);
     const sessionId = `${PER_SEGMENT_SOURCE_PREFIX}:${page.slug}`;
@@ -1497,7 +1503,15 @@ export async function runExtractConversationFactsCore(
         let offset = 0;
         // eslint-disable-next-line no-constant-condition
         while (true) {
-          if (signal?.aborted) throw new Error('aborted');
+          // The internal --max-runtime-minutes deadline aborts the per-run
+          // `effectiveSignal`, NOT the caller's `signal`. Check the former so
+          // the deadline stops the enumeration boundary; throw its reason so
+          // isRuntimeLimitAbort can recognize it (a bare `Error('aborted')`
+          // would escape the controlled-partial catch).
+          if (effectiveSignal?.aborted) {
+            if (effectiveSignal.reason instanceof Error) throw effectiveSignal.reason;
+            throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+          }
           if (opts.limit && processedPagesCount >= opts.limit) break pageLoop;
 
           const batch = await engine.listPages({
@@ -1537,7 +1551,7 @@ export async function runExtractConversationFactsCore(
           const poolResult = await runSlidingPool({
             items: claimable,
             workers,
-            signal,
+            signal: effectiveSignal,
             onItem: (page) => processPageWithLock(page),
             onError: (error) => (isAbortError(error) ? 'abort' : 'continue'),
             failureLabel: (page) => page.slug,
@@ -1546,8 +1560,8 @@ export async function runExtractConversationFactsCore(
             isAbortError(failure.error),
           );
           if (cancellation) throw cancellation.error;
-          if (signal?.aborted) {
-            if (signal.reason instanceof Error) throw signal.reason;
+          if (effectiveSignal?.aborted) {
+            if (effectiveSignal.reason instanceof Error) throw effectiveSignal.reason;
             throw Object.assign(new Error('caller cancelled'), {
               name: 'AbortError',
             });
@@ -1622,7 +1636,20 @@ export async function runExtractConversationFactsCore(
     // outcome instead of surfacing as a systemd-failed unit. Genuine
     // provider/extraction errors (including non-runtime-limit aborts) still
     // fall through to `throw` and remain failures (exit 1).
-    if (isRuntimeLimitAbort(err)) {
+    if (
+      isRuntimeLimitAbort(err) ||
+      // Robustness net for the live bulk wrapper: a gateway call that returns
+      // around the deadline is observed post-`await` by a bare
+      // `AbortError('aborted')` (this file's segment loop, or
+      // core/facts/extract.ts's post-parse guard) that loses the runtime-limit
+      // reason. When the runtime controller itself aborted with the runtime
+      // reason, that wrapper is still the deadline, not a genuine provider
+      // error — so treat it as the controlled partial. Caller/provider aborts
+      // keep a non-matching reason and still fall through to `throw`.
+      (effectiveSignal?.aborted &&
+        effectiveSignal.reason instanceof Error &&
+        isRuntimeLimitAbort(effectiveSignal.reason))
+    ) {
       result.runtime_aborted = true;
       // Normal rollup/receipt path reflects the halt (`halt_delta=1`) so the
       // partial run is observable in doctor; a --dry-run preview persists
