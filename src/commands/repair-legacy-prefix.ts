@@ -222,6 +222,26 @@ function stripTimelineFrontmatter(frontmatter: Record<string, unknown> | null | 
 }
 
 /**
+ * Strip a legacy-only `validate: false` frontmatter flag from the LEGACY
+ * candidate, and only then. The flag is removed ONLY when it is present as
+ * exactly boolean `false` on the legacy side AND entirely absent from the
+ * canonical side (a legacy write-process artifact the canonical file-backed
+ * page dropped). `validate: true`, any other `validate` value, and any other
+ * key are NEVER ignored — they still block equivalence.
+ */
+function stripLegacyValidateFalseOnly(
+  legacy: Record<string, unknown> | null | undefined,
+  canonical: Record<string, unknown> | null | undefined,
+): Record<string, unknown> {
+  const merged = { ...(legacy ?? {}) };
+  const canon = canonical ?? {};
+  if (merged['validate'] === false && !Object.prototype.hasOwnProperty.call(canon, 'validate')) {
+    delete merged['validate'];
+  }
+  return merged;
+}
+
+/**
  * Conservative semantic-equivalence check. Returns true ONLY when the canonical
  * compiled_truth is byte-identical to the legacy body once the canonical's
  * verified auto-generated Timeline appendix (a pure append-only Timeline
@@ -240,12 +260,18 @@ export function semanticallyTimelineOnly(
 ): boolean {
   const base = stripGeneratedTimelineAppendix(opts.canonicalBody);
   if (base === null) return false;
-  // The core content (real body) must agree exactly, and the only allowed
-  // frontmatter delta is the `timeline` metadata field.
+  // The core content (real body) must agree exactly. The only allowed
+  // frontmatter deltas are the auto-generated `timeline` metadata field (on
+  // either page) and the legacy-only `validate: false` flag (stripped ONLY
+  // when present on legacy and absent on canonical). Everything else — real
+  // content, validate:true/other validate values, arbitrary frontmatter —
+  // still yields false.
   if (base !== opts.legacyBody) return false;
   if (!deepEqual(
     stripTimelineFrontmatter(opts.canonicalFrontmatter),
-    stripTimelineFrontmatter(opts.legacyFrontmatter),
+    stripTimelineFrontmatter(
+      stripLegacyValidateFalseOnly(opts.legacyFrontmatter, opts.canonicalFrontmatter),
+    ),
   )) return false;
   return true;
 }
