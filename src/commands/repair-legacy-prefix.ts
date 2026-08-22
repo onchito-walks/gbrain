@@ -22,6 +22,16 @@
  *   COLLAPSE_IDENTICAL_DB   unprefixed DB page exists with byte-identical
  *                           compiled_truth → the legacy row is a true
  *                           duplicate → soft-delete it; canonical retained.
+ *   COLLAPSE_TIMELINE_ONLY_DB
+ *                           unprefixed DB page differs from legacy ONLY by the
+ *                           canonical page's auto-generated Timeline appendix
+ *                           and its matching `timeline` frontmatter metadata
+ *                           (a pure append-only Timeline section with no other
+ *                           content delta) → legacy is a duplicate of the
+ *                           file-backed canonical → soft-delete it. Never
+ *                           fires when any other content or frontmatter
+ *                           difference exists (e.g. bounty-market-reality stays
+ *                           blocked); does NOT normalize arbitrary content.
  *   COLLAPSE_IDENTICAL_FILE vault file exists at target whose body (frontmatter
  *                           normalized) is identical to the legacy compiled_truth
  *                           → soft-delete the legacy duplicate row.
@@ -54,6 +64,7 @@ import { slugifyPath } from '../core/sync.ts';
 
 export const SAFE_RENAME = 'SAFE_RENAME';
 export const COLLAPSE_IDENTICAL_DB = 'COLLAPSE_IDENTICAL_DB';
+export const COLLAPSE_TIMELINE_ONLY_DB = 'COLLAPSE_TIMELINE_ONLY_DB';
 export const COLLAPSE_IDENTICAL_FILE = 'COLLAPSE_IDENTICAL_FILE';
 export const BLOCK_DIVERGENT_DB = 'BLOCK_DIVERGENT_DB';
 export const BLOCK_DIVERGENT_FILE = 'BLOCK_DIVERGENT_FILE';
@@ -63,6 +74,7 @@ export const BLOCK_AMBIGUOUS_TARGET = 'BLOCK_AMBIGUOUS_TARGET';
 export type RepairOutcome =
   | typeof SAFE_RENAME
   | typeof COLLAPSE_IDENTICAL_DB
+  | typeof COLLAPSE_TIMELINE_ONLY_DB
   | typeof COLLAPSE_IDENTICAL_FILE
   | typeof BLOCK_DIVERGENT_DB
   | typeof BLOCK_DIVERGENT_FILE
@@ -93,6 +105,7 @@ export interface RepairPlan {
 export const APPLICABLE_OUTCOMES: readonly RepairOutcome[] = [
   SAFE_RENAME,
   COLLAPSE_IDENTICAL_DB,
+  COLLAPSE_TIMELINE_ONLY_DB,
   COLLAPSE_IDENTICAL_FILE,
 ] as const;
 
@@ -102,6 +115,126 @@ export function stripYamlFrontmatter(s: string): string {
   const t = s.replace(/^\uFEFF/, '');
   const m = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/.exec(t);
   return (m ? t.slice(m[0].length) : t).trim();
+}
+
+/**
+ * Detect + strip a verified auto-generated Timeline appendix from the END of a
+ * compiled_truth body. The auto-generated Timeline section (produced by the
+ * canonical write/serialize path) is a terminal block that looks like:
+ *
+ *     ...real content...
+ *
+ *     ---
+ *
+ *     ## Timeline
+ *     - **YYYY-MM-DD** | first entry
+ *     - **YYYY-MM-DD** | second entry
+ *
+ * This helper is deliberately CONSERVATIVE: it returns `null` (i.e. "do not
+ * treat as timeline-only") unless EVERY line after the `## Timeline` heading is
+ * a timeline entry bullet of the documented shape `- **YYYY-MM-DD** | ...`
+ * (or a blank/continuation line belonging to an entry). Any other content is
+ * left untouched — the caller then correctly classifies the case as a real
+ * divergence (BLOCK_DIVERGENT_DB). The section is only ever the trailing
+ * appendix, never interior content.
+ */
+export function stripGeneratedTimelineAppendix(body: string): string | null {
+  const lines = body.split('\n');
+  // Find the LAST line that is a bare `## Timeline` (or `## History`) heading.
+  let headingIdx = -1;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const t = lines[i].trim();
+    if (/^#{1,2}\s*(Timeline|History)\s*$/i.test(t)) {
+      headingIdx = i;
+      break;
+    }
+  }
+  if (headingIdx < 0) return null;
+
+  // Probe the heading's own line — it must be the section opener.
+  if (!/^#{1,2}\s*(Timeline|History)\s*$/i.test(lines[headingIdx].trim())) return null;
+
+  let sawEntry = false;
+  for (let i = headingIdx + 1; i < lines.length; i++) {
+    const ln = lines[i];
+    const t = ln.trim();
+    if (t.length === 0) continue; // blank/separator whitespace allowed
+    // A timeline entry bullet: `- **YYYY-MM-DD** | ...` or `**YYYY-MM-DD** | ...`.
+    // Allow an optional leading `* `/`- ` then a `**date**` then `|`/`-`/`--`.
+    // (matches link-extraction.ts TIMELINE_LINE_RE).
+    if (/^-?\s*-?\s*\*\*\d{4}-\d{2}-\d{2}\*\*\s*[|\-–—]+/.test(t)) {
+      sawEntry = true;
+      continue;
+    }
+    // A continuation line (indented detail under a prior entry) is acceptable.
+    if (sawEntry && /^\s+/.test(ln)) continue;
+    // Anything else → NOT a pure generated timeline appendix. Leave untouched.
+    return null;
+  }
+  if (!sawEntry) return null; // heading with no entries → not a generated appendix
+
+  // Strip the appendix from the trailing heading line onward. Also drop the
+  // separator (`---`) and surrounding blank lines that serializeMarkdown emits
+  // between the real content and the Timeline section.
+  let base = lines.slice(0, headingIdx).join('\n').replace(/\s+$/, '');
+  // Drop a preceding standalone `---` separator line (and any blank gap).
+  base = base.replace(/\n?---\r?\n?$/, '').replace(/\s+$/, '').trimEnd();
+  return base;
+}
+
+/** Deep-compare two JSON-like frontmatter values (objects/arrays/scalars). */
+function deepEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a)) {
+    if (a.length !== (b as unknown[]).length) return false;
+    return (a as unknown[]).every((v, i) => deepEqual(v, (b as unknown[])[i]));
+  }
+  const aKeys = Object.keys(a as Record<string, unknown>);
+  const bKeys = Object.keys(b as Record<string, unknown>);
+  if (aKeys.length !== bKeys.length) return false;
+  for (const k of aKeys) {
+    if (!Object.prototype.hasOwnProperty.call(b, k)) return false;
+    if (!deepEqual((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k])) return false;
+  }
+  return true;
+}
+
+/** Return a copy of frontmatter with the `timeline` metadata field removed. */
+function stripTimelineFrontmatter(frontmatter: Record<string, unknown> | null | undefined): Record<string, unknown> {
+  if (!frontmatter) return {};
+  const { timeline: _ignore, ...rest } = frontmatter;
+  return rest;
+}
+
+/**
+ * Conservative semantic-equivalence check. Returns true ONLY when the canonical
+ * compiled_truth is byte-identical to the legacy body once the canonical's
+ * verified auto-generated Timeline appendix (a pure append-only Timeline
+ * section, matched by stripGeneratedTimelineAppendix) is removed, AND the two
+ * frontmatters are equal once the auto-generated `timeline` metadata field is
+ * removed from each. Nothing else is normalized — any other content or
+ * frontmatter difference yields false.
+ */
+export function semanticallyTimelineOnly(
+  opts: {
+    canonicalBody: string;
+    legacyBody: string;
+    canonicalFrontmatter?: Record<string, unknown> | null;
+    legacyFrontmatter?: Record<string, unknown> | null;
+  },
+): boolean {
+  const base = stripGeneratedTimelineAppendix(opts.canonicalBody);
+  if (base === null) return false;
+  // The core content (real body) must agree exactly, and the only allowed
+  // frontmatter delta is the `timeline` metadata field.
+  if (base !== opts.legacyBody) return false;
+  if (!deepEqual(
+    stripTimelineFrontmatter(opts.canonicalFrontmatter),
+    stripTimelineFrontmatter(opts.legacyFrontmatter),
+  )) return false;
+  return true;
 }
 
 /** Map a loaded Page back to a PageInput so `putPage` can reproduce it. */
@@ -170,20 +303,46 @@ export function classifyRepair(
     sourceId: string;
     legacyBody: string;
     /** Unprefixed DB page in the same source (null if absent). */
-    canonDb: { slug: string; body: string } | null;
+    canonDb: { slug: string; body: string; frontmatter?: Record<string, unknown> | null } | null;
     /** Frontmatter-normalized body of the vault file at target (null if none). */
     vaultBody: string | null;
     /** Number of legacy pages resolving to this same target. */
     targetCount: number;
+    /** Legacy page's frontmatter (used by the timeline-only semantic check). */
+    legacyFrontmatter?: Record<string, unknown> | null;
   },
 ): { outcome: RepairOutcome; reason?: string; canonLen?: number } {
   const { targetCount } = opts;
   if (opts.canonDb) {
     const identical = opts.canonDb.body === opts.legacyBody;
+    if (identical) {
+      return {
+        outcome: 'COLLAPSE_IDENTICAL_DB',
+        canonLen: opts.canonDb.body.length,
+        reason: 'unprefixed DB page is byte-identical; legacy row is a duplicate',
+      };
+    }
+    // Conservative semantic-equivalence: canonical differs ONLY by an
+    // auto-generated Timeline appendix + its matching `timeline` frontmatter
+    // metadata. Strips ONLY that verified appendix — nothing else is
+    // normalized. Real content differences (e.g. bounty-market-reality) stay
+    // blocked.
+    if (semanticallyTimelineOnly({
+      canonicalBody: opts.canonDb.body,
+      legacyBody: opts.legacyBody,
+      canonicalFrontmatter: opts.canonDb.frontmatter ?? null,
+      legacyFrontmatter: opts.legacyFrontmatter ?? null,
+    })) {
+      return {
+        outcome: 'COLLAPSE_TIMELINE_ONLY_DB',
+        canonLen: opts.canonDb.body.length,
+        reason: 'unprefixed DB page differs only by auto-generated Timeline appendix + matching frontmatter timeline metadata; legacy is a duplicate of the file-backed canonical',
+      };
+    }
     return {
-      outcome: identical ? 'COLLAPSE_IDENTICAL_DB' : 'BLOCK_DIVERGENT_DB',
+      outcome: 'BLOCK_DIVERGENT_DB',
       canonLen: opts.canonDb.body.length,
-      reason: identical ? 'unprefixed DB page is byte-identical; legacy row is a duplicate' : 'unprefixed DB page differs in content; legacy preserved and blocked',
+      reason: 'unprefixed DB page differs in content; legacy preserved and blocked',
     };
   }
   if (opts.vaultBody !== null) {
@@ -215,7 +374,7 @@ export async function buildRepairPlan(
 
   const items: RepairItem[] = [];
   // Cache canonical DB lookups and vault bodies per unique target.
-  const canonCache = new Map<string, { slug: string; body: string } | null>();
+  const canonCache = new Map<string, { slug: string; body: string; frontmatter?: Record<string, unknown> | null } | null>();
   const vaultBodyCache = new Map<string, string | null>();
   const targetCounts = new Map<string, number>();
 
@@ -228,11 +387,11 @@ export async function buildRepairPlan(
   for (const p of legacyPages.sort((a, b) => a.slug.localeCompare(b.slug))) {
     const target = p.slug.slice(prefix.length);
 
-    let canon: { slug: string; body: string } | null = null;
+    let canon: { slug: string; body: string; frontmatter?: Record<string, unknown> | null } | null = null;
     if (target) {
       if (!canonCache.has(target)) {
         const cp = await engine.getPage(target, { sourceId: p.source_id });
-        canonCache.set(target, cp ? { slug: cp.slug, body: cp.compiled_truth } : null);
+        canonCache.set(target, cp ? { slug: cp.slug, body: cp.compiled_truth, frontmatter: cp.frontmatter ?? null } : null);
       }
       canon = canonCache.get(target) ?? null;
 
@@ -252,6 +411,7 @@ export async function buildRepairPlan(
         sourceId: p.source_id,
         legacyBody: p.compiled_truth,
         canonDb: canon,
+        legacyFrontmatter: p.frontmatter ?? null,
         vaultBody: vaultBody,
         targetCount: targetCounts.get(target) ?? 1,
       });
@@ -263,7 +423,7 @@ export async function buildRepairPlan(
       outcome: cls.outcome,
       legacyLen: p.compiled_truth.length,
       canonLen: cls.canonLen,
-      canonicalSlug: cls.outcome.startsWith('BLOCK_DIVERGENT_DB') || cls.outcome === 'COLLAPSE_IDENTICAL_DB' ? target : undefined,
+      canonicalSlug: cls.outcome.startsWith('BLOCK_DIVERGENT_DB') || cls.outcome === 'COLLAPSE_IDENTICAL_DB' || cls.outcome === 'COLLAPSE_TIMELINE_ONLY_DB' ? target : undefined,
       reason: cls.reason,
     });
   }
@@ -303,7 +463,8 @@ export async function applyRepair(
       slug: item.slug,
       sourceId: item.sourceId,
       legacyBody: legacy.compiled_truth,
-      canonDb: canon ? { slug: canon.slug, body: canon.compiled_truth } : null,
+      canonDb: canon ? { slug: canon.slug, body: canon.compiled_truth, frontmatter: canon.frontmatter ?? null } : null,
+      legacyFrontmatter: legacy.frontmatter ?? null,
       vaultBody,
       targetCount,
     });
@@ -365,7 +526,8 @@ Options:
                    (default: resolved from the single local source)
   --source <id>    Scope to one source (default: all sources)
   --apply          Execute ONLY the reversible cases (SAFE_RENAME, both
-                   COLLAPSE_*). Divergent collisions are never mutated.
+                   COLLAPSE_* incl. the timeline-only semantic case).
+                   Divergent collisions are never mutated.
   --json           Emit the plan / apply results as JSON
   --help, -h       Show this help
 `);
