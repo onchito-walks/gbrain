@@ -913,6 +913,19 @@ async function processPage(
   const allSegments = splitIntoSegments(messages);
   const segments = splitIntoSegments(messages, { sinceIso });
   if (segments.length === 0) {
+    // A page without a durable outcome can carry rows from a killed legacy
+    // attempt. Clear only this command's rows before minting zero-fact audit
+    // outcomes; otherwise the facts fence can silently reject the new marker
+    // and leave the page in the doctor backlog forever.
+    if (!state.dryRun) {
+      const cleaned = await deleteOrphanFactsForPage(
+        state.engine,
+        state.sourceId,
+        page.slug,
+      );
+      state.result.orphan_facts_cleaned += cleaned;
+    }
+
     // Two distinct zero-segment outcomes:
     //  (1) Fresh pass (no sinceIso): the page parsed but has no segment
     //      of >= MIN_SEGMENT_MESSAGES messages (single-message transcript,
