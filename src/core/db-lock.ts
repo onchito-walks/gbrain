@@ -657,15 +657,18 @@ export async function deleteLockRowExact(
  * sweep. Intended to run at cycle start (and under `gbrain doctor --fix` for
  * no-autopilot brains).
  *
- * Scoped to the `gbrain-sync:*` and `gbrain-cycle`/`gbrain-cycle:*` namespaces
- * ONLY. `gbrain_cycle_locks` is shared by enrich, the minion supervisor,
- * reindex, schema-pack, and elections (`tryWithDbElection`) — a blanket sweep
- * would change their TTL-failover timing. Those keep their existing
- * on-contention + TTL behavior.
+ * Scoped to the `gbrain-sync:*`, `gbrain-cycle`/`gbrain-cycle:*`, and
+ * `extract-conversation-facts:*` namespaces ONLY. Conversation-facts locks
+ * are per-page, short-TTL advisory locks whose owner is the local CLI/worker;
+ * a crashed owner otherwise leaves a page permanently skipped until another
+ * extraction happens to contend for it. `gbrain_cycle_locks` is also shared
+ * by enrich, the minion supervisor, reindex, schema-pack, and elections
+ * (`tryWithDbElection`) — those remain deliberately out of scope because a
+ * blanket sweep would change their TTL-failover timing.
  *
- *   reapDeadHolderLocks (host-scoped, sync/cycle namespaces only)
+ *   reapDeadHolderLocks (host-scoped, explicitly safe namespaces only)
  *     selectLockRows → for each row:
- *     ├─ id not in sync/cycle namespace ───────→ KEEP (blast-radius scope)
+ *     ├─ id not in an approved namespace ──────→ KEEP (blast-radius scope)
  *     ├─ holder_host != thisHost ──────────────→ KEEP (cross_host; can't probe)
  *     ├─ kill(pid,0) == alive / EPERM ─────────→ KEEP (live or not-ours)
  *     ├─ ESRCH && age < 60s grace ─────────────→ KEEP (PID-reuse defense)
@@ -677,7 +680,8 @@ function isReapableNamespace(lockId: string): boolean {
   return (
     lockId === 'gbrain-cycle' ||
     lockId.startsWith('gbrain-cycle:') ||
-    lockId.startsWith('gbrain-sync:')
+    lockId.startsWith('gbrain-sync:') ||
+    lockId.startsWith('extract-conversation-facts:')
   );
 }
 

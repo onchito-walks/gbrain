@@ -1,8 +1,9 @@
 /**
- * #1972 — host-scoped reaper for dead-holder sync/cycle locks.
+ * #1972 — host-scoped reaper for safe dead-holder locks.
  *
  * Covers:
- *   - reapDeadHolderLocks: namespace scope (sync/cycle only, NOT election/etc),
+ *   - reapDeadHolderLocks: namespace scope (sync/cycle/conversation-facts only,
+ *     NOT election/etc),
  *     same-host dead-PID reaped regardless of TTL, live/cross-host/within-grace
  *     kept. Uses the injectable process.kill seam so it's deterministic.
  *   - deleteLockRowExact: snapshot-matched delete (the TOCTOU defense) — a
@@ -76,14 +77,20 @@ async function lockIds(): Promise<string[]> {
 }
 
 describe('reapDeadHolderLocks', () => {
-  test('reaps same-host dead-PID sync + cycle locks (regardless of TTL)', async () => {
+  test('reaps same-host dead-PID sync, cycle, and conversation-facts locks (regardless of TTL)', async () => {
     await seedLock('gbrain-sync:src-a', 900001, LOCAL, OLD_S, /*ttlFuture*/ true);  // dead, TTL NOT expired
     await seedLock('gbrain-cycle', 900002, LOCAL, OLD_S, false);                     // dead, TTL expired
     await seedLock('gbrain-cycle:src-b', 900003, LOCAL, OLD_S, true);                // dead, TTL NOT expired
+    await seedLock('extract-conversation-facts:default:page-a', 900004, LOCAL, OLD_S, true);
 
     const { reaped, reapedIds } = await reapDeadHolderLocks(engine, killSeam(new Set()));
-    expect(reaped).toBe(3);
-    expect(reapedIds.sort()).toEqual(['gbrain-cycle', 'gbrain-cycle:src-b', 'gbrain-sync:src-a']);
+    expect(reaped).toBe(4);
+    expect(reapedIds.sort()).toEqual([
+      'extract-conversation-facts:default:page-a',
+      'gbrain-cycle',
+      'gbrain-cycle:src-b',
+      'gbrain-sync:src-a',
+    ]);
     expect(await lockIds()).toEqual([]);
   });
 
