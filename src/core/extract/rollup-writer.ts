@@ -15,11 +15,16 @@
  *   - When persistent failures accumulate (>10/hr per future doctor
  *     rule), an auto-rebuild from JSONL self-heals the cache.
  *
- * Schema (migration v106):
+ * Schema (migration v106 + v126):
  *   extract_rollup_7d (kind, source_id, day, cost_usd, halt_count,
- *                      eval_fail_count, eval_pass_count,
- *                      round_completed_count, rollup_write_failures,
- *                      updated_at, PK(kind, source_id, day))
+ *                      controlled_partial_count, eval_fail_count,
+ *                      eval_pass_count, round_completed_count,
+ *                      rollup_write_failures, updated_at,
+ *                      PK(kind, source_id, day))
+ *
+ * `controlled_partial_count` (v126) counts `--max-runtime-minutes` CONTROLLED
+ * partial completions distinctly from `halt_count` (true unexpected halts), so
+ * doctor's halt_rate reflects real failures, not expected deadline stops.
  *
  * Concurrency: PostgreSQL INSERT ... ON CONFLICT DO UPDATE is
  * concurrency-safe for the per-(kind, source_id, day) PK. Multiple
@@ -35,6 +40,11 @@ import type { BrainEngine } from '../engine.ts';
  * event passes round_completed_delta=1; an eval-fail event passes
  * eval_fail_delta=1; a halt event passes halt_delta=1). cost_delta is the
  * cumulative cost ADD for the period this event represents.
+ *
+ * Distinction (EXTRACT-HEALTH): a `--max-runtime-minutes` CONTROLLED partial
+ * completion passes controlled_partial_delta=1 and halt_delta=0 — it is an
+ * expected capacity/progress event, recorded separately from a TRUE halt
+ * (budget/overage/page-failure), which passes halt_delta=1.
  */
 export interface RollupUpsertInput {
   kind: string;
@@ -43,6 +53,10 @@ export interface RollupUpsertInput {
   day?: string;
   cost_delta?: number;
   halt_delta?: number;
+  /** v126: increments controlled_partial_count for CONTROLLED
+   * (--max-runtime-minutes) partial completions. Mutually exclusive with a
+   * true halt_delta on the same event. */
+  controlled_partial_delta?: number;
   eval_fail_delta?: number;
   eval_pass_delta?: number;
   round_completed_delta?: number;
@@ -105,6 +119,7 @@ export async function upsertExtractRollup(
   const day = input.day ?? today();
   const cost = input.cost_delta ?? 0;
   const halts = input.halt_delta ?? 0;
+  const controlledPartials = input.controlled_partial_delta ?? 0;
   const evalFails = input.eval_fail_delta ?? 0;
   const evalPasses = input.eval_pass_delta ?? 0;
   const completed = input.round_completed_delta ?? 0;
@@ -115,24 +130,52 @@ export async function upsertExtractRollup(
     await engine.executeRaw(
       `INSERT INTO extract_rollup_7d (
          kind, source_id, day,
-         cost_usd, halt_count, eval_fail_count, eval_pass_count,
+         cost_usd, halt_count, controlled_partial_count, eval_fail_count, eval_pass_count,
          round_completed_count, expected_limit_count, rollup_write_failures, updated_at
        )
-       VALUES ($1, $2, $3::date, $4, $5, $6, $7, $8, $9, $10, now())
+       VALUES ($1, $2, $3::date, $4, $5, $6, $7, $8, $9, $10, $11, now())
        ON CONFLICT (kind, source_id, day) DO UPDATE SET
-         cost_usd               = extract_rollup_7d.cost_usd               + EXCLUDED.cost_usd,
-         halt_count             = extract_rollup_7d.halt_count             + EXCLUDED.halt_count,
-         eval_fail_count        = extract_rollup_7d.eval_fail_count        + EXCLUDED.eval_fail_count,
-         eval_pass_count        = extract_rollup_7d.eval_pass_count        + EXCLUDED.eval_pass_count,
-         round_completed_count  = extract_rollup_7d.round_completed_count  + EXCLUDED.round_completed_count,
-         expected_limit_count   = extract_rollup_7d.expected_limit_count   + EXCLUDED.expected_limit_count,
-         rollup_write_failures  = extract_rollup_7d.rollup_write_failures  + EXCLUDED.rollup_write_failures,
-         updated_at             = now()`,
-      [input.kind, input.source_id, day, cost, halts, evalFails, evalPasses, completed, expectedLimits, failures],
+         cost_usd                  = extract_rollup_7d.cost_usd                  + EXCLUDED.cost_usd,
+         halt_count                = extract_rollup_7d.halt_count                + EXCLUDED.halt_count,
+         controlled_partial_count  = extract_rollup_7d.controlled_partial_count  + EXCLUDED.controlled_partial_count,
+         eval_fail_count           = extract_rollup_7d.eval_fail_count           + EXCLUDED.eval_fail_count,
+         eval_pass_count           = extract_rollup_7d.eval_pass_count           + EXCLUDED.eval_pass_count,
+         round_completed_count     = extract_rollup_7d.round_completed_count     + EXCLUDED.round_completed_count,
+         expected_limit_count      = extract_rollup_7d.expected_limit_count      + EXCLUDED.expected_limit_count,
+         rollup_write_failures     = extract_rollup_7d.rollup_write_failures     + EXCLUDED.rollup_write_failures,
+         updated_at                = now()`,
+      [input.kind, input.source_id, day, cost, halts, controlledPartials, evalFails, evalPasses, completed, expectedLimits, failures],
     );
     return { ok: true };
   } catch (err) {
     const msg = (err as Error).message || String(err);
+    // v146 back-compat: a brain that hasn't applied migration v146 yet has
+    // no controlled_partial_count column. Retry the v141 statement; controlled
+    // partials fold back into halt_count until the migration runs (the
+    // pre-v146 accounting is exactly this conflation).
+    if (/controlled_partial_count/i.test(msg)) {
+      try {
+        await engine.executeRaw(
+          `INSERT INTO extract_rollup_7d (
+            kind, source_id, day,
+            cost_usd, halt_count, eval_fail_count, eval_pass_count,
+            round_completed_count, expected_limit_count, rollup_write_failures, updated_at
+          )
+          VALUES ($1, $2, $3::date, $4, $5, $6, $7, $8, $9, $10, now())
+          ON CONFLICT (kind, source_id, day) DO UPDATE SET
+            cost_usd               = extract_rollup_7d.cost_usd               + EXCLUDED.cost_usd,
+            halt_count             = extract_rollup_7d.halt_count             + EXCLUDED.halt_count,
+            eval_fail_count        = extract_rollup_7d.eval_fail_count        + EXCLUDED.eval_fail_count,
+            eval_pass_count        = extract_rollup_7d.eval_pass_count        + EXCLUDED.eval_pass_count,
+            round_completed_count  = extract_rollup_7d.round_completed_count  + EXCLUDED.round_completed_count,
+            expected_limit_count   = extract_rollup_7d.expected_limit_count   + EXCLUDED.expected_limit_count,
+            rollup_write_failures  = extract_rollup_7d.rollup_write_failures  + EXCLUDED.rollup_write_failures,
+            updated_at             = now()`,
+          [input.kind, input.source_id, day, cost, halts + controlledPartials, evalFails, evalPasses, completed, expectedLimits, failures],
+        );
+        return { ok: true };
+      } catch { /* fall through to the expected_limit_count retry below */ }
+    }
     // #4482 back-compat: a brain that hasn't applied migration v141 yet has
     // no expected_limit_count column. Rather than losing the WHOLE rollup
     // write (best-effort would swallow it), retry the pre-v141 statement —
@@ -155,7 +198,7 @@ export async function upsertExtractRollup(
              round_completed_count  = extract_rollup_7d.round_completed_count  + EXCLUDED.round_completed_count,
              rollup_write_failures  = extract_rollup_7d.rollup_write_failures  + EXCLUDED.rollup_write_failures,
              updated_at             = now()`,
-          [input.kind, input.source_id, day, cost, halts + expectedLimits, evalFails, evalPasses, completed, failures],
+          [input.kind, input.source_id, day, cost, halts + expectedLimits + controlledPartials, evalFails, evalPasses, completed, failures],
         );
         return { ok: true };
       } catch { /* fall through to the normal failure record */ }

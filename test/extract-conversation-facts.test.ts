@@ -863,6 +863,22 @@ describe('runExtractConversationFactsCore', () => {
       );
       expect(result.runtime_aborted).toBe(true);
       expect(result.pages_failed).toBe(0);
+      // EXTRACT-HEALTH (v126): a controlled partial must be recorded as
+      // controlled_partial_count (capacity/progress), NOT halt_count, so it
+      // never inflates doctor's halt_rate.
+      const rollup = await engine.executeRaw<{
+        halt_count: number;
+        controlled_partial_count: number;
+      }>(
+        `SELECT halt_count, controlled_partial_count
+           FROM extract_rollup_7d
+          WHERE kind = 'facts.conversation' AND source_id = 'default'
+          ORDER BY day DESC LIMIT 1`,
+        [],
+      );
+      expect(rollup.length).toBeGreaterThan(0);
+      expect(rollup[0].halt_count).toBe(0);
+      expect(rollup[0].controlled_partial_count).toBeGreaterThan(0);
     });
   });
 

@@ -6440,6 +6440,26 @@ export const MIGRATIONS: Migration[] = [
       END $$;
     `,
   },
+  {
+    version: 146,
+    name: 'extract_rollup_7d_controlled_partial_count',
+    // EXTRACT-HEALTH accounting fix. A `--max-runtime-minutes` controlled
+    // partial completion (extract-conversation-facts sets runtime_aborted) is
+    // an EXPECTED capacity/progress event, NOT an extraction halt/failure.
+    // Previously it was recorded as `halt_delta=1`, inflating doctor's
+    // halt_rate (observed live: facts.conversation reported a 13% halt rate
+    // after a healthy, clean CONTROLLED partial). Now counted in its own
+    // column so true unexpected halts (budget/overage/page-failure) stay
+    // warning-worthy while controlled partials surface as capacity/progress
+    // info. Additive: DEFAULT 0 keeps existing rows valid; doctor +
+    // rollup-writer read it only when present (isUndefinedColumnError
+    // fallback on pre-v146 brains).
+    idempotent: true,
+    sql: `
+      ALTER TABLE extract_rollup_7d
+        ADD COLUMN IF NOT EXISTS controlled_partial_count INT NOT NULL DEFAULT 0;
+    `,
+  },
 ];
 
 export const LATEST_VERSION = MIGRATIONS.length > 0
