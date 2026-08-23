@@ -1397,6 +1397,67 @@ describe('runExtractConversationFactsCore', () => {
     expect(Number(terminals[0]?.count ?? 0)).toBe(0);
   });
 
+  test('foreign-sourced facts occupying low row_nums cannot silently drop the terminal', async () => {
+    // Live reproduction (doctor backlog page meetings/hermes-subagent-2026-06-23-*):
+    // a page carries a fact written by ANOTHER path (here mcp:put_page) at a
+    // row_num the page-global accumulator would also use. deleteOrphanFactsForPage
+    // only clears `cli:extract-conversation-facts%` rows, so the foreign fact
+    // survives; the terminal audit row then collides on the
+    // (source_id, source_markdown_slug, row_num) unique index. insertFacts uses
+    // ON CONFLICT DO NOTHING, so the terminal would be SILENTLY dropped and the
+    // page stuck in doctor backlog forever. The terminal must still land on a
+    // free row_num above the foreign block.
+    const slug = 'conversations/imessage/foreign-collision';
+    await engine.putPage(slug, {
+      type: 'conversation',
+      title: 'Foreign collision',
+      compiled_truth: SAMPLE_BODY,
+      timeline: '',
+      frontmatter: {},
+    });
+    await engine.insertFacts(
+      [
+        {
+          fact: 'pre-existing fact from another writer',
+          kind: 'fact',
+          entity_slug: null,
+          source: 'mcp:put_page',
+          source_session: null,
+          confidence: 1.0,
+          notability: 'low',
+          row_num: 2, // <-- row_num a fresh terminal would otherwise use
+          source_markdown_slug: slug,
+        },
+      ],
+      { source_id: 'default' },
+    );
+    const result = await runExtractConversationFactsCore(engine, {
+      sourceId: 'default',
+      slug,
+      sleepMs: 0,
+    });
+    expect(result.pages_failed).toBe(0);
+    expect(result.pages_processed).toBe(1);
+    // The foreign fact is preserved (delete-orphans never touched it)...
+    const foreign = await engine.executeRaw<{ count: string | number }>(
+      `SELECT COUNT(*) AS count FROM facts WHERE source = $1 AND source_markdown_slug = $2`,
+      ['mcp:put_page', slug],
+    );
+    expect(Number(foreign[0]?.count ?? 0)).toBe(1);
+    // ...and the durable terminal outcome DROPS IN, so the page leaves backlog.
+    const terminal = await engine.executeRaw<{ count: string | number }>(
+      `SELECT COUNT(*) AS count FROM facts WHERE source = $1 AND source_markdown_slug = $2`,
+      [TERMINAL_AUDIT_SOURCE, slug],
+    );
+    expect(Number(terminal[0]?.count ?? 0)).toBe(1);
+    // Isolate this test: drop every fact for the throwaway slug so no foreign
+    // row leaks into the shared engine state of later tests.
+    await engine.executeRaw(
+      `DELETE FROM facts WHERE source_markdown_slug = $1`,
+      [slug],
+    );
+  });
+
   test('cleanup failure cannot mint a non-extractable marker', async () => {
     await engine.putPage('conversations/cleanup-failure', {
       type: 'slack',
