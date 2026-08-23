@@ -1062,12 +1062,17 @@ async function processPage(
     }
   }
 
-  // Page-global row_num: after delete-orphans-first the table has no
-  // rows for this (sourceId, slug), so we always start from 0. Peek
-  // is kept as a defensive fallback for dry-run + non-deleting paths.
-  let rowNum = state.dryRun
-    ? await peekRowNumStart(state.engine, state.sourceId, page.slug)
-    : 0;
+  // Page-global row_num: begin from the current max row_num ACROSS ALL
+  // sources for this page. deleteOrphanFactsForPage only removes this
+  // command's `cli:extract-conversation-facts%` rows, so foreign-sourced
+  // facts (mcp:put_page, extract.ts, markdown fences) can still occupy
+  // row_num values in the shared (source_id, slug) namespace. Starting from
+  // 0 would let a fresh cli fact / the terminal audit row silently collide
+  // with a surviving foreign fact — insertFacts uses ON CONFLICT DO NOTHING,
+  // so the terminal row would be dropped and the page stuck in backlog
+  // forever. Peeking floor first is also backwards-compatible: a page with
+  // no foreign facts (everything the delete pass clears) still peers at 0.
+  let rowNum = await peekRowNumStart(state.engine, state.sourceId, page.slug);
   let newestEnd: string | null = null;
   let segmentsThisPage = 0;
   let pageInsertedTotal = 0;
