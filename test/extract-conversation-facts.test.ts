@@ -1302,6 +1302,41 @@ describe('runExtractConversationFactsCore', () => {
     expect(Number(terminals[0]?.count ?? 0)).toBe(0);
   });
 
+  test('mixed valid+invalid model facts salvage recoverable facts and complete the page', async () => {
+    // Live batches 7/8 failure mode: occasional formatting variance where the
+    // extractor returns a well-formed fact AND a schema-invalid candidate in the
+    // same response (here: `fact` emitted as a number). The invalid entry must
+    // be dropped, the recoverable fact saved, and the page must NOT be left
+    // failed with malformed_output — terminal audit row still written.
+    chatTextOverride = JSON.stringify({
+      facts: [
+        { fact: 'recoverable commitment', kind: 'commitment', notability: 'high' },
+        { fact: 123, kind: 'fact' },
+      ],
+    });
+    const result = await runExtractConversationFactsCore(engine, {
+      sourceId: 'default',
+      slug: 'conversations/imessage/alice-example',
+      sleepMs: 0,
+    });
+    expect(result.pages_failed).toBe(0);
+    expect(result.pages_processed).toBe(1);
+    expect(result.facts_extracted).toBeGreaterThan(0);
+    // Every recovered fact was inserted; the invalid number candidate never
+    // reached the DB (only recoverable facts are persisted).
+    const inserted = await engine.executeRaw<{ count: string | number }>(
+      `SELECT COUNT(*) AS count FROM facts WHERE source = $1`,
+      [PER_SEGMENT_SOURCE_PREFIX],
+    );
+    expect(Number(inserted[0]?.count ?? 0)).toBe(result.facts_extracted);
+    // Page completed → durable terminal audit row present.
+    const terminal = await engine.executeRaw<{ count: string | number }>(
+      `SELECT COUNT(*) AS count FROM facts WHERE source = $1`,
+      [TERMINAL_AUDIT_SOURCE],
+    );
+    expect(Number(terminal[0]?.count ?? 0)).toBe(1);
+  });
+
   test('insert failure leaves no terminal and retries from a clean replay', async () => {
     const engineAny = engine as any;
     const originalInsertFacts = engineAny.insertFacts.bind(engine);
