@@ -10,26 +10,11 @@ import {
 } from './retry-matcher.ts';
 import { repairTimelineDedupIndex, repairLegacyTimelineSourceRows } from './timeline-dedup-repair.ts';
 import { repairPagesUpsertArbiter } from './pages-upsert-arbiter.ts';
-
-/**
- * When true, per-migration explanatory notices (e.g. the v123/v124 "here is
- * what this migration changed" lines that specific handlers write to stderr)
- * are suppressed. Set by runMigrations for a FRESH-install full replay — those
- * notices are useful diagnostics on an UPGRADE but pure noise as a new user's
- * first-run output. Module-level (not threaded through the Migration type)
- * because only a couple of handlers emit them. Guarded via `migrationNotice`.
- * Known limitation: concurrent runMigrations calls in one process (two engines
- * migrating simultaneously) share this flag — worst case is a suppressed or
- * extra stderr NOTICE line; migration execution/stamping is unaffected.
- */
-let quietMigrationNotices = false;
-
-/** Write a per-migration explanatory notice unless fresh-install quiet mode is
- *  on. Handlers should route their "what changed" lines through this. */
-function migrationNotice(line: string): void {
-  if (quietMigrationNotices) return;
-  process.stderr.write(line);
-}
+// v147 EXTRACT-HEALTH accounting repair: reclassify historic (pre-v146)
+// controlled-partial receipts that were misrecorded as halts. Imported
+// statically so the backfill runs inside runMigrations while the engine is
+// live (mirrors the other handler migrations above).
+import { reclassifyHistoricControlledPartials } from './extract/reclassify-controlled-partials.ts';
 
 /**
  * Schema migrations — run automatically on initSchema().
@@ -6459,6 +6444,54 @@ export const MIGRATIONS: Migration[] = [
       ALTER TABLE extract_rollup_7d
         ADD COLUMN IF NOT EXISTS controlled_partial_count INT NOT NULL DEFAULT 0;
     `,
+  },
+  {
+    // EXTRACT-HEALTH accounting repair — closes the v146 gap.
+    //
+    // v126 correctly routes NEW `--max-runtime-minutes` CONTROLLED partial
+    // completions to controlled_partial_count, but did NOT repair the EXISTING
+    // rolling aggregate: runs that stopped at their deadline before v146's
+    // write path was deployed were still recorded as halt_delta=1, inflating
+    // doctor's extract_health halt_rate (observed live: facts.conversation at
+    // 13.0%).
+    //
+    // This idempotent backfill reclassifies ONLY receipts with explicit
+    // controlled-partial evidence (v146 `controlled_partial` / body marker,
+    // or the documented pre-v146 1-minute deadline proof identified by its
+    // run_id provenance) from misrecorded halts to controlled_partial_count.
+    // Genuine halts are structurally untouched (each receipt shifts at most
+    // one halt, clamped by halt_count > 0); receipt evidence is never hidden
+    // (only idempotency frontmatter stamps are added). Re-running is a no-op
+    // (per-receipt `backfilled_controlled_partial` stamp).
+    version: 147,
+    name: 'reclassify_historic_controlled_partials',
+    idempotent: true,
+    sql: '',
+    handler: async (engine) => {
+      const r = await reclassifyHistoricControlledPartials(engine, {
+        preV126Evidence: [
+          {
+            kind: 'facts.conversation',
+            source_id: 'default',
+            // gbrain-p1-deadline-proof (2026-08-22, --max-runtime-minutes 1):
+            // the runtime controller logged "run stopped as a CONTROLLED
+            // partial completion" (journal 23:08:56); receipt run_id
+            // ecf-mt4zpgg3-defa → shortRunId ecf-mt4z. Harmless provenance key
+            // on any brain that lacks this receipt.
+            run_prefix: 'ecf-mt4z',
+          },
+        ],
+      });
+      if (r.reclassified > 0) {
+        process.stderr.write(
+          `  Reclassified ${r.reclassified} historical controlled-partial receipt(s) from halt_count to controlled_partial_count\n`,
+        );
+      } else if (r.qualifying_receipts > 0) {
+        process.stderr.write(
+          `  No misrecorded halts to reclassify (${r.qualifying_receipts} controlled-partial receipt(s) already accounted)\n`,
+        );
+      }
+    },
   },
 ];
 
