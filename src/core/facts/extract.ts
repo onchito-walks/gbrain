@@ -177,6 +177,21 @@ export type FactNotability = 'high' | 'medium' | 'low';
  */
 export const ENTITY_HINTS_CAP = 5;
 
+/**
+ * Bounded retry budget for FULLY UNRECOVERABLE malformed extractor output:
+ * a single-turn response that parses to NO recoverable facts (unparseable
+ * JSON, wrong shape, or every candidate schema-invalid) can be transient
+ * model formatting variance, so it is retried ONCE (2 total chat attempts)
+ * with an explicit JSON-only reminder before the turn is failed with
+ * `malformed_output`. Bounds the retry so a permanently malformed model
+ * never loops. Only this malformed-output case retries — provider errors,
+ * aborts, refusal / content_filter / truncated / non-terminal stops, and
+ * valid or partial-valid (salvaged) output all return on the first attempt.
+ * (The upstream first-chat escape hatch mirrors this bound; kept exported
+ * for the hermetic retry tests to assert the exact attempt budget.)
+ */
+export const MAX_MALFORMED_EXTRACT_ATTEMPTS = 2;
+
 export interface ExtractInput {
   turnText: string;
   /** Opaque session id (MCP _meta.session_id, CLI --session, or null). */
