@@ -79,6 +79,17 @@ export interface EmbedBatchOptions {
    * and amplify rate-limit pressure.
    */
   maxRetries?: number;
+  /**
+   * Max number of input texts sent per gateway/API request.
+   *
+   * Rate-limit models that cap by REQUEST (e.g. Voyage free tier at ~3 RPM)
+   * reward larger batches: raising this from the default 100 to e.g. 1000 cuts
+   * request count ~10x for the same token volume. Only the cross-page batching
+   * mode (embed-stale) raises it; it's the number of TEXTS, and callers remain
+   * responsible for staying under the provider's per-request TOKEN cap.
+   * Default 100 (no behavior change when unset).
+   */
+  batchInputs?: number;
 }
 
 /**
@@ -98,14 +109,19 @@ export async function embedBatch(
   const gwOpts = {
     ...(options.abortSignal !== undefined && { abortSignal: options.abortSignal }),
     ...(options.maxRetries !== undefined && { maxRetries: options.maxRetries }),
+    ...(options.batchInputs !== undefined && { batchInputs: options.batchInputs }),
   };
+  // Per-request input cap defaults to BATCH_SIZE (100). Cross-page batching
+  // (embed-stale) may raise it to cut request count for request-capped
+  // providers like Voyage free tier; the paginator below respects it.
+  const perRequest = options.batchInputs ?? BATCH_SIZE;
   // Fast path: small batch, no progress callback — single gateway call.
-  if (texts.length <= BATCH_SIZE && !options.onBatchComplete) {
+  if (texts.length <= perRequest && !options.onBatchComplete) {
     return gatewayEmbed(texts, gwOpts);
   }
   const results: Float32Array[] = [];
-  for (let i = 0; i < texts.length; i += BATCH_SIZE) {
-    const slice = texts.slice(i, i + BATCH_SIZE);
+  for (let i = 0; i < texts.length; i += perRequest) {
+    const slice = texts.slice(i, i + perRequest);
     const out = await gatewayEmbed(slice, gwOpts);
     results.push(...out);
     options.onBatchComplete?.(results.length, texts.length);
