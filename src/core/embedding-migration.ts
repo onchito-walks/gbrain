@@ -224,6 +224,30 @@ export async function runSchemaTransition(engine: BrainEngine, targetDim: number
       await tx.executeRaw(`DROP TRIGGER IF EXISTS "${trg.name}" ON content_chunks`);
     }
 
+    // Also retire the ORPHANED backing function from the same legacy artifact
+    // (sync_embedding_half()), but ONLY when nothing else still references it —
+    // a user trigger that does not touch the embedding column (and therefore
+    // never blocked the DROP) or a view may legitimately call the function.
+    // Dropping it then would break them, so gate on pg_depend: after the column
+    // trigger is gone, remove the exact-named function only when it has zero
+    // remaining NORMAL dependents. This keeps the cleanup narrow (never a broad
+    // purge of user objects) and durable (no hard-coded unconditional drop that
+    // could abort the migration via dependent_objects_still_exist).
+    await tx.executeRaw(
+      `DO $gbguard$ BEGIN
+         IF (SELECT to_regprocedure('sync_embedding_half()')) IS NOT NULL
+            AND NOT EXISTS (
+              SELECT 1 FROM pg_depend d
+               WHERE d.refclassid = 'pg_proc'::regclass
+                 AND d.refobjid = to_regprocedure('sync_embedding_half()')
+                 AND d.deptype = 'n'
+            )
+         THEN
+           DROP FUNCTION sync_embedding_half();
+         END IF;
+       END $gbguard$;`,
+    );
+
     // Text embedding column — transition to target dim.
     await tx.executeRaw(`DROP INDEX IF EXISTS idx_chunks_embedding`);
     await tx.executeRaw(`ALTER TABLE content_chunks DROP COLUMN IF EXISTS embedding`);

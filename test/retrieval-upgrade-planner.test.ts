@@ -389,6 +389,13 @@ describe('applyRetrievalUpgrade — state machine + atomicity (D12, D18)', () =>
     );
     expect(tgRows[0].n).toBe(0);
 
+    // The orphaned backing function must be retired with it, not left to nag
+    // the next resize.
+    const fnRows = await engine.executeRaw<{ n: number }>(
+      `SELECT count(*) AS n FROM pg_proc WHERE proname = 'sync_embedding_half'`,
+    );
+    expect(fnRows[0].n).toBe(0);
+
     // Primary column landed at the target dim.
     const dim = await engine.executeRaw<{ col_type: string }>(
       `SELECT format_type(a.atttypid, a.atttypmod) AS col_type
@@ -415,6 +422,45 @@ describe('applyRetrievalUpgrade — state machine + atomicity (D12, D18)', () =>
     expect([...byName.keys()]).toEqual(['content_chunks_stale_idx', 'idx_chunks_embedding_null']);
     expect(byName.get('content_chunks_stale_idx')).toMatch(/WHERE\s+\(?embedding IS NULL\)?/i);
     expect(byName.get('idx_chunks_embedding_null')).toMatch(/WHERE\s+\(?embedding IS NULL\)?/i);
+  });
+
+  test('runSchemaTransition is narrowly-scoped — a user trigger that does NOT reference the embedding column (and its still-referenced function) survives', async () => {
+    await engine.executeRaw(
+      `ALTER TABLE content_chunks ADD COLUMN IF NOT EXISTS embedding_half vector(1280)`,
+    );
+    await engine.executeRaw(
+      `CREATE OR REPLACE FUNCTION sync_embedding_half() RETURNS trigger AS $$
+       BEGIN
+         NEW.embedding_half := NEW.embedding;
+         RETURN NEW;
+       END; $$ LANGUAGE plpgsql`,
+    );
+    // A USER trigger that calls the legacy function but does NOT reference the
+    // embedding column — it never blocked the DROP COLUMN and must survive it
+    // (the guard retires only column-referencing triggers).
+    await engine.executeRaw(
+      `CREATE TRIGGER trg_user_sync_half
+         BEFORE INSERT ON content_chunks
+         FOR EACH ROW EXECUTE FUNCTION sync_embedding_half()`,
+    );
+
+    await expect(runSchemaTransition(engine, 1024)).resolves.toBeUndefined();
+
+    // The non-column user trigger survives the rebuild.
+    const kept = await engine.executeRaw<{ n: number }>(
+      `SELECT count(*) AS n FROM pg_trigger WHERE tgname = 'trg_user_sync_half'`,
+    );
+    expect(kept[0].n).toBe(1);
+
+    // The function is still referenced by that trigger -> the guard leaves it.
+    const fn = await engine.executeRaw<{ n: number }>(
+      `SELECT count(*) AS n FROM pg_proc WHERE proname = 'sync_embedding_half'`,
+    );
+    expect(fn[0].n).toBe(1);
+
+    // Restore a pristine slate for sibling tests in this file.
+    await engine.executeRaw(`DROP TRIGGER IF EXISTS trg_user_sync_half ON content_chunks`);
+    await engine.executeRaw(`DROP FUNCTION IF EXISTS sync_embedding_half()`);
   });
 
   test('runSchemaTransition EXISTS guard short-circuits cleanly when embedding_image column is absent', async () => {
