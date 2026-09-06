@@ -10,6 +10,7 @@ import {
 } from './retry-matcher.ts';
 import { repairTimelineDedupIndex, repairLegacyTimelineSourceRows } from './timeline-dedup-repair.ts';
 import { repairPagesUpsertArbiter } from './pages-upsert-arbiter.ts';
+import { repairSessionContextStateTable } from './session-context-repair.ts';
 // v147 EXTRACT-HEALTH accounting repair: reclassify historic (pre-v146)
 // controlled-partial receipts that were misrecorded as halts. Imported
 // statically so the backfill runs inside runMigrations while the engine is
@@ -6883,6 +6884,22 @@ export async function runMigrations(engine: BrainEngine): Promise<{ applied: num
         `[migrate] cannot restore pages_source_slug_key: ${p.duplicateGroups} duplicate ` +
         `(source_id, slug) group(s) exist — page upserts will keep failing until the ` +
         `duplicates are resolved (#550). See \`gbrain doctor\`.`,
+      );
+    }
+  } catch { /* best-effort; doctor reports the drift if this couldn't run */ }
+
+  // #4166: same drift class for the session_context_state TABLE itself. A
+  // brain migrated by a release whose v126 was a DIFFERENT migration is
+  // stamped at/after 126 with session_context_state never created, so the
+  // version counter can't see it and v132 (`ALTER TABLE session_context_state
+  // ...`) would die with "relation does not exist". CREATE-only self-heal,
+  // keyed off the table's actual presence; a no-op on healthy brains.
+  try {
+    const s = await repairSessionContextStateTable(engine);
+    if (s.repaired) {
+      console.error(
+        `[migrate] recreated missing session_context_state table (renumber drift ` +
+        `#4166): ledger stamped at/after v126 without v126's DDL running`,
       );
     }
   } catch { /* best-effort; doctor reports the drift if this couldn't run */ }
