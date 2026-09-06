@@ -1914,97 +1914,136 @@ async function embedAllStale(
       }
       result.total_chunks += batch.length;
 
-      async function embedOneKey(key: string) {
+      // ─────────────────────────────────────────────────────────────
+      // Cross-page batching (request-capped providers, e.g. Voyage free tier
+      // at ~3 RPM): GBRAIN_EMBED_BATCH_ACROSS_PAGES=1 coalesces every stale
+      // chunk in the cursor batch — across page boundaries — into shared
+      // embed requests of GBRAIN_EMBED_CHUNKS_PER_REQUEST texts each (default
+      // 100). Page-level metadata carry, signature stamping, title-tier
+      // restamp, and the embedding-IS-NULL idempotency contract are preserved
+      // per page; only the API REQUEST grouping changes. Off by default (the
+      // classic per-page path below is unchanged).
+      // ─────────────────────────────────────────────────────────────
+      const batchAcrossPages = process.env.GBRAIN_EMBED_BATCH_ACROSS_PAGES === '1';
+      const chunksPerRequest = Math.max(1, parseInt(process.env.GBRAIN_EMBED_CHUNKS_PER_REQUEST || '100', 10));
+      // GBRAIN_EMBED_CHUNKS_PER_REQUEST must stay under the provider's
+      // per-request TOKEN cap; Voyage allows up to 1000 texts/request
+      // (320K tokens for voyage-4). Cap defensively at 1000.
+      const chunksPerRequestClipped = Math.min(chunksPerRequest, 1000);
+
+      interface BatchedEntry {
+        key: string;
+        slug: string;
+        keySourceId: string;
+        pageRow: Awaited<ReturnType<typeof engine.getPage>>;
+        stale: typeof batch;
+        wrapped: string[];
+      }
+
+      /**
+       * Heal + page-row + wrap step, shared by the per-page and cross-page
+       * paths. Returns null when healing collapsed the page to zero stale
+       * chunks (already counted as a processed page, per the legacy path).
+       */
+      async function prepareEntry(key: string): Promise<BatchedEntry | null> {
         let stale = byKey.get(key)!;
         const keySourceId = stale[0]?.source_id ?? 'default';
         const slug = stale[0].slug;
-        try {
-          // SUP-3874: split legacy oversized chunk_text BEFORE the embed call.
-          // `--stale` reuses stored rows; without this, one pre-cap chunk
-          // (e.g. a long pre-cap notes page on a 512-token model) fails
-          // forever and exits the sweep non-zero.
-          const healed = await observed(pacer, () =>
-            healOversizedPageChunks(engine, slug, {
-              sourceId: keySourceId,
-              onSplit: (n) => {
-                result.healed_splits = (result.healed_splits ?? 0) + n;
-                serr(`\n  ${slug}: split ${n} oversized chunk(s) to fit embedding input limit`);
-              },
-            }),
-          );
-          if (healed.changed) {
-            stale = healedChunksToStaleRows(healed.chunks, slug, keySourceId);
-            if (stale.length === 0) {
-              totalProcessedPages++;
-              result.pages_processed++;
-              return;
-            }
+        const healed = await observed(pacer, () =>
+          healOversizedPageChunks(engine, slug, {
+            sourceId: keySourceId,
+            onSplit: (n) => {
+              result.healed_splits = (result.healed_splits ?? 0) + n;
+              serr(`\n  ${slug}: split ${n} oversized chunk(s) to fit embedding input limit`);
+            },
+          }),
+        );
+        if (healed.changed) {
+          stale = healedChunksToStaleRows(healed.chunks, slug, keySourceId);
+          if (stale.length === 0) {
+            totalProcessedPages++;
+            result.pages_processed++;
+            return null;
           }
+        }
+        // #3507: fetch the page row for its title + stored CR mode so the
+        // re-embed reproduces the page's wrapping convention instead of
+        // silently stripping contextual prefixes.
+        const pageRow = await observed(pacer, () => engine.getPage(slug, { sourceId: keySourceId }));
+        const wrapped = wrapChunkTextsForStoredMode(pageRow, stale);
+        return { key, slug, keySourceId, pageRow, stale, wrapped };
+      }
 
-          // #3507: fetch the page row for its title + stored CR mode so the
-          // re-embed reproduces the page's wrapping convention instead of
-          // silently stripping contextual prefixes — `embed --stale` is the
-          // NORMAL post-model-migration path, so raw-text embedding here
-          // quietly converted whole corpora to the unwrapped convention.
-          const pageRow = await observed(pacer, () => engine.getPage(slug, { sourceId: keySourceId }));
-          // #3037: per-chunk failure isolation — one bad chunk costs one
-          // chunk, not the whole page's siblings. The wrapped texts feed the
-          // fan-out too, so an isolation retry never strips the prefixes.
+      /**
+       * Persist one page's embeddings: merge stale vectors into existing
+       * chunks (preserving code metadata), upsert, stamp provenance when the
+       * page was fully re-embedded, restamp the CR tier, and do the
+       * embedded/success bookkeeping. Shared by both paths so per-page
+       * semantics stay identical.
+       */
+      async function writePage(
+        key: string,
+        pageRow: Awaited<ReturnType<typeof engine.getPage>>,
+        slug: string,
+        keySourceId: string,
+        stale: typeof batch,
+        embeddings: (Float32Array | null)[],  // aligned to `stale`
+        failed: number,
+        firstError?: unknown,
+      ): Promise<void> {
+        const existing = await observed(pacer, () => engine.getChunks(slug, { sourceId: keySourceId }));
+        const staleIdxToEmbedding = new Map<number, Float32Array>();
+        for (let j = 0; j < stale.length; j++) {
+          const emb = embeddings[j];
+          if (emb) staleIdxToEmbedding.set(stale[j].chunk_index, emb);
+        }
+        // preserveCodeMetadata threads code-chunk metadata (#769) so the
+        // autopilot --stale path doesn't clobber language/symbol_name/etc.
+        const merged: ChunkInput[] = existing.map(c => preserveCodeMetadata(c, {
+          chunk_index: c.chunk_index,
+          chunk_text: c.chunk_text,
+          chunk_source: c.chunk_source,
+          embedding: staleIdxToEmbedding.get(c.chunk_index) ?? undefined,
+          token_count: c.token_count || Math.ceil(c.chunk_text.length / 4),
+        }));
+        await observed(pacer, () => engine.upsertChunks(slug, merged, { sourceId: keySourceId }));
+        // v0.41.31: stamp provenance but only when EVERY chunk was stale.
+        // #3037: not on partial failure — failed chunks stay NULL.
+        if (signature && failed === 0 && stale.length === existing.length) {
+          await observed(pacer, () =>
+            engine.setPageEmbeddingSignature(slug, { sourceId: keySourceId, signature }),
+          );
+        }
+        // #3507: a FULLY re-embedded per_chunk_synopsis page landed at the
+        // title tier — keep the stamped mode honest (partial failures skip).
+        if (failed === 0 && stale.length === existing.length) {
+          await observed(pacer, () =>
+            restampIfDemotedToTitleTier(engine, pageRow, slug, keySourceId),
+          );
+        }
+        result.embedded += stale.length - failed;
+        if (failed > 0) {
+          recordFailure(result, failed, slug, firstError);
+          serr(`\n  ${slug}: ${failed} chunk(s) failed to embed; embedded the other ${stale.length - failed}`);
+        }
+        // #3622: progress persisted — quarantine counter reset.
+        _embedFailureCounts.delete(key);
+      }
+
+      async function embedOneKey(key: string) {
+        let stale = byKey.get(key)!;
+        const slug = stale[0].slug;
+        try {
+          const entry = await prepareEntry(key);
+          if (!entry) return; // healed-zero: already counted in prepareEntry
+          // #3037: per-chunk failure isolation via embedPageTexts (default path).
           const { embeddings, failed, firstError } = await embedPageTexts(
-            wrapChunkTextsForStoredMode(pageRow, stale),
+            entry.wrapped,
             { abortSignal: effectiveSignal },
           );
-          // Re-fetch existing chunks and merge to avoid deleting non-stale chunks.
-          const existing = await observed(pacer, () => engine.getChunks(slug, { sourceId: keySourceId }));
-          const staleIdxToEmbedding = new Map<number, Float32Array>();
-          for (let j = 0; j < stale.length; j++) {
-            const emb = embeddings[j];
-            if (emb) staleIdxToEmbedding.set(stale[j].chunk_index, emb);
-          }
-          // preserveCodeMetadata threads code-chunk metadata (#769) so the
-          // autopilot --stale path doesn't clobber language/symbol_name/etc
-          // to NULL on every cycle.
-          const merged: ChunkInput[] = existing.map(c => preserveCodeMetadata(c, {
-            chunk_index: c.chunk_index,
-            chunk_text: c.chunk_text,
-            chunk_source: c.chunk_source,
-            embedding: staleIdxToEmbedding.get(c.chunk_index) ?? undefined,
-            token_count: c.token_count || Math.ceil(c.chunk_text.length / 4),
-          }));
-          await observed(pacer, () => engine.upsertChunks(slug, merged, { sourceId: keySourceId }));
-          // v0.41.31: stamp provenance after the page's chunks are embedded —
-          // but only when EVERY chunk was stale (fully re-embedded this pass).
-          // A partially-stale page keeps preserved chunks of unknown/old
-          // provenance, so don't claim it's current. (After invalidate, a
-          // signature-drifted page IS fully stale → this stamps it.)
-          // #3037: not on partial failure — failed chunks stay NULL.
-          if (signature && failed === 0 && stale.length === existing.length) {
-            await observed(pacer, () =>
-              engine.setPageEmbeddingSignature(slug, { sourceId: keySourceId, signature }),
-            );
-          }
-          // #3507: a FULLY re-embedded per_chunk_synopsis page landed at the
-          // title tier — keep the stamped mode honest. Partially-stale pages
-          // stay stamped as-is (mixed provenance; reindex sweeps fix them).
-          // #3037: `failed === 0` is part of "fully re-embedded" — if the
-          // per-chunk isolation left some chunks NULL, restamping would make
-          // contextual_retrieval_mode lie again (the exact #3461 bug).
-          if (failed === 0 && stale.length === existing.length) {
-            await observed(pacer, () =>
-              restampIfDemotedToTitleTier(engine, pageRow, slug, keySourceId),
-            );
-          }
-          result.embedded += stale.length - failed;
-          if (failed > 0) {
-            recordFailure(result, failed, slug, firstError);
-            serr(`\n  ${slug}: ${failed} chunk(s) failed to embed; embedded the other ${stale.length - failed}`);
-          }
-          // #3622: reaching here means at least one chunk persisted (a total
-          // embed failure throws) — progress, so the quarantine counter resets.
-          _embedFailureCounts.delete(key);
+          await writePage(entry.key, entry.pageRow, entry.slug, entry.keySourceId, entry.stale, embeddings, failed, firstError);
         } catch (e: unknown) {
-          // Budget/abort-fired cancellations are expected on the way out; don't
-          // spam per-page "Error embedding" lines when we're shutting down.
+          // Budget/abort-fired cancellations are expected on the way out.
           if (effectiveSignal.aborted) return;
           recordFailure(result, stale.length, slug, e);
           serr(`\n  Error embedding ${slug}: ${e instanceof Error ? e.message : e}`);
@@ -2017,9 +2056,7 @@ async function embedAllStale(
         onProgress?.(totalProcessedPages, Math.ceil(staleCount / PAGE_SIZE) * keys.length, result.embedded);
         // Cooperative DB-contention pace between keys (no-op when unpaced).
         // E-4 (Codex P1): pace() is subject to the EXTERNAL abort only, NOT the
-        // wall-clock budget — a contended DB's sleep must not be cut by the
-        // budget timer before its time is credited. Re-arm the budget right
-        // after each sleep so accrued sleep never eats into work time.
+        // wall-clock budget. Re-arm the budget right after each sleep.
         try {
           await pacer.pace(externalSignal);
           rearmBudgetForPacing();
@@ -2028,18 +2065,86 @@ async function embedAllStale(
         }
       }
 
-      // v0.41.15.0: migrated to shared runSlidingPool. The pool checks
-      // its `signal` argument before each claim (mirrors the pre-migration
-      // `!budgetSignal.aborted` gate) AND threads abort into in-flight
-      // onItem via the local-abort composition for D13. embedOneKey
-      // already handles its own per-key errors via try/catch + stderr.
-      await runSlidingPool({
-        items: keys,
-        workers: CONCURRENCY,
-        signal: effectiveSignal,
-        onItem: (key) => embedOneKey(key),
-        failureLabel: (key) => key,
-      });
+      if (batchAcrossPages) {
+        // Phase 1 — prepare every non-quarantined key in this cursor batch.
+        const entries: BatchedEntry[] = [];
+        for (const key of keys) {
+          if (effectiveSignal.aborted) break;
+          const entry = await prepareEntry(key);
+          if (entry) entries.push(entry);
+        }
+        // Phase 2 — flatten ALL stale chunks across pages and embed in
+        // chunksPerRequest-sized requests (RPM-efficient). 429 backoff is the
+        // same embedBatchWithBackoff ladder; a whole request that fails
+        // leaves those pages' chunks NULL and the next run resumes them.
+        const flat: { entryIdx: number; j: number }[] = [];
+        for (let i = 0; i < entries.length; i++) {
+          for (let j = 0; j < entries[i].wrapped.length; j++) flat.push({ entryIdx: i, j });
+        }
+        const vecs: (Float32Array | null)[][] = entries.map(() => [] as (Float32Array | null)[]);
+        for (let off = 0; off < flat.length; off += chunksPerRequestClipped) {
+          if (effectiveSignal.aborted) break;
+          const slice = flat.slice(off, off + chunksPerRequestClipped);
+          const sliceTexts = slice.map(s => entries[s.entryIdx].wrapped[s.j]);
+          let sliceVecs: Float32Array[];
+          try {
+            sliceVecs = await embedBatchWithBackoff(sliceTexts, {
+              abortSignal: effectiveSignal,
+              batchInputs: chunksPerRequestClipped,
+            });
+            if (sliceVecs.length !== sliceTexts.length) {
+              serr(`\n  [embed-batch] provider returned ${sliceVecs.length}/${sliceTexts.length} vectors; treating missing as failed (stale preserved)`);
+              sliceVecs = sliceVecs.slice(0, sliceTexts.length);
+              while (sliceVecs.length < sliceTexts.length) sliceVecs.push(undefined as unknown as Float32Array);
+            }
+          } catch (e: unknown) {
+            if (effectiveSignal.aborted) break;
+            serr(`\n  [embed-batch] request of ${sliceTexts.length} chunk(s) failed; kept stale for resume: ${e instanceof Error ? e.message : String(e)}`);
+            sliceVecs = [];
+          }
+          for (let k = 0; k < slice.length; k++) {
+            vecs[slice[k].entryIdx][slice[k].j] = sliceVecs[k] ?? null;
+          }
+        }
+        // Phase 3 — persist each page (identical per-page semantics to the
+        // default path via writePage).
+        for (let i = 0; i < entries.length; i++) {
+          if (effectiveSignal.aborted) break;
+          const e = entries[i];
+          const failed = vecs[i].filter(v => v === null).length;
+          try {
+            await writePage(e.key, e.pageRow, e.slug, e.keySourceId, e.stale, vecs[i], failed, undefined);
+          } catch (err: unknown) {
+            if (effectiveSignal.aborted) break;
+            recordFailure(result, e.stale.length, e.slug, err);
+            serr(`\n  Error embedding ${e.slug}: ${err instanceof Error ? err.message : err}`);
+            noteEmbedQuarantineFailure(e.key, e.slug);
+          }
+          totalProcessedPages++;
+          result.pages_processed++;
+          onProgress?.(totalProcessedPages, Math.ceil(staleCount / PAGE_SIZE) * keys.length, result.embedded);
+          try {
+            await pacer.pace(externalSignal);
+            rearmBudgetForPacing();
+          } catch (e) {
+            if (!(e instanceof AbortError)) throw e;
+          }
+        }
+        if (effectiveSignal.aborted) break;
+      } else {
+        // v0.41.15.0: migrated to shared runSlidingPool. The pool checks
+        // its `signal` argument before each claim (mirrors the pre-migration
+        // `!budgetSignal.aborted` gate) AND threads abort into in-flight
+        // onItem via the local-abort composition for D13. embedOneKey
+        // already handles its own per-key errors via try/catch + stderr.
+        await runSlidingPool({
+          items: keys,
+          workers: CONCURRENCY,
+          signal: effectiveSignal,
+          onItem: (key) => embedOneKey(key),
+          failureLabel: (key) => key,
+        });
+      }
 
       // E-4: extend the work budget by any paced-sleep time accrued this batch.
       rearmBudgetForPacing();

@@ -143,6 +143,37 @@ ingestion — not just new content.
    with per-source single-flight locks, rate-limit backoff, stderr progress,
    and optional DB-contention pacing (`--pace[=mode]`).
 
+## Request-capped providers and cross-page batch mode
+
+Some providers (notably Voyage's free tier, ~3 requests/minute) rate-limit by
+**request count**, not tokens. The classic `--stale` loop sends one (small)
+request per page, so an 8k-page brain issues ~8k requests and spends hours
+sitting in 429 backoff. Two env knobs fix that by coalescing chunks ACROSS
+pages into shared requests; both are **opt-in** (default behavior is the
+unchanged per-page loop):
+
+- `GBRAIN_EMBED_BATCH_ACROSS_PAGES=1` — enable cross-page batching: all stale
+  chunks in each cursor batch are flattened and embedded in fewer, larger
+  requests. Per-page metadata carry, signature stamping, title-tier restamp,
+  and the embedding-IS-NULL resume contract are preserved per page; only the
+  API request grouping changes. A failed request leaves its chunks NULL
+  (stale) and the next run resumes them, exactly like a failed per-page call.
+- `GBRAIN_EMBED_CHUNKS_PER_REQUEST=N` — max texts per request (default 100,
+  same as the flat embedBatch cap; capped internally at 1000 for Voyage's
+   1000-text / 320K-token per-request limit). Set lower if the free tier also
+  throttles by tokens-per-minute (e.g. 250–500 is a safe middle ground);
+  large batches also cut a token-capped budget's request overhead.
+
+In batch mode concurrency is irrelevant (requests stream serially to respect
+the RPM budget), so `GBRAIN_EMBED_CONCURRENCY=1` is the right companion.
+
+Example (Voyage free tier, ~25.9k chunks ≈ 26 requests at 1000/request):
+```sh
+GBRAIN_EMBED_BATCH_ACROSS_PAGES=1 \
+GBRAIN_EMBED_CHUNKS_PER_REQUEST=1000 \
+gbrain embed --stale --include-null-signature --catch-up
+```
+
 ## What the rebuild deletes
 
 The dimension change **deletes every stored embedding vector** in the brain —
