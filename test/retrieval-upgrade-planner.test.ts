@@ -7,6 +7,7 @@
 
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
+import { runSchemaTransition } from '../src/core/embedding-migration.ts';
 import { resetPgliteState } from './helpers/reset-pglite.ts';
 import {
   planRetrievalUpgrade,
@@ -338,6 +339,80 @@ describe('applyRetrievalUpgrade — state machine + atomicity (D12, D18)', () =>
     const byName = new Map(rows.map(r => [r.indexname, r.indexdef]));
     expect([...byName.keys()]).toEqual(['content_chunks_stale_idx', 'idx_chunks_embedding_null']);
     // The replayed definitions must keep the partial predicate.
+    expect(byName.get('content_chunks_stale_idx')).toMatch(/WHERE\s+\(?embedding IS NULL\)?/i);
+    expect(byName.get('idx_chunks_embedding_null')).toMatch(/WHERE\s+\(?embedding IS NULL\)?/i);
+  });
+
+  // #4252 follow-up — a legacy 1280d-era sync trigger on content_chunks.embedding
+  // (trg_sync_embedding_half: BEFORE INSERT OR UPDATE OF embedding calling
+  // sync_embedding_half(), writing the long-dead embedding_half column — zero
+  // readers left in the codebase) holds a NORMAL pg_depend edge on the column.
+  // Index dependencies cascade on DROP COLUMN; trigger dependencies hard-fail
+  // with "cannot drop column embedding of table content_chunks because other
+  // objects depend on it" — the exact error a live 1280d -> 1024d Voyage
+  // migration hit. The transition must RETIRE the trigger before the drop and
+  // NEVER replay it: a trigger writing the old 1280d width would corrupt the
+  // rebuilt column; retiring it is a read-path no-op.
+  test('runSchemaTransition retires legacy trg_sync_embedding_half so 1280d->1024d DROP COLUMN survives (#4252)', async () => {
+    // Fresh schema already puts content_chunks.embedding at 1280d — the live
+    // source shape — so target 1024d exactly like the live Voyage migration.
+    await engine.executeRaw(
+      `ALTER TABLE content_chunks ADD COLUMN IF NOT EXISTS embedding_half vector(1280)`,
+    );
+    await engine.executeRaw(
+      `CREATE OR REPLACE FUNCTION sync_embedding_half() RETURNS trigger AS $$
+       BEGIN
+         NEW.embedding_half := NEW.embedding;
+         RETURN NEW;
+       END; $$ LANGUAGE plpgsql`,
+    );
+    await engine.executeRaw(
+      `CREATE TRIGGER trg_sync_embedding_half
+         BEFORE INSERT OR UPDATE OF embedding ON content_chunks
+         FOR EACH ROW EXECUTE FUNCTION sync_embedding_half()`,
+    );
+    // Brains upgraded through migration v66 carry this partial index too;
+    // it must survive the transition alongside the fresh-schema
+    // content_chunks_stale_idx.
+    await engine.executeRaw(
+      `CREATE INDEX IF NOT EXISTS idx_chunks_embedding_null
+         ON content_chunks (page_id, chunk_index)
+         WHERE embedding IS NULL`,
+    );
+
+    // Pre-fix this throws (the trigger blocks the DROP COLUMN).
+    await expect(runSchemaTransition(engine, 1024)).resolves.toBeUndefined();
+
+    // Trigger must be retired, not replayed.
+    const tgRows = await engine.executeRaw<{ n: number }>(
+      `SELECT count(*) AS n FROM pg_trigger WHERE tgname = 'trg_sync_embedding_half'`,
+    );
+    expect(tgRows[0].n).toBe(0);
+
+    // Primary column landed at the target dim.
+    const dim = await engine.executeRaw<{ col_type: string }>(
+      `SELECT format_type(a.atttypid, a.atttypmod) AS col_type
+         FROM pg_attribute a
+         JOIN pg_class c ON c.oid = a.attrelid
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public'
+          AND c.relname = 'content_chunks'
+          AND a.attname = 'embedding'
+          AND a.attnum > 0`,
+    );
+    expect(dim[0].col_type).toBe('vector(1024)');
+
+    // The DROP COLUMN cascade must not eat the stale-tracking indexes that
+    // `embed --stale` (the migration's own next step) queries.
+    const idx = await engine.executeRaw<{ indexname: string; indexdef: string }>(
+      `SELECT indexname, indexdef FROM pg_indexes
+        WHERE schemaname = 'public'
+          AND tablename = 'content_chunks'
+          AND indexname IN ('idx_chunks_embedding_null', 'content_chunks_stale_idx')
+        ORDER BY indexname`,
+    );
+    const byName = new Map(idx.map(r => [r.indexname, r.indexdef]));
+    expect([...byName.keys()]).toEqual(['content_chunks_stale_idx', 'idx_chunks_embedding_null']);
     expect(byName.get('content_chunks_stale_idx')).toMatch(/WHERE\s+\(?embedding IS NULL\)?/i);
     expect(byName.get('idx_chunks_embedding_null')).toMatch(/WHERE\s+\(?embedding IS NULL\)?/i);
   });
