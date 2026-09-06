@@ -195,6 +195,35 @@ export async function runSchemaTransition(engine: BrainEngine, targetDim: number
                AND attname = 'embedding' AND NOT attisdropped)`,
     );
 
+    // #4252 follow-up: column-referencing TRIGGERS hold a NORMAL pg_depend
+    // edge (indexes are AUTO and cascade), so DROP COLUMN hard-fails with
+    // "cannot drop column embedding of table content_chunks because other
+    // objects depend on it" instead of cascading — the exact error a live
+    // 1280d -> 1024d Voyage migration hit. Historic brains cart a 1280d-era
+    // trg_sync_embedding_half (BEFORE INSERT OR UPDATE OF embedding calling
+    // sync_embedding_half(), writing the long-dead embedding_half column —
+    // zero readers left in the codebase). Retire it (and any other column
+    // trigger) BEFORE the drop, and NEVER replay: the target model is
+    // lower-dim and an old-width writer would corrupt the rebuilt column.
+    // Same pg_depend-capture philosophy as the index replay above —
+    // hard-coded names would just recreate this bug on the next legacy
+    // artifact.
+    const dependentTriggers = await tx.executeRaw<{ name: string }>(
+      `SELECT DISTINCT t.tgname AS name
+         FROM pg_trigger t
+         JOIN pg_depend d ON d.classid = 'pg_trigger'::regclass AND d.objid = t.oid
+        WHERE d.refclassid = 'pg_class'::regclass
+          AND d.refobjid = to_regclass('content_chunks')
+          AND d.refobjsubid = (
+            SELECT attnum FROM pg_attribute
+             WHERE attrelid = to_regclass('content_chunks')
+               AND attname = 'embedding' AND NOT attisdropped)
+          AND NOT t.tgisinternal`,
+    );
+    for (const trg of dependentTriggers) {
+      await tx.executeRaw(`DROP TRIGGER IF EXISTS "${trg.name}" ON content_chunks`);
+    }
+
     // Text embedding column — transition to target dim.
     await tx.executeRaw(`DROP INDEX IF EXISTS idx_chunks_embedding`);
     await tx.executeRaw(`ALTER TABLE content_chunks DROP COLUMN IF EXISTS embedding`);
