@@ -72,6 +72,13 @@ export const RATE_LIMIT_JITTER = 0.3;
 
 export interface EmbedBatchWithBackoffOpts {
   abortSignal?: AbortSignal;
+  /**
+   * Max input texts per gateway/API request. Passed through to embedBatch so
+   * cross-page batching can coalesce many pages' chunks into one request
+   * (request-capped providers like Voyage free tier reward this). Undefined ⇒
+   * embedBatch's default of 100 inputs/request (no behavior change).
+   */
+  batchInputs?: number;
 }
 
 /**
@@ -214,7 +221,11 @@ export async function embedBatchWithBackoff(
       // D4a + D8: maxRetries:0 disables the SDK's stacked retries (so this
       // wrapper is the single source of truth) and abortSignal threads
       // through to the gateway so an in-flight HTTP request cancels mid-fetch.
-      const out = await embedBatch(texts, { maxRetries: 0, ...(signal && { abortSignal: signal }) });
+      const out = await embedBatch(texts, {
+        maxRetries: 0,
+        ...(signal && { abortSignal: signal }),
+        ...(opts.batchInputs !== undefined && { batchInputs: opts.batchInputs }),
+      });
       // #4599: every SETTLED embed attempt ticks the stall watchdog's
       // liveness clock (T6 — API-response grain, successes here, errors in
       // the catch). Liveness is diagnostic; the stall TRIGGER stays keyed on
