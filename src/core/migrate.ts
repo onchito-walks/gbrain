@@ -11,6 +11,7 @@ import {
 import { repairTimelineDedupIndex, repairLegacyTimelineSourceRows } from './timeline-dedup-repair.ts';
 import { repairPagesUpsertArbiter } from './pages-upsert-arbiter.ts';
 import { repairSessionContextStateTable } from './session-context-repair.ts';
+import { reclassifyHistoricControlledPartials } from './extract/reclassify-controlled-partials.ts';
 
 /**
  * When true, per-migration explanatory notices (e.g. the v123/v124 "here is
@@ -6440,6 +6441,74 @@ export const MIGRATIONS: Migration[] = [
           CHECK (kind IN ('event','preference','commitment','belief','fact','idea'));
       END $$;
     `,
+  },
+  {
+    version: 146,
+    name: 'extract_rollup_7d_controlled_partial_count',
+    // EXTRACT-HEALTH accounting fix. A `--max-runtime-minutes` controlled
+    // partial completion (extract-conversation-facts sets runtime_aborted) is
+    // an EXPECTED capacity/progress event, NOT an extraction halt/failure.
+    // Previously it was recorded as `halt_delta=1`, inflating doctor's
+    // halt_rate (observed live: facts.conversation reported a 13% halt rate
+    // after a healthy, clean CONTROLLED partial). Now counted in its own
+    // column so true unexpected halts (budget/overage/page-failure) stay
+    // warning-worthy while controlled partials surface as capacity/progress
+    // info. Additive: DEFAULT 0 keeps existing rows valid; doctor +
+    // rollup-writer read it only when present (isUndefinedColumnError
+    // fallback on pre-v146 brains).
+    idempotent: true,
+    sql: `
+      ALTER TABLE extract_rollup_7d
+        ADD COLUMN IF NOT EXISTS controlled_partial_count INT NOT NULL DEFAULT 0;
+    `,
+  },
+  {
+    // EXTRACT-HEALTH accounting repair — closes the v146 gap.
+    //
+    // v126 correctly routes NEW `--max-runtime-minutes` CONTROLLED partial
+    // completions to controlled_partial_count, but did NOT repair the EXISTING
+    // rolling aggregate: runs that stopped at their deadline before v146's
+    // write path was deployed were still recorded as halt_delta=1, inflating
+    // doctor's extract_health halt_rate (observed live: facts.conversation at
+    // 13.0%).
+    //
+    // This idempotent backfill reclassifies ONLY receipts with explicit
+    // controlled-partial evidence (v146 `controlled_partial` / body marker,
+    // or the documented pre-v146 1-minute deadline proof identified by its
+    // run_id provenance) from misrecorded halts to controlled_partial_count.
+    // Genuine halts are structurally untouched (each receipt shifts at most
+    // one halt, clamped by halt_count > 0); receipt evidence is never hidden
+    // (only idempotency frontmatter stamps are added). Re-running is a no-op
+    // (per-receipt `backfilled_controlled_partial` stamp).
+    version: 147,
+    name: 'reclassify_historic_controlled_partials',
+    idempotent: true,
+    sql: '',
+    handler: async (engine) => {
+      const r = await reclassifyHistoricControlledPartials(engine, {
+        preV126Evidence: [
+          {
+            kind: 'facts.conversation',
+            source_id: 'default',
+            // gbrain-p1-deadline-proof (2026-08-22, --max-runtime-minutes 1):
+            // the runtime controller logged "run stopped as a CONTROLLED
+            // partial completion" (journal 23:08:56); receipt run_id
+            // ecf-mt4zpgg3-defa → shortRunId ecf-mt4z. Harmless provenance key
+            // on any brain that lacks this receipt.
+            run_prefix: 'ecf-mt4z',
+          },
+        ],
+      });
+      if (r.reclassified > 0) {
+        process.stderr.write(
+          `  Reclassified ${r.reclassified} historical controlled-partial receipt(s) from halt_count to controlled_partial_count\n`,
+        );
+      } else if (r.qualifying_receipts > 0) {
+        process.stderr.write(
+          `  No misrecorded halts to reclassify (${r.qualifying_receipts} controlled-partial receipt(s) already accounted)\n`,
+        );
+      }
+    },
   },
 ];
 
