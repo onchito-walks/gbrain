@@ -952,6 +952,15 @@ const COLUMN_EXEMPTIONS = new Set<string>([
   // statement shape, doctor's extract_health falls back to a 0-column
   // query). Column-only, no bootstrap probe needed.
   'extract_rollup_7d.expected_limit_count',
+  // v146 — controlled-partial stop counter (extract-health accounting: a
+  // --max-runtime-minutes controlled partial is an expected capacity event,
+  // not a halt). Same precedent as extract_rollup_7d.expected_limit_count:
+  // extract_rollup_7d is migration-created (v106, absent from
+  // PGLITE_SCHEMA_SQL), so no schema-blob forward reference can exist; no
+  // index references the column; and the rollup writer retries the pre-v146
+  // statement shape on brains that lack it. Column-only, no bootstrap probe
+  // needed.
+  'extract_rollup_7d.controlled_partial_count',
   // #4069 (migration v143) — verdict TTL column. The PGLite half of this
   // exemption is correct: dream_verdicts is migration-created on PGLite
   // (v30, absent from PGLITE_SCHEMA_SQL), so no PGLite-blob forward

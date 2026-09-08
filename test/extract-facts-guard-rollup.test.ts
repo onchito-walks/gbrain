@@ -47,12 +47,14 @@ describe('extract_facts rollup telemetry (#3683)', () => {
 
     const rollups = rollupCalls(calls);
     expect(rollups.length).toBe(1);
-    // Param order: kind, source_id, day, cost, halts, evalFails, evalPasses, completed, failures.
+    // Param order (11): kind, source_id, day, cost, halts, controlled_partials,
+    // evalFails, evalPasses, round_completed, expected_limits, failures.
+    // v146 added controlled_partial_count (index 5), shifting round_completed to 8.
     const p = rollups[0]!.params;
     expect(p[0]).toBe('facts.fence');
     expect(p[1]).toBe('default');
     expect(p[4]).toBe(1); // halt_delta
-    expect(p[7]).toBe(0); // round_completed_delta
+    expect(p[8]).toBe(0); // round_completed_delta
   });
 
   test('healthy run books round_completed_delta=1, halt_delta=0', async () => {
@@ -65,7 +67,7 @@ describe('extract_facts rollup telemetry (#3683)', () => {
     const p = rollups[0]!.params;
     expect(p[0]).toBe('facts.fence');
     expect(p[4]).toBe(0); // halt_delta
-    expect(p[7]).toBe(1); // round_completed_delta
+    expect(p[8]).toBe(1); // round_completed_delta
   });
 
   test('dry-run guard trigger books nothing', async () => {
