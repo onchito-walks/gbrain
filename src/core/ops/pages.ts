@@ -11,6 +11,7 @@ import type { BrainEngine } from '../engine.ts';
 import { clampSearchLimit } from '../engine.ts';
 import type { Page, PageType } from '../types.ts';
 import { importFromContent } from '../import-file.ts';
+import { matchesAnyGlob } from '../sync.ts';
 import { serializePageToMarkdown } from '../markdown.ts';
 import { writePageThrough, deletePageThrough, resolvePageWriteTarget, type WriteThroughResult } from '../write-through.ts';
 import { extractPageLinks, isAutoLinkEnabled, isAutoTimelineEnabled, isGlobalBasenameEnabled, parseTimelineEntries, makeResolver, type UnresolvedFrontmatterRef } from '../link-extraction.ts';
@@ -25,7 +26,7 @@ import { bumpLastRetrievedAt } from '../last-retrieved.ts';
 import { resolveExcludePrivatePages, isPrivatePage, findPrivateOnlySlugs } from '../search/private-visibility.ts';
 import { LIST_PAGES_DESCRIPTION, CAPTURE_DESCRIPTION } from '../operations-descriptions.ts';
 import { OperationError } from './contract.ts';
-import type { Operation, OperationContext } from './contract.ts';
+import type { Operation, OperationContext, Logger } from './contract.ts';
 import {
   enforceSubagentSlugFence,
   slugOutsideCallerFence,
@@ -358,6 +359,57 @@ const fetch_page: Operation = {
   cliHints: { name: 'fetch', positional: ['id'] },
 };
 
+/**
+ * Stage-2 write-path hygiene gate (approved policy): put_page must never
+ * persist content into a root the operator excluded from the brain's indexing
+ * scope via `sync.exclude` — the same persisted config the sync and import
+ * walkers honor. Sync/import skip these roots at walk time; a direct put_page
+ * write previously BYPASSED that scope and would both persist the page AND
+ * embed it into the graph. This gate closes that hole for the new-write
+ * put_page surface (remote MCP and local CLI funnel through the same op),
+ * uniformly and BEFORE any embedding / DB row / disk file is touched.
+ *
+ * Semantics mirror sync's own exclude handling:
+ *   - patterns split on comma or newline, trimmed, empties dropped;
+ *   - a trailing `/` is widened to a `/**` subtree glob (so `raw/` reads as
+ *     "the whole subtree"), matching performSyncInner's normalization so the
+ *     write-path scope and the sync-path scope cannot drift;
+ *   - the slug is tested as a path against each normalized glob.
+ *
+ * Safeguards:
+ *   - "without touching existing pages": only the NEW slug is rejected; no
+ *     existing page under an excluded root is removed, modified, or purged.
+ *   - "without breaking valid non-excluded writes": slugs that match no
+ *     excluded root fall through untouched (identical behavior to today).
+ *   - no `sync.exclude` configured (or the config read fails) => fail-open
+ *     exactly like a sync: nothing is scoped, so nothing is rejected.
+ *   - enforcement is scoped to this new-write op only; sync/legacy reads and
+ *     import-from-existing surfaces never consult this gate.
+ */
+async function enforceExcludedRootGuard(engine: BrainEngine, slug: string, logger: Logger): Promise<void> {
+  let stored: string | null = null;
+  try {
+    stored = await engine.getConfig('sync.exclude');
+  } catch {
+    // Config unreadable — never break a write over a scope read (mirrors sync).
+    logger.warn(`[put_page] sync.exclude unreadable; skipping write-path hygiene check for '${slug}'`);
+    return;
+  }
+  const patterns = (stored ?? '')
+    .split(/[\n,]/)
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .map((p) => (p.endsWith('/') ? `${p}**` : p));
+  if (patterns.length === 0) return;
+  if (matchesAnyGlob(slug, patterns)) {
+    throw new OperationError(
+      'permission_denied',
+      `put_page: refusing to write '${slug}' — its path falls under an excluded root configured in sync.exclude.`,
+      `Choose a slug outside the excluded roots (${patterns.join(', ')}), or adjust sync.exclude if this path should be indexed. Nothing was written or embedded.`,
+    );
+  }
+}
+
 const put_page: Operation = {
   name: 'put_page',
   description: 'Write or replace a page (markdown with frontmatter). REPLACES the entire page; this is not a partial edit. Before modifying an existing page, read its canonical content with `get_page include_content:true`, then submit the complete page. Chunks, embeds, reconciles tags, and (when auto_link/auto_timeline are enabled) extracts + reconciles graph links and timeline entries. Remote (MCP) callers: body wikilinks are NOT reconciled into the graph — auto_link/auto_timeline are skipped for untrusted writers (response reports auto_links: {skipped: "remote"}); use local capture/put_page for link extraction. For large content on Windows (pipe-buffer limit ~45KB) or any file-as-input workflow, use `gbrain capture --file PATH --slug SLUG` — capture reads the file as a Buffer with a binary-NUL guard and adds provenance write-through (v0.39.3.0).',
@@ -414,6 +466,14 @@ const put_page: Operation = {
     // enforceSubagentSlugFence for the fail-closed policy.
     enforceSubagentSlugFence(ctx, slug, 'put_page');
     enforceClientSlugFence(ctx, slug, 'put_page');
+    // Stage-2 write-path hygiene gate (approved policy): put_page must never
+    // persist content into a root the operator has excluded from the brain's
+    // indexing scope (`sync.exclude` — the same persisted config the sync and
+    // import walkers honor). Sync excludes these roots at walk time, so a
+    // direct put_page write previously BYPASSED that scope and would land,
+    // embed, and persist excluded content into the graph. Reject here BEFORE
+    // the dry-run short-circuit so preview calls surface the same rejection.
+    await enforceExcludedRootGuard(ctx.engine, slug, ctx.logger);
 
     if (ctx.dryRun) return { dry_run: true, action: 'put_page', slug: p.slug };
 
