@@ -3,7 +3,7 @@ import { basename, extname } from 'path';
 import { createHash } from 'crypto';
 import type { BrainEngine, FileSpec } from './engine.ts';
 import { parseMarkdown } from './markdown.ts';
-import { classifyStoredType } from './schema-pack/type-usage.ts';
+import { classifyStoredType, canonicalTypeRejectMessage } from './schema-pack/type-usage.ts';
 import { chunkText } from './chunkers/recursive.ts';
 import { resolveMaxChunkTokens } from './embedding-input-limit.ts';
 import { chunkCodeText, chunkCodeTextFull, detectCodeLanguage, CHUNKER_VERSION } from './chunkers/code.ts';
@@ -333,6 +333,17 @@ export async function importFromContent(
      * NEVER per file inside sync (codex perf finding #7).
      */
     activePack?: { page_types: ReadonlyArray<{ name: string; path_prefixes: ReadonlyArray<string>; aliases?: ReadonlyArray<string> }> };
+    /**
+     * Stage-2 canonical-type enforcement (approved policy). When true AND an
+     * activePack is present AND the content carries an EXPLICIT frontmatter
+     * `type:`, a declared pack alias is NORMALIZED to its canonical name before
+     * persistence (write-through re-renders the canonical name on disk), while a
+     * fully undeclared type (neither canonical name nor alias) is REJECTED with
+     * status:'error' — never persisted. Legacy path erasure: only the new-write
+     * put_page surface sets this; sync/legacy reads and implicit (inferred) types
+     * are untouched, so existing pages and valid legacy reads are unaffected.
+     */
+    enforceCanonicalType?: boolean;
     /**
      * v0.39.3.0 provenance write-through (WARN-8). When set, threaded to
      * `tx.putPage` so the page's `source_kind`, `source_uri`,
@@ -692,8 +703,30 @@ export async function importFromContent(
     const cls = classifyStoredType(parsed.type, opts.activePack);
     if (cls.kind === 'alias_of') {
       typeWarning = { kind: 'alias_of', type: parsed.type, canonical: cls.canonical, directory: cls.directory };
+      // Stage-2 canonical-type enforcement: a declared pack ALIAS is normalized
+      // to its canonical name before persistence so concurrent agents stop
+      // filing the same concept under different strings. write-through
+      // re-renders the canonical name on disk, keeping DB and file in lockstep
+      // (no sync churn on the next round-trip). Only the enforced new-write
+      // put_page path sets opts.enforceCanonicalType; the advisory alias_of
+      // warning is still reported (it records the caller's original type).
+      if (opts.enforceCanonicalType === true) {
+        parsed.type = cls.canonical;
+      }
     } else if (cls.kind === 'undeclared') {
       typeWarning = { kind: 'undeclared', type: parsed.type };
+      // Stage-2 canonical-type enforcement: a fully undeclared type (neither a
+      // canonical name nor a known alias) is REJECTED before persistence,
+      // naming the declared vocabulary so the caller can self-correct. This
+      // happens before any tx write, so nothing is persisted for the page.
+      if (opts.enforceCanonicalType === true) {
+        return {
+          slug,
+          status: 'error',
+          chunks: 0,
+          error: canonicalTypeRejectMessage(parsed.type, opts.activePack),
+        };
+      }
     }
   }
 

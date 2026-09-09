@@ -489,6 +489,11 @@ const put_page: Operation = {
       source_kind: provenanceKind,
       source_uri: provenanceUri,
       ingested_via: provenanceVia,
+      // Stage-2 canonical-type enforcement (approved policy): an explicit
+      // frontmatter `type:` is normalized (pack alias → canonical) or rejected
+      // (undeclared) before persistence, uniformly for remote AND local writers.
+      // Only this new-write surface opts in; sync/legacy reads stay untouched.
+      enforceCanonicalType: true,
       // Only an EXPLICIT allow_empty reaches the engine's empty-overwrite
       // escape hatch; the default put_page path stays guarded end-to-end
       // (including frontmatter-only content the raw-content check above
