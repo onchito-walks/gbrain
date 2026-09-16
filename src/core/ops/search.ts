@@ -123,6 +123,44 @@ const TYPES_PARAM_DESCRIPTION =
   'CLI: --types person,company. Applied at SQL level on every retrieval leg — the same ' +
   'filter `whoknows` uses. Stacks with all other filters.';
 
+/**
+ * Expose the engine's legitimately-stable slug-prefix exclusion (SearchOpts.
+ * exclude_slug_prefixes, which both engines' keyword/title/vector/hybrid legs
+ * already union into their hard-exclude clause via resolveHardExcludes — e.g.
+ * `['test/', 'atoms/']`). Additive over the DEFAULT_HARD_EXCLUDES union and
+ * independent of `types` (a slug prefix is not a page type, so this is the
+ * discriminator of choice for opaque slug-namespaced corpora). Absent → exact
+ * current behavior. Note: `archive/` stays demoted (not excluded) per #1777.
+ */
+function normalizeExcludeSlugPrefixesParam(raw: unknown): string[] | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  const arr = Array.isArray(raw)
+    ? raw
+    : typeof raw === 'string'
+      ? raw.split(',')
+      : null;
+  if (arr === null || arr.some((s) => typeof s !== 'string')) {
+    throw new OperationError(
+      'invalid_params',
+      '`exclude_slug_prefixes` must be an array of slug-prefix strings (CLI: --exclude-slug-prefixes test/,atoms/).',
+    );
+  }
+  const prefixes = [...new Set((arr as string[]).map((s) => s.trim()).filter(Boolean))];
+  if (prefixes.length === 0) {
+    throw new OperationError(
+      'invalid_params',
+      '`exclude_slug_prefixes` was provided but contained no usable slug-prefix strings.',
+    );
+  }
+  return prefixes;
+}
+
+const EXCLUDE_SLUG_PREFIXES_PARAM_DESCRIPTION =
+  'Exclude pages whose slug starts with any of these prefixes (e.g. ["atoms/"]), additive over ' +
+  'the default hard-excludes (test/, attachments/, .raw/). Applied at SQL level on every ' +
+  'retrieval leg. Independent of `types` — use it to carve out an opaque slug-namespaced set. ' +
+  'CLI: --exclude-slug-prefixes test/,atoms/. Omit for exact current behavior.';
+
 const SNIPPET_CHARS_PARAM_DESCRIPTION =
   'Cap each result\'s chunk_text at N characters (a "… [truncated]" marker names the ' +
   'get_page recovery move). 0 forces full text. Unset: subagent tool loops default to ' +
@@ -167,6 +205,7 @@ const search: Operation = {
     },
     // #3985: multi-type filter (plumbing shipped v0.33; exposed here).
     types: { type: 'array', items: { type: 'string' }, description: TYPES_PARAM_DESCRIPTION },
+    exclude_slug_prefixes: { type: 'array', items: { type: 'string' }, description: EXCLUDE_SLUG_PREFIXES_PARAM_DESCRIPTION },
     // #3800: subagent token economy — per-call snippet cap.
     snippet_chars: { type: 'number', description: SNIPPET_CHARS_PARAM_DESCRIPTION },
     // #4415: explicit ranking-axis overrides (the same knobs `query` has had
@@ -196,6 +235,8 @@ const search: Operation = {
     const offset = (p.offset as number) || 0;
     // #3985: validated multi-type filter, threaded into both branches below.
     const types = normalizeTypesParam(p.types);
+    // Additive slug-prefix exclusion (stacks with `types`; independent axis).
+    const excludeSlugPrefixes = normalizeExcludeSlugPrefixesParam(p.exclude_slug_prefixes);
     // #3800: snippet cap (param > subagent config default > full text).
     const snippetCap = await resolveSnippetCap(ctx, p);
     // #4398: explicit per-call source_id wins over ctx.sourceId, validated
@@ -220,7 +261,7 @@ const search: Operation = {
     const keywordOnly = (await ctx.engine.getConfig('search.mcp_keyword_only')) === 'true';
 
     if (keywordOnly) {
-      const raw = await ctx.engine.searchKeyword(queryText, { limit, offset, excludePrivate, ...(types ? { types } : {}), ...scope });
+      const raw = await ctx.engine.searchKeyword(queryText, { limit, offset, excludePrivate, ...(types ? { types } : {}), ...(excludeSlugPrefixes ? { exclude_slug_prefixes: excludeSlugPrefixes } : {}), ...scope });
       const results = dedupResults(raw);
       // #3783 — every row here IS a keyword hit (direct FTS path); mark
       // before stamping so evidence still reads keyword_exact.
@@ -251,6 +292,7 @@ const search: Operation = {
       expansion: false,
       excludePrivate,
       ...(types ? { types } : {}),
+      ...(excludeSlugPrefixes ? { exclude_slug_prefixes: excludeSlugPrefixes } : {}),
       ...scope,
       ...(perCallMode ? { mode: perCallMode } : {}),
       // #4415: agent-explicit recency + salience (same posture as `query`).
@@ -305,6 +347,7 @@ const query: Operation = {
     offset: { type: 'number', description: 'Skip first N results (for pagination)' },
     // #3985: multi-type filter (plumbing shipped v0.33; exposed here).
     types: { type: 'array', items: { type: 'string' }, description: TYPES_PARAM_DESCRIPTION },
+    exclude_slug_prefixes: { type: 'array', items: { type: 'string' }, description: EXCLUDE_SLUG_PREFIXES_PARAM_DESCRIPTION },
     // #3800: subagent token economy — per-call snippet cap.
     snippet_chars: { type: 'number', description: SNIPPET_CHARS_PARAM_DESCRIPTION },
     expand: { type: 'boolean', description: 'Enable multi-query expansion (default: true)' },
@@ -397,6 +440,8 @@ const query: Operation = {
     // #3985: validated multi-type filter (text path; the image-similarity
     // branch below also honors it — searchVector filters types at SQL level).
     const types = normalizeTypesParam(p.types);
+    // Additive slug-prefix exclusion (stacks with `types`; independent axis).
+    const excludeSlugPrefixes = normalizeExcludeSlugPrefixesParam(p.exclude_slug_prefixes);
     // #3800: snippet cap (param > subagent config default > full text).
     const snippetCap = await resolveSnippetCap(ctx, p);
     const imageData = p.image as string | undefined;
@@ -441,6 +486,7 @@ const query: Operation = {
         embeddingColumn: 'embedding_image',
         excludePrivate,
         ...(types ? { types } : {}),
+        ...(excludeSlugPrefixes ? { exclude_slug_prefixes: excludeSlugPrefixes } : {}),
         ...querySourceScope,
       });
       return applySnippetCap(results, snippetCap);
@@ -489,6 +535,8 @@ const query: Operation = {
       detail,
       // #3985: multi-type filter — SearchOpts.types reaches every leg.
       types,
+      // Additive slug-prefix exclusion — reaches every hybrid leg.
+      ...(excludeSlugPrefixes ? { exclude_slug_prefixes: excludeSlugPrefixes } : {}),
       language: (p.lang as string) || undefined,
       symbolKind: (p.symbol_kind as string) || undefined,
       nearSymbol: (p.near_symbol as string) || undefined,
@@ -587,6 +635,7 @@ const query: Operation = {
             // replace correctly-filtered weak results.
             nearSymbol: (p.near_symbol as string) || undefined,
             walkDepth: typeof p.walk_depth === 'number' ? (p.walk_depth as number) : undefined,
+            ...(excludeSlugPrefixes ? { exclude_slug_prefixes: excludeSlugPrefixes } : {}),
             ...querySourceScope,
             since: typeof p.since === 'string' ? p.since : undefined,
             until: typeof p.until === 'string' ? p.until : undefined,
