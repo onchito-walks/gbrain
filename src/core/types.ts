@@ -1130,6 +1130,20 @@ export interface SearchOpts extends PageReadPolicy {
    * though they're hard-excluded by default.
    */
   include_slug_prefixes?: string[];
+  /**
+   * Default covered-atom retrieval policy (v0.48.4.0-custom).
+   *
+   * When false or absent, retrieval hides atom pages whose frontmatter
+   * `source_slug` resolves to a live (non-deleted), non-atom page — or that
+   * have a live non-atom link fallback. Uncovered atom pages (no usable
+   * `source_slug`, a missing source, or a soft-deleted source) are ALWAYS
+   * kept, so the default carve-out can never hide potentially unique data.
+   * Set `true` to include every atom page (opt out of the default filter).
+   *
+   * Applied at SQL level on every retrieval leg (keyword/title/chunks/vector)
+   * in both engines via `buildCoveredAtomExclusionClause`.
+   */
+  includeCoveredAtoms?: boolean;
   detail?: 'low' | 'medium' | 'high';
   /**
    * v0.20.0 Cathedral II: filter by content_chunks.language (e.g., 'typescript',

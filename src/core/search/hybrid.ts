@@ -1355,6 +1355,11 @@ export async function hybridSearch(
     // slug LIKE '<prefix>%'). Same mandatory pick as types/language — omit
     // and per-op exclude_slug_prefixes silently can't reach the engines.
     exclude_slug_prefixes: opts?.exclude_slug_prefixes,
+    // Covered-atom default retrieval policy — threaded so the engine-level
+    // SQL carve-out is only skipped when the caller explicitly opts to
+    // include every atom (`include_covered_atoms`). Omission keeps the
+    // default filter (covered atoms hidden, uncovered atoms retained).
+    includeCoveredAtoms: opts?.includeCoveredAtoms,
     // v0.29.1: since/until take precedence over deprecated afterDate/beforeDate.
     // The engine still consumes the legacy field names; this aliasing keeps
     // PR #618 callers compiling while the new names are the public surface.
@@ -2663,6 +2668,9 @@ export async function hybridSearchCached(
     // resolves) into the cache key so a row written under one exclude
     // policy can't be served to a lookup under another.
     hardExcludes: resolveHardExcludes(opts?.exclude_slug_prefixes, opts?.include_slug_prefixes),
+    // Covered-atom default policy folds into the key so an `include_covered_atoms`
+    // write (all atoms) can never serve a default carve-out read, and vice versa.
+    includeCoveredAtoms: opts?.includeCoveredAtoms === true,
     // #3515 — fold the EFFECTIVE detail level into the cache key. detail
     // gates dedup, chunk-source filtering, and the compiled_truth boost, so
     // a `--detail low` write (compiled-truth-only result set) must never be
