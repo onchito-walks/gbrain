@@ -1253,6 +1253,11 @@ export async function hybridSearch(
     // type filter to SQL level so the limit budget goes to candidate-typed
     // pages instead of being eaten by note/transcript/article pages.
     types: opts?.types,
+    // Atomic slug-namespace exclusion: additive over DEFAULT_HARD_EXCLUDES,
+    // applied at SQL level on every hybrid keyword/vector leg (AND NOT
+    // slug LIKE '<prefix>%'). Same mandatory pick as types/language — omit
+    // and per-op exclude_slug_prefixes silently can't reach the engines.
+    exclude_slug_prefixes: opts?.exclude_slug_prefixes,
     // v0.29.1: since/until take precedence over deprecated afterDate/beforeDate.
     // The engine still consumes the legacy field names; this aliasing keeps
     // PR #618 callers compiling while the new names are the public surface.
