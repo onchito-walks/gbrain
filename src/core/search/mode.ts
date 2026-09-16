@@ -1060,6 +1060,14 @@ export interface KnobsHashContext {
    * brain's rows under another brain's patterns in a multi-engine process.
    */
   intentPatterns?: string;
+  /**
+   * v=custom (covered-atom default retrieval policy): `true` when the caller
+   * passed `include_covered_atoms` (all atoms, default carve-out disabled).
+   * Folded so an include-all write can never serve a default carve-out read
+   * and vice versa. `=== true` semantics match enforcement in both engines
+   * (undefined/absent hashes like `false`).
+   */
+  includeCoveredAtoms?: boolean;
 }
 
 export function knobsHash(
@@ -1157,6 +1165,10 @@ export function knobsHash(
     // across processes. Sorted copy so ['a/','b/'] and ['b/','a/'] hash
     // identically; undefined falls back to 'none' for legacy callers.
     `hx=${ctx?.hardExcludes ? [...ctx.hardExcludes].sort().join(',') : 'none'}`,
+    // v=custom, append-only: covered-atom default policy bit. Undefined/absent
+    // hashes as `false` (default carve-out active), matching both engines'
+    // strict `=== true` opt-in.
+    `ica=${ctx?.includeCoveredAtoms === true ? 1 : 0}`,
     // v=15 addition (append-only): the resolved FTS configuration name. Read
     // from getFtsLanguage() rather than threaded through KnobsHashContext on
     // purpose — the language is a process-global env read with no per-call

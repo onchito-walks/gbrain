@@ -133,6 +133,46 @@ export function buildHardExcludeClause(slugColumn: string, prefixes: string[]): 
 }
 
 /**
+ * Default covered-atom retrieval policy (gated by `SearchOpts.includeCoveredAtoms`).
+ *
+ * By default, search hides atom pages whose frontmatter `source_slug` resolves
+ * to a live (non-deleted), non-atom page — OR that have a live non-atom link
+ * fallback. Uncovered atom pages (no usable `source_slug`, a missing source,
+ * or a soft-deleted source) are KEPT, so no potentially unique data becomes
+ * unreachable. This is corpus-faithful: it re-evaluates the live `pages` +
+ * `links` tables on every query, so the covered set automatically tracks
+ * deletions and recoveries of source pages. The predicate is correlated to
+ * each atom's own `source_id` so a federated/multi-source brain never excludes
+ * an in-scope atom on the strength of an out-of-scope source page.
+ *
+ * Returns a fragment with a leading `AND` (empty-string free: when
+ * `includeCoveredAtoms` is true callers simply skip it), matching the
+ * `buildHardExcludeClause` contract so callers splice it unconditionally.
+ *
+ * @param slugColumn — qualified column reference (engine-supplied, trusted)
+ */
+export function buildCoveredAtomExclusionClause(slugColumn: string): string {
+  return `AND NOT (${slugColumn} = ANY (
+    SELECT a.slug FROM pages a
+    WHERE a.type = 'atom'
+      AND a.deleted_at IS NULL
+      AND (
+        EXISTS (SELECT 1 FROM pages src
+                 WHERE src.slug = (a.frontmatter ->> 'source_slug')
+                   AND src.deleted_at IS NULL
+                   AND src.type <> 'atom'
+                   AND src.source_id = a.source_id)
+        OR EXISTS (SELECT 1 FROM page_links pl
+                    INNER JOIN pages t ON t.id = pl.to_page_id
+                      AND t.deleted_at IS NULL
+                      AND t.type <> 'atom'
+                      AND t.source_id = a.source_id
+                   WHERE pl.from_page_id = a.id)
+      )
+  ))`;
+}
+
+/**
  * v0.26.5 — Build the soft-delete + archived-source visibility filter.
  *
  * Two filters in one fragment:
