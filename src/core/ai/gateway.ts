@@ -326,6 +326,44 @@ export function defaultResolveAuth(
 }
 
 /**
+ * OpenCode GO (`opencode.ai`, its GO tier at `/zen/go/v1`) began rejecting
+ * OpenAI-compatible requests that omit a nonempty `x-opencode-session`
+ * header. GBrain runs two coding lanes against OpenCode GO — the `deepseek`
+ * and `litellm` recipes — by pointing their base URL at
+ * `https://opencode.ai/zen/go/v1`. This helper supplies the session header
+ * for exactly those recipes, and ONLY when the resolved base URL is on
+ * `opencode.ai`. Direct/other DeepSeek URLs (e.g. `api.deepseek.com`) and
+ * every non-GO base URL get NO header, preserving standard behaviour.
+ *
+ * The session value is a stable, NON-secret deployment identifier, sourced
+ * from the managed env var `OPENCODE_GO_SESSION` (set in
+ * `/etc/gbrain/opencode.env` for systemd units). When that is unset, it
+ * falls back to the documented literal `gbrain-go-session:<hostname>` so the
+ * value is stable across restarts without leaking any credential.
+ *
+ * @internal exported for tests; not part of the public gateway API.
+ */
+export function opencodeGoSessionHeaders(
+  recipe: Recipe,
+  cfg: AIGatewayConfig,
+): Record<string, string> | undefined {
+  // Only the two recipes that today run as OpenCode GO lanes.
+  if (recipe.id !== 'deepseek' && recipe.id !== 'litellm') return undefined;
+  const baseURL = cfg.base_urls?.[recipe.id] ?? recipe.base_url_default;
+  if (!baseURL) return undefined;
+  let host: string;
+  try {
+    host = new URL(baseURL).hostname.toLowerCase();
+  } catch {
+    return undefined;
+  }
+  if (host !== 'opencode.ai' && !host.endsWith('.opencode.ai')) return undefined;
+  const envSession = cfg.env.OPENCODE_GO_SESSION?.trim();
+  const session = envSession || `gbrain-go-session:${cfg.env.HOSTNAME ?? 'local'}`;
+  return { 'x-opencode-session': session };
+}
+
+/**
  * Apply the recipe's auth resolver (or default) and translate the result into
  * `createOpenAICompatible` options. Authorization-Bearer style returns
  * `{apiKey}` (the SDK's native path); custom-header style returns `{headers}`
@@ -351,44 +389,53 @@ export function applyResolveAuth(
     );
   }
   const defaults = recipe.resolveDefaultHeaders
-    ? recipe.resolveDefaultHeaders(cfg.env)
-    : recipe.default_headers;
+      ? recipe.resolveDefaultHeaders(cfg.env)
+      : recipe.default_headers;
 
-  // v0.37.6.0 — defaults MUST NOT shadow the resolved auth header. SDK applies
-  // headers after apiKey, so an `Authorization` entry in defaults would replace
-  // the Bearer the SDK adds. Custom-header recipes (Azure: api-key) are
-  // protected the same way.
-  if (defaults) {
-    const lcResolved = resolved.headerName.toLowerCase();
-    for (const k of Object.keys(defaults)) {
-      const lc = k.toLowerCase();
-      if (lc === 'authorization' || lc === lcResolved) {
-        throw new AIConfigError(
-          `Recipe "${recipe.id}" default_headers contains "${k}" which would shadow the auth header. Remove it.`,
-          recipe.setup_hint,
-        );
+    // v0.48.4.1 (OpenCode GO): the deepseek/litellm GO lanes need a nonempty
+    // `x-opencode-session` header on every request to opencode.ai. Merge it into
+    // the defaults so it rides all three touchpoints (embedding/expansion/chat).
+    // Non-GO base URLs get nothing.
+    const goHeaders = opencodeGoSessionHeaders(recipe, cfg);
+    const effectiveDefaults = goHeaders
+      ? { ...(defaults ?? {}), ...goHeaders }
+      : defaults;
+
+    // v0.37.6.0 — defaults MUST NOT shadow the resolved auth header. SDK applies
+    // headers after apiKey, so an `Authorization` entry in defaults would replace
+    // the Bearer the SDK adds. Custom-header recipes (Azure: api-key) are
+    // protected the same way.
+    if (effectiveDefaults) {
+      const lcResolved = resolved.headerName.toLowerCase();
+      for (const k of Object.keys(effectiveDefaults)) {
+        const lc = k.toLowerCase();
+        if (lc === 'authorization' || lc === lcResolved) {
+          throw new AIConfigError(
+            `Recipe "${recipe.id}" default_headers contains "${k}" which would shadow the auth header. Remove it.`,
+            recipe.setup_hint,
+          );
+        }
       }
     }
-  }
 
-  // Bearer-via-Authorization: use the SDK's native apiKey path (which sets
-  // Authorization: Bearer <key> internally). Strip the 'Bearer ' prefix the
-  // resolver returned. Default headers ride alongside if declared.
-  if (
-    resolved.headerName === 'Authorization' &&
-    resolved.token.startsWith('Bearer ')
-  ) {
-    return defaults
-      ? { apiKey: resolved.token.slice('Bearer '.length), headers: { ...defaults } }
-      : { apiKey: resolved.token.slice('Bearer '.length) };
-  }
+    // Bearer-via-Authorization: use the SDK's native apiKey path (which sets
+    // Authorization: Bearer <key> internally). Strip the 'Bearer ' prefix the
+    // resolver returned. Default headers ride alongside if declared.
+    if (
+      resolved.headerName === 'Authorization' &&
+      resolved.token.startsWith('Bearer ')
+    ) {
+      return effectiveDefaults
+        ? { apiKey: resolved.token.slice('Bearer '.length), headers: { ...effectiveDefaults } }
+        : { apiKey: resolved.token.slice('Bearer '.length) };
+    }
 
-  // Custom header (Azure: api-key). Use headers; do NOT pass apiKey, or the
-  // SDK will also set Authorization and the server may reject double-auth.
-  // Defaults merge in first, resolver wins on key conflict (the shadow guard
-  // above already rejects conflicts, so this is defense-in-depth).
-  return { headers: { ...(defaults ?? {}), [resolved.headerName]: resolved.token } };
-}
+    // Custom header (Azure: api-key). Use headers; do NOT pass apiKey, or the
+    // SDK will also set Authorization and the server may reject double-auth.
+    // Defaults merge in first, resolver wins on key conflict (the shadow guard
+    // above already rejects conflicts, so this is defense-in-depth).
+    return { headers: { ...(effectiveDefaults ?? {}), [resolved.headerName]: resolved.token } };
+  }
 
 /**
  * Resolve the openai-compatible URL + optional fetch wrapper. Defaults to
