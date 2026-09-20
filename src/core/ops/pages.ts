@@ -20,7 +20,8 @@ import { bumpLastRetrievedAt } from '../last-retrieved.ts';
 import { resolveExcludePrivatePages, isPrivatePage, findPrivateOnlySlugs } from '../search/private-visibility.ts';
 import { LIST_PAGES_DESCRIPTION, CAPTURE_DESCRIPTION } from '../operations-descriptions.ts';
 import { OperationError } from './contract.ts';
-import type { Operation, OperationContext } from './contract.ts';
+import type { Operation, OperationContext, Logger } from './contract.ts';
+import { matchesAnyGlob } from '../sync.ts';
 import {
   assertExplicitSourceLive,
   enforceSubagentSlugFence,
@@ -264,6 +265,57 @@ const fetch_page: Operation = {
   cliHints: { name: 'fetch', positional: ['id'] },
 };
 
+/**
+ * Stage-2 write-path hygiene gate (approved policy): put_page must never
+ * persist content into a root the operator excluded from the brain's indexing
+ * scope via `sync.exclude` — the same persisted config the sync and import
+ * walkers honor. Sync/import skip these roots at walk time; a direct put_page
+ * write previously BYPASSED that scope and would both persist the page AND
+ * embed it into the graph. This gate closes that hole for the new-write
+ * put_page surface (remote MCP and local CLI funnel through the same op),
+ * uniformly and BEFORE any embedding / DB row / disk file is touched.
+ *
+ * Semantics mirror sync's own exclude handling:
+ *   - patterns split on comma or newline, trimmed, empties dropped;
+ *   - a trailing `/` is widened to a `/**` subtree glob (so `raw/` reads as
+ *     "the whole subtree"), matching performSyncInner's normalization so the
+ *     write-path scope and the sync-path scope cannot drift;
+ *   - the slug is tested as a path against each normalized glob.
+ *
+ * Safeguards:
+ *   - "without touching existing pages": only the NEW slug is rejected; no
+ *     existing page under an excluded root is removed, modified, or purged.
+ *   - "without breaking valid non-excluded writes": slugs that match no
+ *     excluded root fall through untouched (identical behavior to today).
+ *   - no `sync.exclude` configured (or the config read fails) => fail-open
+ *     exactly like a sync: nothing is scoped, so nothing is rejected.
+ *   - enforcement is scoped to this new-write op only; sync/legacy reads and
+ *     import-from-existing surfaces never consult this gate.
+ */
+async function enforceExcludedRootGuard(engine: BrainEngine, slug: string, logger: Logger): Promise<void> {
+  let stored: string | null = null;
+  try {
+    stored = await engine.getConfig('sync.exclude');
+  } catch {
+    // Config unreadable — never break a write over a scope read (mirrors sync).
+    logger.warn(`[put_page] sync.exclude unreadable; skipping write-path hygiene check for '${slug}'`);
+    return;
+  }
+  const patterns = (stored ?? '')
+    .split(/[\n,]/)
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .map((p) => (p.endsWith('/') ? `${p}**` : p));
+  if (patterns.length === 0) return;
+  if (matchesAnyGlob(slug, patterns)) {
+    throw new OperationError(
+      'permission_denied',
+      `put_page: refusing to write '${slug}' — its path falls under an excluded root configured in sync.exclude.`,
+      `Choose a slug outside the excluded roots (${patterns.join(', ')}), or adjust sync.exclude if this path should be indexed. Nothing was written or embedded.`,
+    );
+  }
+}
+
 const put_page: Operation = {
   name: 'put_page',
   description: 'Replace a complete canonical Markdown page. Read get_page with include_content:true and pass its revision as expected_revision; force explicitly overwrites the current revision. Omitting both permits creation only. Retain a UUID request_id and repeat identical arguments after transport failure or a pending receipt. Content, tags, sanitized text projections, versions and the committed receipt publish together; embedding and optional Git effects have separate status. Remote callers preserve protected facts/takes fences; automatic graph links are skipped for untrusted writes. A stdio `gbrain serve` sweeps them at startup + on idle; `gbrain serve --http` does not self-sweep — run `gbrain sweep --once` or use trusted local capture/put_page for inline link extraction. Remote callers receive write_through.warning when no repo is configured. For file input use gbrain capture --file PATH --slug SLUG.',
@@ -286,6 +338,18 @@ const put_page: Operation = {
   scope: 'write',
   handler: async (ctx, p) => {
     pageMutationSource(ctx, p, 'put_page');
+    // Stage-2 write-path hygiene gate (approved policy): put_page must never
+    // persist content into a root the operator has excluded from the brain's
+    // indexing scope (`sync.exclude` — the same persisted config the sync and
+    // import walkers honor). Sync excludes these roots at walk time, so a
+    // direct put_page write previously BYPASSED that scope and would land,
+    // embed, and persist excluded content into the graph. Reject here BEFORE
+    // the dry-run short-circuit so preview calls surface the same rejection,
+    // and before any admission/journaling so nothing is persisted. Slugs are
+    // lowercased by the persistence layer, so match the canonical (lowercased)
+    // slug the write would actually persist.
+    await enforceExcludedRootGuard(ctx.engine, (typeof p.slug === 'string' ? p.slug : '').toLowerCase(), ctx.logger);
+
     if (ctx.dryRun) {
       if (typeof p.slug === 'string') {
         validatePageSlug(p.slug);

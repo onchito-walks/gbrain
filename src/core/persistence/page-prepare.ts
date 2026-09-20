@@ -13,6 +13,7 @@ import { isWriteTargetContained } from '../path-confine.ts';
 import { recordedPathFromFileUri, scannerSourcePath } from '../write-through.ts';
 import { engineMutationPrecondition, parseMutationPrecondition } from './preconditions.ts';
 import { assertPurgeParams } from './purge-params.ts';
+import { loadActivePackForWriteVocabulary } from '../schema-pack/write-vocabulary.ts';
 import { authorizeWrite } from './authority.ts';
 import { digest, sha256 } from './digest.ts';
 import { getWorktreeBinding } from './ownership.ts';
@@ -171,10 +172,24 @@ export async function preparePageMutation(engine: BrainEngine, row: WriteRequest
   }
   let prepared: PreparedContentImport | undefined;
   let provenance: CanonicalProvenance | undefined;
+  // Stage-2 canonical-type enforcement on the new-write put_page path only:
+  // with an active schema pack, an explicit frontmatter `type:` that is a
+  // declared alias is NORMALIZED to its canonical name (write-through
+  // re-renders it on disk) and a fully undeclared type is REJECTED before
+  // persistence. capture applies its own admission-level enforcement;
+  // restore/revert re-serialize already-canonical types; sync/legacy reads
+  // never set this. Both remote and local put_page funnel through here.
+  // Best-effort: no resolvable pack (missing / corrupt / trust-gated) ->
+  // null -> no vocabulary to enforce -> legacy verbatim behavior preserved.
+  const canonicalPack = row.operation === 'put_page'
+    ? await loadActivePackForWriteVocabulary({ engine, remote: row.authority?.remote, sourceId: row.source_id })
+    : null;
   const result = await importFromContent(engine, row.slug, content, {
     ...source, noEmbed: true, remote: row.authority.remote,
     forceRechunk: row.operation === 'restore_page' || row.operation === 'revert_version',
     allowEmptyOverwrite: p.allow_empty === true || row.operation === 'restore_page' || row.operation === 'revert_version',
+    activePack: canonicalPack ? { page_types: canonicalPack.manifest.page_types.map((pt) => ({ name: pt.name, path_prefixes: pt.path_prefixes, aliases: pt.aliases })) } : undefined,
+    enforceCanonicalType: row.operation === 'put_page',
     source_kind: typeof p.source_kind === 'string' ? p.source_kind : null,
     source_uri: typeof p.source_uri === 'string' ? p.source_uri : null,
     ingested_via: typeof p.ingested_via === 'string' ? p.ingested_via : null,
@@ -183,7 +198,9 @@ export async function preparePageMutation(engine: BrainEngine, row: WriteRequest
   });
   if (!prepared) {
     const oversized = result.error?.startsWith('Content too large') === true;
+    const canonicalReject = result.status === 'error' && result.error?.startsWith('page type ') === true;
     throw new OperationError(oversized ? 'request_too_large' : 'invalid_params', oversized ? result.error!
+      : canonicalReject ? result.error!
       : /yaml/i.test(result.error ?? '') ? 'Invalid YAML frontmatter. Quote scalar values or fix the frontmatter block.'
       : 'The content was rejected before publication.');
   }

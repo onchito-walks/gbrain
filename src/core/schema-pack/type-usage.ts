@@ -51,6 +51,28 @@ export function classifyStoredType(type: string, pack: TypeUsagePack): StoredTyp
 }
 
 /**
+ * Rejection message for an explicit frontmatter `type:` that is neither a
+ * declared canonical page_type NOR one of its declared aliases — used by the
+ * enforced put_page write path (canonical-type policy) so an agent can
+ * self-correct. Naming the declared vocabulary (canonical names with their
+ * aliases, which are auto-normalized on write) makes the misroute recoverable
+ * without a round-trip to `gbrain schema explain`.
+ */
+export function canonicalTypeRejectMessage(type: string, pack: TypeUsagePack): string {
+  const entries = pack.page_types
+    .map((t) => (t.aliases && t.aliases.length ? `${t.name} (${t.aliases.join(', ')})` : t.name))
+    .sort();
+  const preview = entries.length === 0
+    ? 'none declared'
+    : `${entries.slice(0, 10).join(', ')}${entries.length > 10 ? `, \u2026 (${entries.length} total)` : ''}`;
+  return (
+    `page type '${sanitizeTypeForDisplay(type)}' is neither a declared canonical type nor a known alias ` +
+    `in the active schema pack. Use a declared type or alias (${preview}), or add it to the active schema ` +
+    `pack before writing. Known aliases are normalized to their canonical type automatically.`
+  );
+}
+
+/**
  * Type strings come from user/agent frontmatter and get echoed into terminal
  * warnings — strip control/non-printable characters (ANSI-escape hygiene) and
  * cap the length so a hostile or garbled value can't mangle the terminal.

@@ -1367,6 +1367,14 @@ export async function hybridSearch(
     // type filter to SQL level so the limit budget goes to candidate-typed
     // pages instead of being eaten by note/transcript/article pages.
     types: opts?.types,
+    // expose both per-op slug-prefix excludes AND the covered-atom default
+    // retrieval policy into the SearchOpts the engines consume. The rebuild
+    // shape below is intentional (HNSW inner-CTE ordering means we can't
+    // lazy-spread the full opts) — omit and per-op exclude_slug_prefixes
+    // silently can't reach the engines, and the engine SQL carve-out for
+    // covered atoms stays active for every caller that didn't opt out.
+    exclude_slug_prefixes: opts?.exclude_slug_prefixes,
+    includeCoveredAtoms: opts?.includeCoveredAtoms,
     // v0.29.1: since/until take precedence over deprecated afterDate/beforeDate.
     // The engine still consumes the legacy field names; this aliasing keeps
     // PR #618 callers compiling while the new names are the public surface.
@@ -2675,6 +2683,9 @@ export async function hybridSearchCached(
     // resolves) into the cache key so a row written under one exclude
     // policy can't be served to a lookup under another.
     hardExcludes: resolveHardExcludes(opts?.exclude_slug_prefixes, opts?.include_slug_prefixes),
+    // Covered-atom default policy folds into the key so an `include_covered_atoms`
+    // write (all atoms) can never serve a default carve-out read, and vice versa.
+    includeCoveredAtoms: opts?.includeCoveredAtoms === true,
     // #3515 — fold the EFFECTIVE detail level into the cache key. detail
     // gates dedup, chunk-source filtering, and the compiled_truth boost, so
     // a `--detail low` write (compiled-truth-only result set) must never be
