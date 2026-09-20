@@ -1154,6 +1154,20 @@ export interface SearchOpts extends PageReadPolicy {
    * though they're hard-excluded by default.
    */
   include_slug_prefixes?: string[];
+  /**
+   * Default covered-atom retrieval policy (v0.51 forward-port). When unset or
+   * false (the default), an `atom` page is EXCLUDED from retrieval if (a) its
+   * frontmatter `source_slug` resolves to a live, non-deleted, non-atom page
+   * in the same source, OR (b) a live non-atom page links toward it — i.e. the
+   * source-covered atom's content is already reachable via its source page,
+   * so the deduplicated copy adds retrieval noise. Uncovered atoms (missing /
+   * deleted source_slug) are ALWAYS kept so no unique data becomes
+   * unreachable. Pass `true` to disable the carve-out and return every atom
+   * (a corpus-faithful write-through of `include_covered_atoms: true` at the
+   * op surface). Engines fold this into the hard-exclude clause via
+   * `buildCoveredAtomExclusionClause`; read-only, no corpus change.
+   */
+  includeCoveredAtoms?: boolean;
   detail?: 'low' | 'medium' | 'high';
   /**
    * v0.20.0 Cathedral II: filter by content_chunks.language (e.g., 'typescript',

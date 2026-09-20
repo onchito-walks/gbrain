@@ -96,7 +96,7 @@ import { logConnectionEvent } from './connection-audit.ts';
 import { drainBackgroundWorkBeforeDisconnect } from './background-work.ts';
 import { validateSlug, contentHash, isBlankBody, rowToPage, rowToStalePage, rowToChunk, rowToSearchResult, parseEmbedding, tryParseEmbedding, isUndefinedTableError, warnOncePerProcess } from './utils.ts';
 import { resolveBoostMap, resolveHardExcludes } from './search/source-boost.ts';
-import { buildSourceFactorCase, buildHardExcludeClause, buildVisibilityClause, buildBestPerPagePoolCte, buildOrFallbackWebsearchQuery, boundWebsearchQuery } from './search/sql-ranking.ts';
+import { buildSourceFactorCase, buildHardExcludeClause, buildCoveredAtomExclusionClause, buildVisibilityClause, buildBestPerPagePoolCte, buildOrFallbackWebsearchQuery, boundWebsearchQuery } from './search/sql-ranking.ts';
 import { privatePagesFilterFragment, privateLinkOriginFilterFragment, privateTimelineEventFilterFragment, privateProvenanceFilterFragment } from './search/private-visibility.ts';
 import { unverifiedExtractionFragment } from './extraction-review.ts';
 import { DEFAULT_EMBEDDING_MODEL, DEFAULT_EMBEDDING_DIMENSIONS } from './ai/defaults.ts';
@@ -1432,7 +1432,7 @@ export class PostgresEngine implements BrainEngine {
     const boostMap = resolveBoostMap();
     const sourceFactorCase = buildSourceFactorCase('p.slug', boostMap, opts?.detail);
     const hardExcludePrefixes = resolveHardExcludes(opts?.exclude_slug_prefixes, opts?.include_slug_prefixes);
-    const hardExcludeClause = buildHardExcludeClause('p.slug', hardExcludePrefixes);
+    const hardExcludeClause = buildHardExcludeClause('p.slug', hardExcludePrefixes) + (opts?.includeCoveredAtoms ? '' : buildCoveredAtomExclusionClause('p.slug'));
 
     // #3986: CJK query branch — engine parity with PGLite's v0.32.7
     // fallback. websearch_to_tsquery with an ASCII-stemming config can't
@@ -1625,7 +1625,7 @@ export class PostgresEngine implements BrainEngine {
     const boostMap = resolveBoostMap();
     const sourceFactorCase = buildSourceFactorCase('p.slug', boostMap, opts?.detail);
     const hardExcludePrefixes = resolveHardExcludes(opts?.exclude_slug_prefixes, opts?.include_slug_prefixes);
-    const hardExcludeClause = buildHardExcludeClause('p.slug', hardExcludePrefixes);
+    const hardExcludeClause = buildHardExcludeClause('p.slug', hardExcludePrefixes) + (opts?.includeCoveredAtoms ? '' : buildCoveredAtomExclusionClause('p.slug'));
     const visibilityClause = buildVisibilityClause('p', 's', opts);
     // FTS config name (e.g. 'english', 'pt_br'). Validated by getFtsLanguage()
     // — safe to interpolate into raw SQL.
@@ -1772,7 +1772,7 @@ export class PostgresEngine implements BrainEngine {
     const boostMap = resolveBoostMap();
     const sourceFactorCase = buildSourceFactorCase('p.slug', boostMap, opts?.detail);
     const hardExcludePrefixes = resolveHardExcludes(opts?.exclude_slug_prefixes, opts?.include_slug_prefixes);
-    const hardExcludeClause = buildHardExcludeClause('p.slug', hardExcludePrefixes);
+    const hardExcludeClause = buildHardExcludeClause('p.slug', hardExcludePrefixes) + (opts?.includeCoveredAtoms ? '' : buildCoveredAtomExclusionClause('p.slug'));
 
     // #3986: CJK branch — same fallback as searchKeyword but chunk-grain
     // (no page-dedup). Parity with PGLite searchKeywordChunks.
@@ -1936,7 +1936,7 @@ export class PostgresEngine implements BrainEngine {
     // unverified auto-extracted stubs get factor 1.0, not the people/ 1.2x.
     const sourceFactorCaseOnSlug = buildSourceFactorCase('slug', boostMap, opts?.detail, 'unverified_stub');
     const hardExcludePrefixes = resolveHardExcludes(opts?.exclude_slug_prefixes, opts?.include_slug_prefixes);
-    const hardExcludeClause = buildHardExcludeClause('p.slug', hardExcludePrefixes);
+    const hardExcludeClause = buildHardExcludeClause('p.slug', hardExcludePrefixes) + (opts?.includeCoveredAtoms ? '' : buildCoveredAtomExclusionClause('p.slug'));
     // v0.36 (D11): column routing via resolved descriptor. Engine doesn't
     // read config — caller (hybrid/op) resolved it and passed it in.
     // normalizeEngineColumn accepts the legacy union (string literals,

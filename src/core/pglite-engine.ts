@@ -107,7 +107,7 @@ import { sanitizeForJsonb, sanitizeText, buildLinkRows, buildTimelineRows } from
 import { PAGE_SORT_SQL, MIN_ENTITY_PAGES_FOR_COVERAGE } from './types.ts';
 import { finalizeLastSeen } from './chronicle/last-seen.ts';
 import { resolveBoostMap, resolveHardExcludes } from './search/source-boost.ts';
-import { buildSourceFactorCase, buildHardExcludeClause, buildVisibilityClause, buildBestPerPagePoolCte, buildOrFallbackWebsearchQuery, boundWebsearchQuery } from './search/sql-ranking.ts';
+import { buildSourceFactorCase, buildHardExcludeClause, buildCoveredAtomExclusionClause, buildVisibilityClause, buildBestPerPagePoolCte, buildOrFallbackWebsearchQuery, boundWebsearchQuery } from './search/sql-ranking.ts';
 import { privatePagesFilterFragment, privateLinkOriginFilterFragment, privateTimelineEventFilterFragment, privateProvenanceFilterFragment } from './search/private-visibility.ts';
 import { unverifiedExtractionFragment } from './extraction-review.ts';
 import { shouldExcludeFromOrphanReporting, loadOrphanPolicyOverrides } from './orphan-policy.ts';
@@ -2417,7 +2417,7 @@ export class PGLiteEngine implements BrainEngine {
     const boostMap = resolveBoostMap();
     const sourceFactorCase = buildSourceFactorCase('p.slug', boostMap, opts?.detail);
     const hardExcludePrefixes = resolveHardExcludes(opts?.exclude_slug_prefixes, opts?.include_slug_prefixes);
-    const hardExcludeClause = buildHardExcludeClause('p.slug', hardExcludePrefixes);
+    const hardExcludeClause = buildHardExcludeClause('p.slug', hardExcludePrefixes) + (opts?.includeCoveredAtoms ? '' : buildCoveredAtomExclusionClause('p.slug'));
 
     // v0.26.5: visibility filter (soft-deleted + archived-source).
     const visibilityClause = buildVisibilityClause('p', 's', opts);
@@ -2559,7 +2559,7 @@ export class PGLiteEngine implements BrainEngine {
     const boostMap = resolveBoostMap();
     const sourceFactorCase = buildSourceFactorCase('p.slug', boostMap, opts?.detail);
     const hardExcludePrefixes = resolveHardExcludes(opts?.exclude_slug_prefixes, opts?.include_slug_prefixes);
-    const hardExcludeClause = buildHardExcludeClause('p.slug', hardExcludePrefixes);
+    const hardExcludeClause = buildHardExcludeClause('p.slug', hardExcludePrefixes) + (opts?.includeCoveredAtoms ? '' : buildCoveredAtomExclusionClause('p.slug'));
     const visibilityClause = buildVisibilityClause('p', 's', opts);
     // FTS config name (e.g. 'english', 'pt_br'). Validated by getFtsLanguage()
     // — safe to interpolate into raw SQL.
@@ -2719,7 +2719,7 @@ export class PGLiteEngine implements BrainEngine {
     const boostMap = resolveBoostMap();
     const sourceFactorCase = buildSourceFactorCase('p.slug', boostMap, opts?.detail);
     const hardExcludePrefixes = resolveHardExcludes(opts?.exclude_slug_prefixes, opts?.include_slug_prefixes);
-    const hardExcludeClause = buildHardExcludeClause('p.slug', hardExcludePrefixes);
+    const hardExcludeClause = buildHardExcludeClause('p.slug', hardExcludePrefixes) + (opts?.includeCoveredAtoms ? '' : buildCoveredAtomExclusionClause('p.slug'));
     const visibilityClause = buildVisibilityClause('p', 's', opts);
 
     // v0.32.7: CJK branch (same as searchKeyword but without page-dedup).
@@ -2822,7 +2822,7 @@ export class PGLiteEngine implements BrainEngine {
     // factor 1.0, not the people/ 1.2x, inside the pre-LIMIT re-rank.
     const sourceFactorCaseOnSlug = buildSourceFactorCase('slug', boostMap, opts?.detail, 'unverified_stub');
     const hardExcludePrefixes = resolveHardExcludes(opts?.exclude_slug_prefixes, opts?.include_slug_prefixes);
-    const hardExcludeClause = buildHardExcludeClause('p.slug', hardExcludePrefixes);
+    const hardExcludeClause = buildHardExcludeClause('p.slug', hardExcludePrefixes) + (opts?.includeCoveredAtoms ? '' : buildCoveredAtomExclusionClause('p.slug'));
     // v0.46.15 (retrieval-cathedral P1): bounded escalation — see
     // postgres-engine.ts searchVector for the full rationale; the logic here
     // is IDENTICAL (engine-parity pinned). Cap policy (R2-10 + codex ship

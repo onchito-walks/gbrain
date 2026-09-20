@@ -134,6 +134,45 @@ export function buildHardExcludeClause(slugColumn: string, prefixes: string[]): 
 }
 
 /**
+ * Default covered-atom retrieval policy (v0.51 forward-port): hard-exclude the
+ * source-covered atom pages from one retrieval leg. An atom page is excluded
+ * only when its content is already reachable through a live non-atom page in
+ * the same source — either its declared `source_slug` resolves to such a page,
+ * or a live non-atom page links TOWARD the atom. Uncovered atoms (missing /
+ * deleted / unresolved `source_slug`, or no covering link) are ALWAYS retained
+ * so no unique data becomes unreachable.
+ *
+ * Corpus-faithful and read-only: the subquery re-evaluates the live `pages`
+ * and `page_links` tables on every query (per-atom source_id correlation)
+ * rather than snapshotting the corpus; no index/embedding mutation side
+ * effects. `page_links` is the links `(id, from_page_id, to_page_id)` view
+ * alias in both engines.
+ *
+ * @param slugColumn — qualified outer slug column (engine-supplied, trusted)
+ * @returns a raw SQL fragment (with leading space) or empty string
+ */
+export function buildCoveredAtomExclusionClause(slugColumn: string): string {
+  return `AND NOT (${slugColumn} = ANY (
+    SELECT a.slug FROM pages a
+    WHERE a.type = 'atom'
+      AND a.deleted_at IS NULL
+      AND (
+        EXISTS (SELECT 1 FROM pages src
+                 WHERE src.slug = (a.frontmatter ->> 'source_slug')
+                   AND src.deleted_at IS NULL
+                   AND src.type <> 'atom'
+                   AND src.source_id = a.source_id)
+        OR EXISTS (SELECT 1 FROM page_links pl
+                    INNER JOIN pages t ON t.id = pl.to_page_id
+                      AND t.deleted_at IS NULL
+                      AND t.type <> 'atom'
+                      AND t.source_id = a.source_id
+                   WHERE pl.from_page_id = a.id)
+      )
+  ))`;
+}
+
+/**
  * v0.26.5 — Build the soft-delete + archived-source visibility filter.
  *
  * Two filters in one fragment:
