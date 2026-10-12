@@ -143,14 +143,55 @@ for f in ${files[@]+"${files[@]}"}; do
   fi
 done
 
-# One scheduler owns membership AND heaviest-first dispatch. Bad weights are
-# advisory; a missing/broken scheduler is an execution error, never an empty run.
+# Membership policy is lane-aware (B24):
+#   * UNSHARDED (1/1) — the scheduler's job is dispatch ORDER, so its output
+#     must be an EXACT PERMUTATION of the discovered pool. Missing, unexpected
+#     or duplicated entries are not trusted membership: observed upstream, a
+#     truncated stdout tail is delivered at exit 0 (#5669), which trusting the
+#     output would silently turn into dropped serial coverage. The
+#     deterministic `find` order is used instead, with a loud warning —
+#     refusing outright would drop ALL serial coverage instead.
+#   * SHARDED — the scheduler owns membership, so a successful EMPTY result is
+#     a legitimate empty shard and is honoured as-is (empty-shard contract),
+#     while a scheduler that FAILS fails the run closed: falling back there
+#     would execute the whole corpus inside one shard. Bad weights stay
+#     advisory in both lanes (`--fallback-on-error`).
 if [ "${#pool_files[@]}" -gt 0 ]; then
-  selected=$(printf '%s\n' "${pool_files[@]}" | bun scripts/sharding.ts \
-    "$shard_n" "$shard_m" --weights scripts/serial-weights.json --fallback-on-error)
-  pool_files=()
-  if [ -n "$selected" ]; then
-    while IFS= read -r f; do pool_files+=("$f"); done <<< "$selected"
+  scheduled_n=${#pool_files[@]}
+  scheduler_ok=1
+  scheduler_why=""
+  selected=""
+  if ! selected=$(printf '%s\n' "${pool_files[@]}" | bun scripts/sharding.ts \
+    "$shard_n" "$shard_m" --weights scripts/serial-weights.json --fallback-on-error); then
+    scheduler_ok=0
+    scheduler_why="the scheduler exited non-zero"
+  elif [ "$shard_m" -eq 1 ]; then
+    actual_n=$(printf '%s\n' "$selected" | sed '/^$/d' | wc -l | tr -d ' ')
+    uniq_n=$(printf '%s\n' "$selected" | sed '/^$/d' | LC_ALL=C sort -u | wc -l | tr -d ' ')
+    missing_n=$(comm -23 \
+      <(printf '%s\n' "${pool_files[@]}" | LC_ALL=C sort -u | sed '/^$/d') \
+      <(printf '%s\n' "$selected" | sed '/^$/d' | LC_ALL=C sort -u) | wc -l | tr -d ' ')
+    unexpected_n=$(comm -13 \
+      <(printf '%s\n' "${pool_files[@]}" | LC_ALL=C sort -u | sed '/^$/d') \
+      <(printf '%s\n' "$selected" | sed '/^$/d' | LC_ALL=C sort -u) | wc -l | tr -d ' ')
+    duplicate_n=$((actual_n - uniq_n))
+    if [ "$missing_n" -ne 0 ] || [ "$unexpected_n" -ne 0 ] || [ "$duplicate_n" -ne 0 ]; then
+      scheduler_ok=0
+      scheduler_why="its output is not a permutation of the $scheduled_n discovered file(s) (returned $actual_n, missing $missing_n, unexpected $unexpected_n, duplicate $duplicate_n)"
+    fi
+  fi
+  if [ "$scheduler_ok" -eq 1 ]; then
+    pool_files=()
+    if [ -n "$selected" ]; then
+      while IFS= read -r f; do pool_files+=("$f"); done <<< "$selected"
+    fi
+  elif [ "$shard_m" -eq 1 ]; then
+    printf '[serial-tests] WARNING: %s; running all %s file(s) in deterministic discovery order — no serial file is skipped.\n' \
+      "$scheduler_why" "$scheduled_n" >&2
+  else
+    printf '[serial-tests] ERROR: %s in shard %s/%s. Refusing to run: the fallback would execute the whole discovered corpus inside this shard.\n' \
+      "$scheduler_why" "$shard_n" "$shard_m" >&2
+    exit 3
   fi
 fi
 ordered_files=()
