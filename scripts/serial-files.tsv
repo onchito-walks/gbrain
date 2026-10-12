@@ -283,6 +283,7 @@ test/persistence-drain-latency.serial.test.ts	global-state	global-state: configu
 test/persistence-image-import.serial.test.ts	R2	R2: mock.module(../src/core/embedding.ts) replaces modules for every file in the process
 test/persistence-publication-native.serial.test.ts	global-state	global-state: platform-gated (darwin) machine integration
 test/persistence-reconnect.serial.test.ts	global-state	global-state: R3: constructs PGLiteEngine outside beforeAll; R4: PGLiteEngine without an afterAll disconnect
+test/persistence-rss-workload.serial.test.ts	global-state	global-state: one full PGLite read/write workload per case with a scoped RSS reader; the old form replaced process.memoryUsage process-wide
 test/persistence-skill-bundles.serial.test.ts	R1	R1: mutates process.env (GBRAIN_HOME)
 test/persistence-sync-company.serial.test.ts	global-state	global-state: spyOn globalThis.fetch
 test/persistence-sync-failures.serial.test.ts	global-state	global-state: R3: constructs PGLiteEngine outside beforeAll; patches process stdout/stderr/console
