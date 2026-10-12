@@ -20,6 +20,11 @@ import type {
   HybridSearchMeta,
 } from '../types.ts';
 import { affectsRecall } from '../types.ts';
+import {
+  classifyAtomProvenanceRecords,
+  type AtomProvenanceRecord,
+  type AtomProvenanceStatus,
+} from '../cycle/provenance-status.ts';
 export { resolveDateBoundary, resolveSearchDateBounds } from './date-bounds.ts';
 import { hasReadPolicy, pageReadFilter } from './read-policy-sql.ts';
 import { embedQuery } from '../embedding.ts';
@@ -189,6 +194,69 @@ export async function stampUnverifiedExtractions(
       if (!m) continue;
       r.status = m.status;
       if (m.unverified) r.unverified = true;
+    }
+  } catch {
+    // best-effort: never break retrieval.
+  }
+}
+
+/**
+ * READ-ONLY read-time atom provenance status stamp (core/cycle/provenance-status.ts).
+ *
+ * Marks ONLY atom results, distinguishing a genuinely fresh atom from one whose
+ * evidence is orphaned, whose source page is gone, or which is slug-unbound — so
+ * retrieval never presents an atom as freshly sourced while its evidence cannot
+ * be checked against any live page. Purely informational: it changes no coverage,
+ * filtering, or ranking, and it writes nothing (no source_hash rebind). A
+ * `quote_present_in_live_page` marker means the quoted passage persisted; it is
+ * NOT a claim that the atom is sound. Best-effort — never breaks retrieval.
+ */
+export async function stampAtomProvenance(
+  engine: BrainEngine,
+  results: SearchResult[],
+): Promise<void> {
+  const atomResults = results.filter((r) => r.type === 'atom');
+  if (atomResults.length === 0) return;
+  try {
+    const ids = [...new Set(
+      atomResults
+        .map((r) => r.page_id)
+        .filter((n): n is number => typeof n === 'number' && Number.isFinite(n)),
+    )];
+    if (ids.length === 0) return;
+    const rows = await engine.executeRaw<{
+      id: number; source_id: string | null;
+      ss: string | null; sh: string | null; q: string | null;
+    }>(
+      `SELECT id, source_id,
+              frontmatter->>'source_slug'  AS ss,
+              frontmatter->>'source_hash'  AS sh,
+              frontmatter->>'source_quote' AS q
+         FROM pages
+        WHERE id = ANY($1::int[]) AND deleted_at IS NULL`,
+      [ids],
+    );
+    const byId = new Map(rows.map((row) => [Number(row.id), row]));
+    const records: AtomProvenanceRecord[] = [];
+    const pageIds: number[] = [];
+    for (const r of atomResults) {
+      const row = byId.get(r.page_id);
+      if (!row) continue;
+      records.push({
+        sourceId: row.source_id ?? 'default',
+        sourceSlug: row.ss,
+        sourceHash: row.sh,
+        sourceQuote: row.q,
+      });
+      pageIds.push(r.page_id);
+    }
+    if (records.length === 0) return;
+    const verdicts = await classifyAtomProvenanceRecords(engine, records);
+    const statusByPage = new Map<number, AtomProvenanceStatus>();
+    pageIds.forEach((pid, i) => statusByPage.set(pid, verdicts[i].status));
+    for (const r of atomResults) {
+      const s = statusByPage.get(r.page_id);
+      if (s) r.provenance_status = s;
     }
   } catch {
     // best-effort: never break retrieval.

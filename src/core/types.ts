@@ -1,4 +1,5 @@
 // Page types
+import type { AtomProvenanceStatus } from './cycle/provenance-status.ts';
 // v0.38: `PageType` opens from a closed 23-element union to `string`. The
 // closed union was always a fiction — every gbrain user accumulated organic
 // types (`apple-note`, `therapy-session`, `tweet-bundle`, etc.) via
@@ -894,6 +895,19 @@ export interface SearchResult {
    * alone is informational.
    */
   status?: string;
+  /**
+   * READ-ONLY read-time atom provenance status, stamped on atom results by
+   * `stampAtomProvenance` (search/hybrid.ts). It separates fresh /
+   * quote_present_in_live_page / quote_orphaned / source_gone / slug_unbound so
+   * an atom returned by retrieval is never presented as freshly sourced while
+   * its evidence cannot be checked against any live page. A
+   * `quote_present_in_live_page` marker means the quoted passage persisted — it
+   * is NOT a claim that the atom is sound or that its binding is restored.
+   * Display/metadata only: it never changes coverage, filtering, or ranking.
+   * Absent for non-atom results (and for atoms whose frontmatter carries no
+   * source fields).
+   */
+  provenance_status?: AtomProvenanceStatus;
   /**
    * v0.36 (cross-modal wave): the chunk's modality discriminator from
    * content_chunks.modality. 'text' for the existing text-embedding rows,

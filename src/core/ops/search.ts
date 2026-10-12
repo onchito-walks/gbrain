@@ -10,7 +10,7 @@ import { readHolders } from './context.ts';
  * in ../operations.ts. Never import from '../operations.ts' here (cycle).
  */
 
-import { hybridSearchCached, stampContentFlags, stampUnverifiedExtractions } from '../search/hybrid.ts';
+import { hybridSearchCached, stampAtomProvenance, stampContentFlags, stampUnverifiedExtractions } from '../search/hybrid.ts';
 import { anchorOpResults } from '../search/entity-anchor.ts';
 import { applyQueryArms } from '../search/query-arms.ts';
 import { factRowOutput } from '../search/facts-arm.ts';
@@ -196,6 +196,8 @@ async function stampKeywordRows(ctx: OperationContext, results: SearchResult[], 
   // #1699 / #160: the content_flag channel and the unverified-stub marker still surface off the hybrid path.
   await stampContentFlags(ctx.engine, results, scope);
   await stampUnverifiedExtractions(ctx.engine, results, scope);
+  // READ-ONLY: same for the read-time atom provenance status marker.
+  await stampAtomProvenance(ctx.engine, results);
   bumpLastRetrievedAt(ctx.engine, results.map((r) => r.page_id));
   maybeCaptureSearch(ctx, queryText, results, Date.now() - startedAt, false);
 }

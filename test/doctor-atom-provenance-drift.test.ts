@@ -247,7 +247,10 @@ describe('computeAtomProvenanceDriftCheck', () => {
     // WHERE; in the SELECT list it stays a correlated SubPlan re-run per atom
     // over an unindexed substring(content_hash) expression — O(atoms x pages),
     // which blew a 60s health-monitor budget on a 27k-page / 7k-atom brain.
-    const src = doctorFileSource('doctor/checks/extraction-sync.ts');
+    // Stage 3B B09: the aggregate moved to the sibling module
+    // (checks/atom-provenance-drift.ts) so the ratcheted extraction-sync.ts only
+    // carries the wiring; the #4937 property is asserted where the SQL lives.
+    const src = doctorFileSource('doctor/checks/atom-provenance-drift.ts');
     const start = src.indexOf('), drift AS (');
     expect(start).toBeGreaterThan(0);
     const end = src.indexOf('SELECT count(*)', start);
@@ -283,8 +286,12 @@ describe('computeAtomProvenanceDriftCheck', () => {
     expect(c.status).toBe('warn');
     expect(c.message).toContain('30/30');
     expect(c.message).toContain('source page is gone');
-    // #5432: says what was measured (hash comparison), not a quote verdict.
-    expect(c.message).toContain('compares source_hash only');
+    // #5432 / Stage3B B09: the message must state the read-time truth — drift is
+    // a binding-freshness signal, not an integrity verdict — and must no longer
+    // claim the quote was never re-checked (it now is, read-only).
+    expect(c.message).toContain('binding-freshness signal, not an integrity verdict');
+    expect(c.message).toContain('does NOT restore the atom');
+    expect(c.message).not.toContain('compares source_hash only');
     expect(c.message).not.toContain('no current page contains');
   });
   it('does not count a slug-unbound atom (source_path only, no source_slug) as source_gone — or as drift at all (#4806)', async () => {
