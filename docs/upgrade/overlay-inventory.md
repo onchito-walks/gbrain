@@ -2925,6 +2925,23 @@ Observed selected output:
 1029:     `ttl=${knobs.cache_ttl_seconds}`,
 ```
 
+## Negative discovery checks (not standalone equivalence proof)
+
+Executed from the staging tree with frozen official revision:
+
+```text
+git grep -n -E 'includeCoveredAtoms|include_covered_atoms|buildCoveredAtomExclusionClause' 0460af288227a193c2031eca2e6a64f808cbd8bd -- src
+Observed: exit 1; zero output lines.
+git grep -n -E 'opencodeGoSessionHeaders|x-opencode-session|OPENCODE_GO_SESSION' 0460af288227a193c2031eca2e6a64f808cbd8bd -- src
+Observed: exit 1; zero output lines.
+git grep -n -E 'atom_disposition|classifyAtomProvenanceRecords|quote_present_in_live_page' 0460af288227a193c2031eca2e6a64f808cbd8bd -- src
+Observed: exit 1; zero output lines.
+git grep -n -E 'operator-quarantine|quarantine-set' 0460af288227a193c2031eca2e6a64f808cbd8bd -- src
+Observed: exit 1; zero output lines.
+```
+
+These checks corroborate the inspected execution seams above; they do not prove absence of every possible differently named equivalent. Frozen official sources, not the prior patch-ID roster, determine the classifications.
+
 ## Regression source catalog
 
 Commands: `git show e90ad6eddce9414d262e11bbc01ce63cf6235de8:TEST_PATH`. Observed selected test/describe declarations below are for the deployed source revision, not candidate results. Each table row links its corresponding files. Missing tests are disclosed above.
