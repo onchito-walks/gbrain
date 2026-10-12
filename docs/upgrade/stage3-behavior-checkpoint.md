@@ -361,3 +361,80 @@ with caller override precedence) remains CONFIGURATION and is owed to Stage 5 ro
 deferred it explicitly with "do not set production environment in this stage", so setting it here
 would violate that boundary. Whole-candidate acceptance, the PostgreSQL E2E, the compiled caller
 and the migration rehearsal remain later gates. Nothing was deployed.
+
+## Stage 3 final acceptance at the integrated SHA (task t_4dd80505, run 92, monchobot)
+
+Acceptance SHA 2ab2603918655f747fc2adec579d955f2a5729d1 (tree clean; run started at 0e33a8ef5).
+This section is the closure record for the original Stage 3 owner; it supersedes the "run this at
+031762bbc" verification above, which is now one commit stale.
+
+### Independent drop-check of the 3B/3C cherry-picks
+
+For all 45 files changed by the 3B and 3C ranges, staging HEAD content equals the cohort branch
+content in 44. The 45th, src/core/cli-flag-registry.generated.ts, differs only in that HEAD is a
+SUPERSET: it keeps 3D's `--force-rechunk` quarantine flag that 3B's regeneration (forked before 3D)
+would have dropped. Confirmed correct rather than assumed - `bun run build:flag-registry` followed
+by `git diff --exit-code -- src/core/cli-flag-registry.generated.ts` reports no diff, so the
+generated registry is exactly what the sources produce. scripts/serial-files.tsv keeps BOTH sides'
+rows; no row was removed.
+
+### Defect found and repaired: the slow tier vs the B04 default
+
+Commit 2ab2603918655f747fc2adec579d955f2a5729d1, "test(search): reconcile the CLI atom-recovery slow
+test with the B04 default".
+
+test/managed-atoms-cli.slow.test.ts asserted that the atom created by the retry path is returned by
+`engine.searchKeyword('lampreyfixture')`. Stage 3B's B04 hard-excludes a covered atom - one whose
+frozen `source_slug` resolves to a LIVE non-atom page of the SAME source - from default retrieval,
+on the engine paths as well as the op layer.
+
+That conflict is PRE-EXISTING and proven so, not an integration regression: the deployed tree carries
+the byte-identical test and fixture (md5 670bde1397e3443c8faa929fc6dd2173 /
+89db4e8fc9eebe1b3f64e33c2dd18ddf) and applies the same carve-out INSIDE `searchKeyword` (deployed
+pglite-engine.ts:2437). The expectation predates B04; the `.slow` tier is excluded from the fast unit
+lane, so it was never surfaced.
+
+Reconciled to the retained contract by TIGHTENING it, not by deleting coverage: the fixture gains the
+documented `--include-covered` opt-out (the default read stays byte-identical to the pre-carve-out
+call) and the test now pins BOTH directions through the real CLI + engine + PGLite + extraction path -
+the default hides the covered atom, the opt-in returns it. Proof line:
+{"default_search_hides_covered_atom":true,"optin_search_match":true,"chunks":1,"retained_receipts":3}.
+No source behavior, ceiling or assertion was relaxed.
+
+### Execution evidence at 2ab260391 (fenced Bun 1.4.3, ubuntu, TMPDIR=/tmp/gbrain-stage3-final-tmp, foreground)
+
+    focused Stage 3 surface (15 non-serial files, --max-concurrency=4)  -> 126 pass / 0 fail / 953 expect / 57.18s
+    isolated serial/slow files, ONE process each                       -> 57 pass / 0 fail
+      atom-disposition-cache-hit.serial 1, dream-drain-failure-summary.serial 16,
+      operator-quarantine-set.serial 24, persistence-rss-workload.serial 2,
+      put-page-exclude.serial 5, put-page-vocabulary.serial 8, managed-atoms-cli.slow 1
+    upstream touched area (43 files: extract-atoms*, ops-search*, managed-atoms*, dream*)
+                                                                       -> 414 pass / 0 fail / 1876 expect / 243.01s
+    bun run typecheck                                                  -> rc=0
+    check:module-size, check:function-size, check:windows-hide, check:layering,
+      check:test-isolation, check:test-names, check:test-placeholders, check:newlines,
+      check:test-env-opt-ins, git diff --check                          -> all rc=0
+    git status --porcelain                                             -> 0 lines
+
+Carried-behavior spot check on HEAD (symbols/files, not prose): B01 canonicalPutPageContent admission
+message present; B02 put-page-exclude.ts permission_denied `sync.exclude` governor present and
+byte-identical to its commit; B03 exclude_slug_prefixes; B04 buildCoveredAtomExclusionClause; B05
+src/core/atom-slug-alias.ts; B06 x-opencode-session; B07/B10/B12 quarantine fragments; B08
+includeQuarantined knobsHash part; B09/B10 src/core/cycle/provenance-status.ts; B11
+extract-atoms-cost-gate.ts; B13 deriveExtractAtomsBatchOutcome; B15 src/commands/quarantine.ts; B16/B17
+mention quarantine reconciliation; B20-B22 src/core/multi-source-drift-walk.ts; B24 the serial runner's
+exact-permutation guard (scripts/run-serial-tests.sh); B25 tools/codegraph-probe.ts; B26
+observeResidentMemory; B27 src/core/search/atom-disposition.ts.
+
+### Unchanged closing position
+
+All 24 RETAIN behaviours are integrated. B18/B19 remain UPSTREAM-EQUIVALENT (retired; official
+provides them). B23 (GBRAIN_DRIFT_TIMEOUT_MS=30000 inheritance with caller override precedence)
+remains CONFIGURATION for Stage 5 rollout - setting it here would violate Stage 2's explicit "do not
+set production environment in this stage" boundary.
+
+NOT executed / NOT claimed, all later-stage gates: test/e2e/operator-quarantine-postgres.test.ts
+(DATABASE_URL-gated; no real-Postgres parity is asserted), the whole-candidate matrix, the compiled
+CLI, the disposable-copy schema rehearsal, release build, deployment and actual-caller verification.
+No deployment, build, restart, production DB write, credential/routing/grant/firebreak change,
+publication or edit under /srv/minio/hermes/home/src/gbrain. deploy_authorized=false remains.
