@@ -141,8 +141,31 @@ this task used `TMPDIR=/tmp/gbrain-stage3b-tmp` (outside both), and background-p
 commands trip the test preload's `DATABASE_URL` refusal, so test commands were run in the
 foreground. Do not delete the reservations.
 
-## Integration onto staging (see the program-state entry for the exact result)
+## Integration onto staging (attempted; NOT performed — staging advanced independently)
 
-The branch is a strict descendant of the staging head at dispatch (`c08d2c167`), so it is
-integrated with `git merge --ff-only` after confirming the shared staging worktree is clean and
-exactly at its recorded base; no rebase, reset or force was used.
+The branch is a strict descendant of the staging head recorded at dispatch
+(`c08d2c167bdd6db54504872fd92447c074b6c59f`), but by the end of this run the shared staging
+worktree was clean and sitting at `1bc6071daa21ca03afa9842fbdd96278b4dd93c0`, which already carries
+the Stage 3C cohort (B11/B12/B13: `4d76268fc`, `de290719f`, `490535857`, `1bc6071da`) and the
+Stage 3D integration note — i.e. staging advanced independently past this branch's base.
+
+Attempted `git merge --ff-only upgrade/stage3b-retrieval-isolated` in the staging worktree: refused
+by git ("Not possible to fast-forward, aborting"). Staging was therefore left UNTOUCHED — no merge
+commit, no rebase, no reset, no history rewrite, no partial state. `c08d2c167` IS still an ancestor
+of the staging head; this branch's tip `60abdec3d` is NOT (the two lineages diverge at
+`c08d2c167`).
+
+Integration for the Stage 3 owner (`t_4dd80505`) — exact instruction: bring
+`0eb6d6b37..60abdec3d` (five behavior commits plus this receipt) onto the then-current staging head
+by merge or cherry-pick (the commit range is the five behavior commits; the receipt commit is
+documentation only). A `--ff-only` integration is possible only if staging is ever back at
+`c08d2c167`. No Stage 3B commit touches a file the Stage 3C/3D cohorts changed except
+`src/core/ops/search.ts`, `src/core/search/hybrid.ts`, `src/core/types.ts` and
+`scripts/module-size-limits.tsv` — expect textual conflicts in exactly those four if the other
+cohorts edited them after `c08d2c167`.
+
+Verified at the branch tip `60abdec3d389ab7e62e85899384a76e6ca71a4ab` (the receipt commit; same code
+as `8f86e6427`): worktree clean; `bun test test/atom-provenance-status.test.ts
+test/doctor-atom-provenance-drift.test.ts test/covered-atom-policy.test.ts
+test/covered-atom-source-alias.test.ts test/search-slug-prefix-exclusion-op.test.ts`
+-> 46 pass / 0 fail / 188 expect across 5 files.
