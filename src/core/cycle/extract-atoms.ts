@@ -98,7 +98,13 @@ import { deriveTrust, lowerDerivedPage } from '../trust/taint.ts';
 import { derivedGateInput } from '../trust/derived-gate.ts';
 import { ATOM_TYPES, ATOMS_RESPONSE_SCHEMA } from './extract-atoms-schema.ts';
 import { parseAtomsOutcome } from './extract-atoms-parse.ts';
+import { buildAtomWorkList, type AtomWorkItem } from './extract-atoms-work.ts';
+import { dropQuarantinedListedPages } from './extract-atoms-quarantine.ts';
+import { quarantineFilterFragment } from '../quarantine.ts';
 export { parseAtomsOutcome, parseAtomsResponse, type AtomsParseOutcome } from './extract-atoms-parse.ts';
+
+/** B12: the work items this phase iterates (assembled by extract-atoms-work.ts). */
+type WorkItem = AtomWorkItem;
 
 const DEFAULT_BUDGET_USD = 0.3;
 // #4529 + #4540: per-item extractor caps, overridable via
@@ -147,6 +153,14 @@ const minCompiledTruthChars = (param: string) =>
 // doctor check can't drift.
 const RAW_SOURCE_HOLDER_EXCLUSION_SQL =
   `AND NOT (p.type = 'source' AND COALESCE(p.frontmatter ? 'raw', false))`;
+
+// B12: a page the content-quality gate marked `quarantine` (HIDE marker) is not
+// an extraction candidate — junk (Cloudflare/CAPTCHA interstitials, operator
+// literals) must never reach the model. Shared by discoverExtractablePages and
+// countExtractAtomsBacklog so the phase's backlog number and the doctor check
+// (which already filters the same way) cannot disagree, and the marker key is
+// single-sourced from core/quarantine.ts.
+const QUARANTINE_EXCLUSION_SQL = quarantineFilterFragment('p');
 
 const PAGE_SCAN_STATE_EXCLUSION_SQL = `AND NOT EXISTS (
   SELECT 1 FROM extract_atoms_page_state scan
@@ -410,6 +424,7 @@ export async function discoverExtractablePages(
       AND p.type = ANY($2::text[])
       AND p.deleted_at IS NULL
       AND p.content_hash IS NOT NULL
+      AND ${QUARANTINE_EXCLUSION_SQL}
       AND COALESCE(p.frontmatter->>'imported_from',   '') <> 'markdown-greenfield'
       AND COALESCE(p.frontmatter->>'dream_generated', '') <> 'true'
       ${RAW_SOURCE_HOLDER_EXCLUSION_SQL}
@@ -494,6 +509,7 @@ export async function countExtractAtomsBacklog(
            AND p.type = ANY($2::text[])
            AND p.deleted_at IS NULL
            AND p.content_hash IS NOT NULL
+           AND ${QUARANTINE_EXCLUSION_SQL}
            AND COALESCE(p.frontmatter->>'imported_from',   '') <> 'markdown-greenfield'
            AND COALESCE(p.frontmatter->>'dream_generated', '') <> 'true'
            ${RAW_SOURCE_HOLDER_EXCLUSION_SQL}
@@ -512,6 +528,7 @@ export async function countExtractAtomsBacklog(
          WHERE p.type = ANY($1::text[])
            AND p.deleted_at IS NULL
            AND p.content_hash IS NOT NULL
+           AND ${QUARANTINE_EXCLUSION_SQL}
            AND COALESCE(p.frontmatter->>'imported_from',   '') <> 'markdown-greenfield'
            AND COALESCE(p.frontmatter->>'dream_generated', '') <> 'true'
            ${RAW_SOURCE_HOLDER_EXCLUSION_SQL}
@@ -781,54 +798,26 @@ export async function runPhaseExtractAtoms(
     transcriptsLive.push(t);
   }
 
-  // 3. Dual-source merge: transcripts + pages, dedup by contentHash.
-  //    Transcripts win on COLLISION (origin attribution stays with the raw
-  //    transcript file even if the same content was later imported as a
-  //    brain page) — that's decided by the two loops below, which register
-  //    every transcript hash into `seenHashes` before any page is checked,
-  //    same as before this fix. It's independent of the FINAL work-item
-  //    ORDER built after them.
-  //
-  //    Order is page-item-first, interleaved 1-for-1 with transcripts (NOT
-  //    concatenated transcripts-then-pages). The per-call budget cap (step
-  //    4 below) stops processing `work` in list order once
-  //    budgetTracker.totalSpent >= budgetCap, skipping everything after
-  //    that point. Two failure modes this avoids:
-  //      - Concatenation (old code): a transcript corpus that alone
-  //        exceeds the budget cap starves the page pool completely, no
-  //        matter how many drain batches run.
-  //      - Interleaving with transcripts first: still starves ALL pages
-  //        whenever the budget only covers exactly one call (item 0 is a
-  //        transcript, item 1 — the first page — never gets attempted).
-  //    Pages are the ONLY pool `countExtractAtomsBacklog`/doctor's
-  //    extract_atoms_backlog check measures (see that function's
-  //    docstring), so page-first guarantees the doctor-visible backlog
-  //    makes forward progress on every budget-capped call, however tight
-  //    the cap — `--drain` can no longer report the same backlog number
-  //    forever while atoms keep getting extracted from transcripts.
-  type WorkItem =
-    | { kind: 'transcript'; filePath: string; content: string; contentHash: string }
-    | ({ kind: 'page' } & AtomPageInput);
+  // 3. Dual-source merge (peeled to extract-atoms-work.ts, which carries the
+  //    ordering + dedup rationale unchanged): transcripts win on a content
+  //    collision, and `work` is page-first so the doctor-visible page backlog
+  //    keeps making progress under even a one-call budget cap.
+  const merged = buildAtomWorkList(transcriptsLive, pages);
+  duplicatesSkipped += merged.duplicateTranscripts + merged.duplicatePages;
+  const { transcriptItems, pageItems, work } = merged;
 
-  const seenHashes = new Set<string>();
-  const transcriptItems: WorkItem[] = [];
-  for (const t of transcriptsLive) {
-    if (seenHashes.has(t.contentHash)) { duplicatesSkipped++; continue; }
-    seenHashes.add(t.contentHash);
-    transcriptItems.push({ kind: 'transcript', ...t });
-  }
-  const pageItems: WorkItem[] = [];
-  for (const p of pages) {
-    if (seenHashes.has(p.contentHash)) { duplicatesSkipped++; continue; }
-    seenHashes.add(p.contentHash);
-    pageItems.push({ kind: 'page', ...p });
-  }
-  const work: WorkItem[] = [];
-  const maxPoolLen = Math.max(transcriptItems.length, pageItems.length);
-  for (let i = 0; i < maxPoolLen; i++) {
-    if (i < pageItems.length) work.push(pageItems[i]);
-    if (i < transcriptItems.length) work.push(transcriptItems[i]);
-  }
+  // 3b. Execution-boundary quarantine re-check (B12, defense-in-depth on top of
+  //     the discovery/backlog predicate). A page can be quarantined BETWEEN
+  //     listing and execution (a concurrent scan/import/capture), so re-check
+  //     the marker here — one batched query — and drop the pages that picked it
+  //     up. FAIL-CLOSED: an unanswerable re-check refuses the run with ZERO
+  //     model calls rather than treat "unknown" as "clean".
+  const qDropped = await dropQuarantinedListedPages(engine, sourceId, work, {
+    sourceId, transcriptsTotal: transcripts.length, pagesTotal: pageItems.length,
+    duplicatesSkipped, budgetUsd: null, dryRun: opts.dryRun ?? false,
+  });
+  if ('failed' in qDropped) return qDropped.failed;
+  const pagesExcludedQuarantined = qDropped.excluded;
 
   // #3961 follow-up: transcript-origin atoms get provenance edges too. The
   // original implementation skipped them ("transcripts are files, not pages,
@@ -851,8 +840,9 @@ export async function runPhaseExtractAtoms(
     }
   }
 
-  // Phase-level no-op: nothing to extract today.
-  if (work.length === 0 && transcripts.length === 0 && pages.length === 0) {
+  // Phase-level no-op: nothing to extract today (a page dropped at the
+  // execution-boundary quarantine re-check is not work).
+  if (work.length === 0 && transcripts.length === 0 && pages.length - pagesExcludedQuarantined === 0) {
     return {
       phase: 'extract_atoms',
       status: 'skipped',
@@ -867,6 +857,7 @@ export async function runPhaseExtractAtoms(
         transcripts_skipped_budget: 0,
         pages_processed: 0,
         pages_total: 0,
+        pages_excluded_quarantined: pagesExcludedQuarantined,
         duplicates_skipped: 0,
         failures: [],
         estimated_spend_usd: 0,
@@ -1441,7 +1432,7 @@ export async function runPhaseExtractAtoms(
     summary:
       `extract_atoms: ${totalAtomsExtracted} atoms from ` +
       `${transcriptsProcessed}/${transcripts.length} transcripts + ` +
-      `${pagesProcessed}/${pages.length} pages` +
+      `${pagesProcessed}/${pages.length - pagesExcludedQuarantined} pages` +
       (failures.length > 0 ? ` (${failures.length} failed)` : '') +
       (transcriptsSkipped + pagesSkipped > 0
         ? ` (${transcriptsSkipped + pagesSkipped} budget-skipped)`
@@ -1452,7 +1443,8 @@ export async function runPhaseExtractAtoms(
       transcripts_total: transcripts.length,
       transcripts_skipped_budget: transcriptsSkipped,
       pages_processed: pagesProcessed,
-      pages_total: pages.length,
+      pages_total: pages.length - pagesExcludedQuarantined,
+      pages_excluded_quarantined: pagesExcludedQuarantined,
       pages_skipped_budget: pagesSkipped,
       duplicates_skipped: duplicatesSkipped,
       write_pending: writesPending,
