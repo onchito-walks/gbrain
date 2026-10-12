@@ -461,7 +461,7 @@ function sha256Hex(text: string): string {
 async function refuseOnManagedBrain(engine: BrainEngine, subject: string, json: boolean): Promise<boolean> {
   if (!await managedPersistenceEnabled(engine)) return false;
   const error = opError('writer_coordinator_required', `quarantine ${subject} cannot write pages on a managed brain.`,
-    `It performs a direct pages UPDATE outside the canonical owner, so nothing was changed; this lane targets DB-only incident rows on an unmanaged brain. On a managed brain the marker write goes through the coordinator: gbrain quarantine clear <slug> [--force].`,
+    `It performs a direct pages UPDATE outside the canonical owner, so nothing was changed; this lane targets DB-only incident rows on an unmanaged brain. On a managed brain the marker write goes through the coordinator lane (gbrain quarantine clear --force), which takes the page's own slug.`,
     { fix: readFix('Lists the hidden pages without changing anything.', { argv: ['gbrain', 'quarantine', 'list', '--json'] }) });
   if (!await reportPersistenceCliError(error, json)) throw error;
   return true;
@@ -526,7 +526,7 @@ async function runSet(engine: BrainEngine, args: string[]): Promise<void> {
   }
 
   if (!yes) {
-    console.error('Refusing to mutate without --yes. Re-run with --dry-run to preview, then add --yes.');
+    console.error('Refusing to mutate without --yes. Preview the plan with --dry-run first; the consent flag is what authorizes the write.');
     process.exit(2);
   }
   if (await refuseOnManagedBrain(engine, 'set', json)) return;
