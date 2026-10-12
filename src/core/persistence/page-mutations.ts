@@ -30,6 +30,7 @@ import { assertPurgeParams } from './purge-params.ts';
 import type { Principal, WriteRequest } from './model.ts';
 import { normalizeSubagentPageInput, type PageTypeWarning } from './page-input.ts';
 import { putPageVocabularyContent } from './put-page-vocabulary.ts';
+import { assertPutPageNotSyncExcluded } from './put-page-exclude.ts';
 import { assertKnowledgePublicationAllowed } from '../shared-skills/knowledge-guard.ts';
 import { isUnboundSourcePage, readDatabaseOnlyActivatedSources, readUnboundWritePolicy, unboundSourceError } from './unbound-source.ts';
 import { colonSlugWindowsRefusal, isWindowsColonTarget } from './native-file-target.ts';
@@ -197,7 +198,7 @@ export interface PageBatchMember { id: string; index: number; size: number; requ
 export async function submitPageMutation(ctx: OperationContext,
   input: { operation: string; params: Record<string, unknown>; waitMs?: number; managedFileImport?: true; timelineSection?: TimelineSection }): Promise<Record<string, unknown>> {
   assertPersistenceAccepting(ctx.engine);
-  if (input.operation === 'put_page' && input.managedFileImport !== true) await preflightPutPageVocabulary(ctx, input.params);
+  if (input.operation === 'put_page' && input.managedFileImport !== true) await preflightPutPageAdmission(ctx, input.params);
   // #6007: wait_ms is a reply deadline from arrival, never part of the write's identity.
   const arrived = performance.now();
   const { wait_ms: wireWait, ...params } = input.params;
@@ -227,12 +228,13 @@ export async function submitPageMutation(ctx: OperationContext,
 }
 
 /**
- * Every check a page mutation passes before it is journaled, without admitting
- * it: either the authorized prior request with this request_id (a replay), or
- * the admission to submit. `put_pages` admits several of these together.
+ * Refuse new input before local registration, without changing durable replay:
+ * the canonical page-type vocabulary (B01) and the write-path indexing scope
+ * (B02). A terminal request_id keeps its stored intent, so both checks run only
+ * for input that would actually be journaled now — a replay cannot be refused
+ * by a pack or a sync.exclude that changed after it was accepted.
  */
-/** Refuse new input before local registration, without changing durable replay. */
-async function preflightPutPageVocabulary(ctx: OperationContext, params: Record<string, unknown>): Promise<void> {
+export async function preflightPutPageAdmission(ctx: OperationContext, params: Record<string, unknown>): Promise<void> {
   const sourceId = pageMutationSource(ctx, params, 'put_page');
   if (typeof params.request_id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(params.request_id)) {
     try {
@@ -243,8 +245,14 @@ async function preflightPutPageVocabulary(ctx: OperationContext, params: Record<
     }
   }
   await putPageVocabularyContent(ctx, params, sourceId);
+  await assertPutPageNotSyncExcluded(ctx.engine, typeof params.slug === 'string' ? params.slug.toLowerCase() : '', ctx.logger);
 }
 
+/**
+ * Every check a page mutation passes before it is journaled, without admitting
+ * it: either the authorized prior request with this request_id (a replay), or
+ * the admission to submit. `put_pages` admits several of these together.
+ */
 export async function preparePageAdmission(ctx: OperationContext,
   input: { operation: string; params: Record<string, unknown>; managedFileImport?: true; batch?: PageBatchMember; timelineSection?: TimelineSection }
 ): Promise<{ prior: WriteRequest; admission?: undefined; typeWarning?: undefined; slugAdvisory?: undefined } | { prior?: undefined; admission: WriteAdmission; typeWarning: PageTypeWarning | null; slugAdvisory: string | null }> {
