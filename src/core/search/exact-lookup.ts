@@ -39,6 +39,7 @@ import { normalizeAlias } from './alias-normalize.ts';
 import { isLookupShapedQuery } from './query-intent.ts';
 import { applySupersedeDownrank } from './hybrid.ts';
 import { isExcludedIdentity } from './alias-hop.ts';
+import { isQuarantined } from '../quarantine.ts';
 
 /** Cap on tier injections per query (mirrors the alias hop's discipline). */
 export const MAX_EXACT_LOOKUP_INJECT = 3;
@@ -73,6 +74,8 @@ export interface ExactLookupOpts extends PageReadPolicy {
   excludeSlugs?: string[];
   /** Resolved prefix excludes (see IdentityTierOpts in hybrid.ts). */
   excludeSlugPrefixes?: string[];
+  /** Internal recovery opt-in; ordinary search must not inject hidden rows. */
+  includeQuarantined?: boolean;
 }
 
 /** Max distinct sources probed for a slug-shaped query on a federated call. */
@@ -123,6 +126,7 @@ export async function structuralExactLookup(
           ? await engine.getPage(q, { sourceId: scope, excludePrivate: opts.excludePrivate })
           : await engine.getPage(q, { excludePrivate: opts.excludePrivate }); // gbrain-allow-unscoped-getpage — read-only first-match; no paired write
         if (!page) continue;
+        if (opts.includeQuarantined !== true && isQuarantined(page.frontmatter)) continue;
         push({
           page_id: page.id,
           slug: page.slug,

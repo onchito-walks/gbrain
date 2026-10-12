@@ -854,6 +854,8 @@ async function applyAliasResolvedBoost(
 }
 
 export interface HybridSearchOpts extends SearchOpts {
+  /** Exact-slug recovery only; scored arms remain quarantine-filtered. */
+  includeQuarantined?: boolean;
   expansion?: boolean;
   /** System One: remote spend accounting, call site, S1-only re-runs (see search/decide-stage.ts). */
   decide?: import('./decide-stage.ts').DecideSearchOpts;

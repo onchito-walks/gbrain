@@ -99,6 +99,7 @@ export async function runLexicalArms(req: HybridRequest): Promise<LexicalArms> {
   }
   const exactLookupOpts: ExactLookupOpts = {
     ...identityTierOpts,
+    includeQuarantined: opts?.includeQuarantined,
     titleCandidates: titleResults,
     takesHoldersAllowList: opts?.takesHoldersAllowList,
     // #4480: gate tier injections on the caller's shape filters.
