@@ -114,18 +114,21 @@ fi
 # OUT of scope: Claude Code marketplace adds have no ref pin syntax, so the
 # Claude lane documents the bare form and installs the repo default branch —
 # a recorded decision, not a gate hole. Codex docs headline the pinned form.
-while IFS=: read -r file line match; do
-  ref="${match##*@}"
-  case "$ref" in
-    latest-stable|codex-plugin) ;;
-    *)
-      fail=1
-      echo "FAIL: $file:$line pins 'marketplace add garrytan/gbrain@$ref' — use @latest-stable or @codex-plugin." >&2
-      ;;
-  esac
-done < <(grep -RInE 'plugin marketplace add garrytan/gbrain@[A-Za-z0-9._-]+' \
-  "$ROOT/README.md" "$ROOT/BOOTSTRAP_FOR_AGENTS.md" "$ROOT/INSTALL_FOR_AGENTS.md" "$ROOT/docs" 2>/dev/null \
-  | sed -E 's/^([^:]+):([0-9]+):.*(plugin marketplace add garrytan\/gbrain@[A-Za-z0-9._-]+).*/\1:\2:\3/' || true)
+# Keep filenames out of the colon-delimited match stream. Content-only -o
+# also validates every command on a line without swallowing Markdown tails.
+while IFS= read -r -d '' file; do
+  while IFS=: read -r line match; do
+    ref="${match##*@}"
+    case "$ref" in
+      latest-stable|codex-plugin) ;;
+      *)
+        fail=1
+        echo "FAIL: $file:$line pins 'marketplace add garrytan/gbrain@$ref' — use @latest-stable or @codex-plugin." >&2
+        ;;
+    esac
+  done < <(grep -noE 'plugin marketplace add garrytan/gbrain@[A-Za-z0-9._-]+' "$file" || true)
+done < <(find "$ROOT/README.md" "$ROOT/BOOTSTRAP_FOR_AGENTS.md" "$ROOT/INSTALL_FOR_AGENTS.md" "$ROOT/docs" \
+  -type f -print0 2>/dev/null || true)
 
 if [ "$fail" -ne 0 ]; then
   exit 1
