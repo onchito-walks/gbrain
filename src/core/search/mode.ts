@@ -957,6 +957,15 @@ export interface KnobsHashContext {
    */
   hardExcludes?: string[];
   /**
+   * v=30 (append-only, Stage 3B B04): the per-call `includeCoveredAtoms` opt-in
+   * for this query. Folded so a cache row written under the DEFAULT carve-out
+   * (falsy/absent — source-covered atoms hard-excluded) can never be served to
+   * an `includeCoveredAtoms: true` lookup that expects every atom, and vice
+   * versa. Absent and explicit-false hash identically (both mean "default
+   * carve-out active"), matching the engines' `=== true` semantics.
+   */
+  includeCoveredAtoms?: boolean;
+  /**
    * v=27 (2026-08 fix wave, E5b): the RESOLVED adaptive-return gate for this
    * call — params + the query's resolved intent class (classifier-
    * deterministic, computed pre-lookup by hybridSearchCached). Enabled folds
@@ -1112,6 +1121,12 @@ export function knobsHash(
     // across processes. Sorted copy so ['a/','b/'] and ['b/','a/'] hash
     // identically; undefined falls back to 'none' for legacy callers.
     `hx=${ctx?.hardExcludes ? [...ctx.hardExcludes].sort().join(',') : 'none'}`,
+    // v=30 addition (append-only, Stage 3B B04): covered-atom default policy.
+    // 1 only when the caller explicitly opted in to every atom; 0 keeps the
+    // default carve-out active (both engines use `=== true`). Absent hashes
+    // like false so a legacy default write and an explicit-default write share
+    // a bucket.
+    `ica=${ctx?.includeCoveredAtoms === true ? 1 : 0}`,
     // v=15 addition (append-only): the resolved FTS configuration name. Read
     // from getFtsLanguage() rather than threaded through KnobsHashContext on
     // purpose — the language is a process-global env read with no per-call

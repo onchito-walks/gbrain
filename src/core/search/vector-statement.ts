@@ -62,7 +62,7 @@ import { hnswIndexExpected } from '../vector-index.ts';
 import { unverifiedExtractionFragment } from '../extraction-review.ts';
 import { buildVectorCastFragment, normalizeEngineColumn } from './embedding-column.ts';
 import { resolveBoostMap, resolveHardExcludes } from './source-boost.ts';
-import { buildBestPerPagePoolCte, buildHardExcludeClause, buildSourceFactorCase, buildVisibilityClause } from './sql-ranking.ts';
+import { buildBestPerPagePoolCte, buildRetrievalExclusionClause, buildSourceFactorCase, buildVisibilityClause } from './sql-ranking.ts';
 
 export const VECTOR_EXTENSION_VERSION_SQL = `SELECT extversion FROM pg_extension WHERE extname = 'vector'`;
 export const SET_STATEMENT_TIMEOUT_SQL = `SELECT set_config('statement_timeout', $1, true)`;
@@ -262,7 +262,7 @@ export function buildVectorSearchStatement(input: VectorSearchStatementInput): V
   // issue #160: the guard predicate is projected as `unverified_stub` so
   // unverified auto-extracted stubs get factor 1.0 inside the re-rank.
   const sourceFactorCaseOnSlug = buildSourceFactorCase('slug', opts?.source_boosts ?? resolveBoostMap(), opts?.detail, 'unverified_stub');
-  const hardExcludeClause = buildHardExcludeClause('p.slug', resolveHardExcludes(opts?.exclude_slug_prefixes, opts?.include_slug_prefixes));
+  const hardExcludeClause = buildRetrievalExclusionClause('p.slug', resolveHardExcludes(opts?.exclude_slug_prefixes, opts?.include_slug_prefixes), opts?.includeCoveredAtoms);
 
   const params: unknown[] = ['[' + Array.from(input.embedding).join(',') + ']'];
   const bind = (value: unknown) => { params.push(value); return `$${params.length}`; };

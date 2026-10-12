@@ -150,6 +150,10 @@ export async function prepareSemanticCache(
     // resolves) into the cache key so a row written under one exclude
     // policy can't be served to a lookup under another.
     hardExcludes: resolveHardExcludes(opts?.exclude_slug_prefixes, opts?.include_slug_prefixes),
+    // Stage 3B B04 — covered-atom default policy folds into the key so an
+    // `include_covered_atoms` write (every atom) can never serve a default
+    // carve-out read, and vice versa. `!== true` is what the engines apply.
+    includeCoveredAtoms: opts?.includeCoveredAtoms === true,
     // #3515 — fold the EFFECTIVE detail level into the cache key. detail
     // gates dedup, chunk-source filtering, and the compiled_truth boost, so
     // a `--detail low` write (compiled-truth-only result set) must never be

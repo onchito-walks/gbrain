@@ -118,7 +118,7 @@ import { sanitizeForJsonb, sanitizeText, buildLinkRows, buildTimelineRows } from
 import { PAGE_SORT_SQL } from './types.ts';
 import { finalizeLastSeen } from './chronicle/last-seen.ts';
 import { resolveBoostMap, resolveHardExcludes } from './search/source-boost.ts';
-import { buildSourceFactorCase, buildHardExcludeClause, buildVisibilityClause, buildBestPerPagePoolCte, buildOrFallbackWebsearchQuery, boundWebsearchQuery, collapseWebsearchDashRuns } from './search/sql-ranking.ts';
+import { buildSourceFactorCase, buildRetrievalExclusionClause, buildVisibilityClause, buildBestPerPagePoolCte, buildOrFallbackWebsearchQuery, boundWebsearchQuery, collapseWebsearchDashRuns } from './search/sql-ranking.ts';
 import { privatePagesFilterFragment, privateSnapshotFilterFragment, privateLinkOriginFilterFragment, privateTimelineEventFilterFragment, privateProvenanceFilterFragment } from './search/private-visibility.ts';
 import { EMBED_SKIP_FILTER_FRAGMENT } from './embed-skip.ts';
 import {
@@ -1407,7 +1407,7 @@ export class PGLiteEngine implements BrainEngine {
     const boostMap = opts?.source_boosts ?? resolveBoostMap();
     const sourceFactorCase = buildSourceFactorCase('p.slug', boostMap, opts?.detail);
     const hardExcludePrefixes = resolveHardExcludes(opts?.exclude_slug_prefixes, opts?.include_slug_prefixes);
-    const hardExcludeClause = buildHardExcludeClause('p.slug', hardExcludePrefixes);
+    const hardExcludeClause = buildRetrievalExclusionClause('p.slug', hardExcludePrefixes, opts?.includeCoveredAtoms);
 
     // v0.26.5: visibility filter (soft-deleted + archived-source).
     const visibilityClause = buildVisibilityClause('p', 's', opts);
@@ -1620,7 +1620,7 @@ export class PGLiteEngine implements BrainEngine {
     const boostMap = opts?.source_boosts ?? resolveBoostMap();
     const sourceFactorCase = buildSourceFactorCase('p.slug', boostMap, opts?.detail);
     const hardExcludePrefixes = resolveHardExcludes(opts?.exclude_slug_prefixes, opts?.include_slug_prefixes);
-    const hardExcludeClause = buildHardExcludeClause('p.slug', hardExcludePrefixes);
+    const hardExcludeClause = buildRetrievalExclusionClause('p.slug', hardExcludePrefixes, opts?.includeCoveredAtoms);
     const visibilityClause = buildVisibilityClause('p', 's', opts);
 
     // v0.32.7: CJK branch (same as searchKeyword but without page-dedup).
