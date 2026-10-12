@@ -72,6 +72,7 @@ link it here rather than raising the cap.
 | [Shared brain skills](key-files/shared-skills.md) | Canonical catalog, enrollment, migration, publication and harness integration |
 | [Skills](key-files/skills.md) | `src/core/audit-skill-brain-first.ts` through `src/core/skills-integrity.ts` |
 | [Tooling And Tests](key-files/tooling-and-tests.md) | `.github/workflows/test.yml` through `test/remote-privacy-sweep.test.ts` |
+| [Tooling And Tests (continued)](key-files/tooling-and-tests-continued.md) | Shared E2E database lifecycle and helpers, eval replay gates and fixtures, operations trust-boundary and public-export contracts |
 | [CI Health And Test Guards](key-files/ci-health-and-test-guards.md) | `.github/workflows/nightly-watch.yml` through `scripts/check-image-decoders-embedded.sh`, plus contributor audit, fix-wave gate |
 | [BrainBench — in a sibling repo](key-files/brainbench.md) | Cross-file subsystem contract |
 | [Hindsight calibration](key-files/hindsight.md) | Cross-file subsystem contract |
