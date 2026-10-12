@@ -307,3 +307,57 @@ Open at this point: B27 only (in flight as t_e8aff02d, port preserved at
 profiles/monchobot/scripts/references/stage3b-b27-saved/), plus B23 configuration owed to rollout
 by Stage 2's own deferral. Stage 4 remains dependency-gated. Still never executed by any cohort:
 test/e2e/operator-quarantine-postgres.test.ts (DATABASE_URL-gated), so no Postgres parity claim.
+
+## Stage 3B integration onto staging, and the serial-manifest repair (parent, orchestrator)
+
+B27 completed the 3B cohort at 6/6 (62ac5fd6d, receipt dbf76f2c8). Staging was at ce1c5e71e
+(clean); the cohort branch forked from c08d2c167, so this was again a cherry-pick, not a
+fast-forward: `git cherry-pick c08d2c167..dbf76f2c8`. No conflicts. SHA map (cohort -> staging):
+
+    0eb6d6b37 B03  -> 1996af8ec
+    40f5d38d9 B04  -> 931a59541
+    a0562321d B05  -> 6f14c3906
+    282239a5d B09  -> e26bd535f
+    8f86e6427 B10  -> c801b6920
+    (receipts)     -> cab138b2a, 0e33a8ef5
+    62ac5fd6d B27  -> ac2e34ac8
+
+### Defect found by the parent at the integrated commit, and repaired
+
+The first post-integration guard run FAILED: test/scripts/serial-files.test.ts -> 10 pass / 1 fail.
+B27 added test/atom-disposition-cache-hit.serial.test.ts WITHOUT a row in scripts/serial-files.tsv.
+That is not cosmetic: scripts/run-serial-tests.sh discovers the serial lane from the manifest, so
+the file would exist, carry real coverage, and never execute in any pass.
+
+Repaired in 031762bbc (its own commit, not folded into the port). Class R2 verified as the
+machine-checked class: the file calls mock.module on ../src/core/embedding.ts and
+../src/core/search/query-cache.ts. Guard is green at 11 pass / 0 fail. No coverage was deleted,
+skipped or relabelled.
+
+SYSTEMIC NOTE FOR STAGE 4: this is the SECOND occurrence of the same defect class. Stage 3D found
+four serial files from earlier Stage 3 cohorts unregistered (see its receipt, disclosed boundary
+2), and B27 made it five. The manifest guard works - it caught both - but it fires at integration,
+long after the author moved on, and a missing row is invisible in the author's own run because the
+author ran the file directly. This belongs in Stage 4's failure-visibility scope: catch an
+unregistered *.serial.test.ts where it is written, not stages later.
+
+### Verification at the integrated HEAD 031762bbc (fenced Bun 1.4.3, ubuntu, TMPDIR /tmp/gb-3b)
+
+    test/scripts/serial-files.test.ts (manifest guard)      -> 11 pass / 0 fail / exit 0
+    atom-disposition + atom-provenance-status + covered-atom-policy +
+      covered-atom-source-alias + doctor-atom-provenance-drift +
+      search-slug-prefix-exclusion-op, --max-concurrency=4   -> 52 pass / 0 fail / exit 0
+    atom-disposition-cache-hit.serial.test.ts (alone)        -> 1 pass / 0 fail / exit 0
+    bun run typecheck                                        -> rc=0, zero "error TS" lines
+    check:module-size, check:function-size, check:layering, check:test-isolation,
+      check:test-names, check:test-placeholders, check:windows-hide, check:newlines,
+      check:weight-coverage, check:test-env-opt-ins          -> all exit 0
+    git status --porcelain -> 0 lines
+
+### Stage 3 closing position
+
+All 24 RETAIN behaviours are integrated on staging. B23 (GBRAIN_DRIFT_TIMEOUT_MS=30000 inheritance
+with caller override precedence) remains CONFIGURATION and is owed to Stage 5 rollout - Stage 2
+deferred it explicitly with "do not set production environment in this stage", so setting it here
+would violate that boundary. Whole-candidate acceptance, the PostgreSQL E2E, the compiled caller
+and the migration rehearsal remain later gates. Nothing was deployed.
