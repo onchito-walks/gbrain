@@ -31,6 +31,13 @@ import { persistenceEnabledForHealth } from '../../../core/persistence/ownership
 import { upstreamFreshness } from '../../../core/sync-upstream.ts';
 import type { Check } from '../../doctor.ts';
 import { ownedContentFreshness } from '../../../core/shared-skills/content-freshness.ts';
+// Stage 3B B09/B10: the alias-aware aggregate plus the bounded READ-ONLY quote
+// probe live in a sibling so this ratcheted module only grows by the wiring.
+import {
+  atomProvenanceDriftQuery,
+  runAtomQuoteProbe,
+  type AtomProvenanceDriftRow,
+} from './atom-provenance-drift.ts';
 import { connectorAuthorities } from '../../../core/persistence/connector-authority.ts';
 import { parseSourceConfig } from '../../../core/sources-load.ts';
 import { checkError } from '../check-fix.ts';
@@ -827,9 +834,16 @@ export async function computeExtractAtomsBacklogCheck(
  * unreferenced.
  *
  * Why this needs a signal: a drifted atom is still returned by search, still
- * carries a `source_quote`, and still reads as sourced — but its quote can no
- * longer be located in any current page. It is the one class of derived page
- * that silently diverges from the corpus it claims to summarize.
+ * carries a `source_quote`, and still reads as sourced. The check must say what
+ * is actually TRUE of each class rather than implying the evidence is gone, so
+ * it derives a READ-ONLY read-time status per atom — fresh /
+ * quote_present_in_live_page / quote_orphaned / source_gone / slug_unbound (see
+ * ./atom-provenance-drift.ts for the aggregate and the bounded quote probe). The
+ * alias used to resolve a frozen `source_slug` is prefix-only and scoped to the
+ * atom's own `source_id`; the probe NEVER rewrites `source_hash`, frontmatter,
+ * or `page_versions`. A surviving quote is evidence that the PASSAGE persisted —
+ * not that the atom is sound, that its source binding is restored, or that its
+ * claim is proven.
  *
  * Measured on a 17-source brain (30.7k pages, 4.0k atoms) before shipping this:
  * 1,001 of 3,999 atoms (25.0%) had drifted; 932 still had a live source page
@@ -855,70 +869,7 @@ export async function computeAtomProvenanceDriftCheck(
   const MIN_DRIFTED = 25;
   const WARN_RATIO = 0.1;
   try {
-    const rows = await engine.executeRaw<{
-      total: string | number; slug_unbound: string | number; drifted: string | number;
-      source_changed: string | number; source_gone: string | number;
-      oldest_ext: string | null;
-    }>(
-      // extracted_at stays TEXT end to end (review fix): an unguarded
-      // ::timestamptz cast let ONE malformed frontmatter value (hand edit,
-      // truncation) abort the whole aggregate and permanently degrade this
-      // check to a spurious "check failed" warn. The ISO-shape regex drops
-      // garbage from the min(); the age math happens in TS where Date
-      // parsing can never throw (semantically-invalid dates become NaN →
-      // metric omitted, verdict untouched).
-      `WITH atom AS (
-         SELECT a.source_id,
-                -- managed atoms keep their provisional prefix for good (#5770)
-                CASE WHEN a.frontmatter->>'managed_extraction' = 'true'
-                     THEN regexp_replace(a.frontmatter->>'source_hash', '^pending:', '')
-                     ELSE a.frontmatter->>'source_hash' END AS sh,
-                -- NULL = slug-unbound: transcript-minted (source_path only) or
-                -- pre-binding-era. \`ss IS NULL\` is THE predicate for that
-                -- population everywhere below (#4799 / #4806).
-                NULLIF(a.frontmatter->>'source_slug', '') AS ss,
-                CASE WHEN a.frontmatter->>'extracted_at' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
-                     THEN a.frontmatter->>'extracted_at' END AS ext
-           FROM pages a
-          WHERE a.type = 'atom'
-            AND a.deleted_at IS NULL
-            AND a.frontmatter->>'source_hash' IS NOT NULL
-            -- in-flight marker written before an unmanaged extraction commits
-            AND (a.frontmatter->>'source_hash' NOT LIKE 'pending:%' OR a.frontmatter->>'managed_extraction' = 'true')
-       -- Lookup sets are built ONCE and joined (#4937). A correlated EXISTS in
-       -- the SELECT list is not rewritten to a semi-join — Postgres re-runs it
-       -- per atom over substring(content_hash), which no index serves, so the
-       -- check went O(atoms x same-source pages) and blew health-check budgets.
-       -- DISTINCT is load-bearing: duplicate live content_hash values are a
-       -- real state and would otherwise fan one atom out into several rows.
-       ), live_hashes AS MATERIALIZED (
-         SELECT DISTINCT source_id, substring(content_hash from 1 for 16) AS sh
-           FROM pages WHERE deleted_at IS NULL AND content_hash IS NOT NULL
-       ), live_slugs AS MATERIALIZED (
-         SELECT DISTINCT source_id, slug FROM pages WHERE deleted_at IS NULL
-       ), drift AS (
-         SELECT atom.*,
-                -- a slug-unbound atom is never drift: its hash is over a file,
-                -- not a page, so the page probe is meaningless (#4806)
-                (atom.ss IS NOT NULL AND h.sh IS NULL) AS drifted,
-                (s.slug IS NOT NULL) AS src_alive
-           FROM atom
-           LEFT JOIN live_hashes h ON h.source_id = atom.source_id AND h.sh = atom.sh
-           LEFT JOIN live_slugs  s ON s.source_id = atom.source_id AND s.slug = atom.ss
-       )
-       SELECT count(*) FILTER (WHERE ss IS NOT NULL) AS total,
-              count(*) FILTER (WHERE ss IS NULL) AS slug_unbound,
-              count(*) FILTER (WHERE drifted) AS drifted,
-              count(*) FILTER (WHERE drifted AND src_alive) AS source_changed,
-              -- drifted implies a slug binding, so "gone" is always a binding
-              -- that failed to resolve — never a slug-unbound atom (#4799)
-              count(*) FILTER (WHERE drifted AND NOT src_alive) AS source_gone,
-              -- lexicographic min of ISO-shaped strings ≈ chronological min
-              -- (oldest); informational only, never verdict-bearing
-              min(ext) FILTER (WHERE drifted) AS oldest_ext
-         FROM drift`,
-      [],
-    );
+    const rows = await engine.executeRaw<AtomProvenanceDriftRow>(atomProvenanceDriftQuery(), []);
     const r = rows?.[0];
     if (!r) return { name, status: 'warn', message: 'atom provenance query returned no rows', details: { health: 'unknown' } };
 
@@ -933,12 +884,24 @@ export async function computeAtomProvenanceDriftCheck(
       ? Math.round(((Date.now() - oldestExtMs) / 86_400_000) * 10) / 10
       : null;
     const ratio = total > 0 ? drifted / total : 0;
+
+    // READ-ONLY read-time quote probe (see ./atom-provenance-drift.ts): each
+    // drifted-and-alive atom's stored quote is classified against its live
+    // source page with the shared grounding fold and the single-prefix legacy
+    // alias. It WRITES NOTHING (no source_hash rebind, no frontmatter edit, no
+    // page_versions write) and degrades quietly (quote_probe: 'failed') rather
+    // than failing the whole check.
+    const { quotePresent, quoteProbe, quoteOrphaned } = await runAtomQuoteProbe(engine, r.quote_candidates, sourceChanged);
     const details = {
       total_atoms: total,
       slug_unbound: slugUnbound,
+      fresh: Math.max(0, total - drifted),
       drifted,
       source_changed: sourceChanged,
       source_gone: sourceGone,
+      quote_present_in_live_page: quotePresent >= 0 ? quotePresent : undefined,
+      quote_orphaned: quoteOrphaned,
+      quote_probe: quoteProbe,
       drift_pct: total > 0 ? Math.round(ratio * 1000) / 10 : 0,
       oldest_drifted_days: oldestDays ?? undefined,
     };
@@ -961,10 +924,14 @@ export async function computeAtomProvenanceDriftCheck(
         name, status: 'warn',
         message:
           `${drifted}/${total} atom(s) (${details.drift_pct}%) reference a source_hash no live page carries ` +
-          `— ${sourceChanged} whose source page still exists (edited), ${sourceGone} whose source page is gone` +
+          `— ${sourceChanged} whose source page still exists (edited or alias-resolved), ${sourceGone} whose source page is gone` +
+          (quoteProbe === 'folded'
+            ? `; of those still-existing sources, ${quotePresent} still carry the atom's source_quote verbatim ` +
+              `(after grounding normalization) and ${quoteOrphaned} no longer do`
+            : '') +
           (oldestDays != null ? `; oldest ${oldestDays}d` : '') + su +
-          `. This compares source_hash only (any edit to the source page changes it); it does not re-check whether ` +
-          `the atom's source_quote still appears in the page, so edited-source atoms may still be accurate. Fix: ${fix}`,
+          `. This is historical drift — a binding-freshness signal, not an integrity verdict: a surviving quote ` +
+          `means the quoted passage persisted; it does NOT restore the atom's source binding and does not prove the atom's claim. Fix: ${fix}`,
         details,
       };
     }

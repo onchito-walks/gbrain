@@ -6,7 +6,7 @@
 import { type HybridRequest, applyIdentityBoosts, emitHybridMeta } from './request.ts';
 import type { LexicalArms } from './arms.ts';
 import { applyFeedbackStage } from '../feedback-boost.ts';
-import { type PostFusionOpts, RRF_K, rrfFusionWeighted, runPostFusionStages, stampContentFlags, stampUnverifiedExtractions } from '../hybrid.ts';
+import { type PostFusionOpts, RRF_K, rrfFusionWeighted, runPostFusionStages, stampAtomProvenance, stampContentFlags, stampUnverifiedExtractions } from '../hybrid.ts';
 import { type RelationalEvidenceSlotDecision, ensureRelationalEvidenceSlot } from '../relational-recall.ts';
 import type { SearchResult } from '../../types.ts';
 import type { FusionListEntry } from '../fusion-lists.ts';
@@ -36,6 +36,8 @@ export async function searchWithoutEmbeddings(
   // issue #160: stamp unverified stubs BEFORE fusion so the compiled-truth
   // boost skips them (flag survives fusion's result spread).
   await stampUnverifiedExtractions(engine, [...keywordResults, ...titleResults, ...relationalList], opts);
+  // READ-ONLY: stamp read-time atom provenance status on the same candidates.
+  await stampAtomProvenance(engine, [...keywordResults, ...titleResults, ...relationalList]);
   let noEmbedResults = keywordResults;
   const trace = opts?.explainTarget;
   if (trace) {
@@ -159,6 +161,8 @@ export async function searchVectorFallback(
   // issue #160: stamp unverified stubs BEFORE fusion (see the
   // no-embedding-provider path for rationale).
   await stampUnverifiedExtractions(engine, [...keywordResults, ...titleResults, ...relationalList], opts);
+  // READ-ONLY: stamp read-time atom provenance status on the same candidates.
+  await stampAtomProvenance(engine, [...keywordResults, ...titleResults, ...relationalList]);
   let fallbackResults = keywordResults;
   const trace = opts?.explainTarget;
   if (trace) {

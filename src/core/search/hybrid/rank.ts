@@ -11,7 +11,7 @@ import { type FusionListEntry, type VectorArm, composeFusionLists } from '../fus
 import { type HybridRequest, applyIdentityBoosts, emitHybridMeta } from './request.ts';
 import type { KeywordArmConfidenceDecision } from '../arm-confidence.ts';
 import { type MetadataBoostGateDecision, decideMetadataBoosts, lexicalArmsVoted } from '../metadata-boost-gate.ts';
-import { type PostFusionOpts, RRF_K, cosineReScore, resolveWalkDedupCap, rrfFusionWeighted, runPostFusionStages, stampContentFlags, stampUnverifiedExtractions, textVectorArmNonEmpty } from '../hybrid.ts';
+import { type PostFusionOpts, RRF_K, cosineReScore, resolveWalkDedupCap, rrfFusionWeighted, runPostFusionStages, stampAtomProvenance, stampContentFlags, stampUnverifiedExtractions, textVectorArmNonEmpty } from '../hybrid.ts';
 import { type RelationalEvidenceSlotDecision, ensureRelationalEvidenceSlot } from '../relational-recall.ts';
 import { type RelationalRerankPinDecision, pinRelationalRows } from '../relational-rerank-pin.ts';
 import { applyFeedbackStage } from '../feedback-boost.ts';
@@ -140,6 +140,8 @@ export async function fuseArms(
   // issue #160: stamp unverified auto-extracted stubs across ALL candidate
   // arms BEFORE fusion so the compiled-truth authority boost skips them.
   await stampUnverifiedExtractions(engine, allLists.flatMap((l) => l.list), opts);
+  // READ-ONLY: stamp read-time atom provenance status across all arms.
+  await stampAtomProvenance(engine, allLists.flatMap((l) => l.list));
 
   const attribute = opts?.explain === true || trace !== undefined;
   let fused = rrfFusionWeighted(allLists, ctBoost, attribute);
