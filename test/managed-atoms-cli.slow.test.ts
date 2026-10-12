@@ -60,8 +60,8 @@ test('disk PGLite CLI atom retry requires a safely stopped owner and persists ac
     const timer = setTimeout(() => owner?.kill('SIGKILL'), 15_000);
     try { expect(await owner.exited).toBe(0); } finally { clearTimeout(timer); owner = undefined; }
   };
-  const readback = async () => {
-    const result = await run([FIXTURE, 'read'], env, home);
+  const readback = async (extra: string[] = []) => {
+    const result = await run([FIXTURE, 'read', ...extra], env, home);
     expect(result.exitCode, result.stderr).toBe(0);
     const line = result.stdout.split('\n').find(value => value.startsWith('FIXTURE_RESULT '));
     expect(line).toBeDefined();
@@ -107,7 +107,14 @@ test('disk PGLite CLI atom retry requires a safely stopped owner and persists ac
     expect(complete.atoms).toHaveLength(1);
     expect(complete.atoms[0].visibility).toBe('private');
     expect(complete.chunks).toBeGreaterThan(0);
-    expect(complete.searchSlugs).toContain(complete.atoms[0].slug);
+    // Stage 3B (B04) retained contract: this atom's frozen `source_slug`
+    // resolves to a LIVE non-atom page of the SAME source, so its content is
+    // already reachable through that page and default retrieval hard-excludes
+    // it. The carve-out is a DEFAULT, not an erasure — the documented opt-out
+    // must still return it through the real engine path.
+    expect(complete.searchSlugs).not.toContain(complete.atoms[0].slug);
+    const optedIn = await readback(['--include-covered']);
+    expect(optedIn.searchSlugs).toContain(complete.atoms[0].slug);
     expect(complete.files[0].content).toContain('lampreyfixture');
     expect(complete.pending).toBe(0);
     expect(complete.leases).toBe(0);
@@ -125,7 +132,9 @@ test('disk PGLite CLI atom retry requires a safely stopped owner and persists ac
     console.log(`CLI_ATOM_RECOVERY_PROOF ${JSON.stringify({ live_owner_refusal_exit: refused.exitCode, malformed_exit: failed.exitCode,
       retry_exit: retried.exitCode, replay_exit: replay.exitCode, provider_calls: providerCalls,
       managed_enabled_snapshots: [stopped.enabled, failure.enabled, complete.enabled, restarted.enabled],
-      atom_slug: complete.atoms[0].slug, chunks: complete.chunks, search_match: complete.searchSlugs.includes(complete.atoms[0].slug),
+      atom_slug: complete.atoms[0].slug, chunks: complete.chunks,
+      default_search_hides_covered_atom: !complete.searchSlugs.includes(complete.atoms[0].slug),
+      optin_search_match: optedIn.searchSlugs.includes(complete.atoms[0].slug),
       canonical_pending: complete.pending, cycle_leases: complete.leases, retained_receipts: complete.receipts.length })}`);
   } finally { await stopOwner(); await server.stop(true); rmSync(home, { recursive: true, force: true }); }
 }, 180_000);
