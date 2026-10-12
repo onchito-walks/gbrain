@@ -248,3 +248,62 @@ Integration order note for t_4dd80505: staging has advanced past c08d2c167, so u
 and upgrade/stage3c-extraction-isolated are no longer fast-forwardable and will need cherry-pick
 (or a rebase onto 29d534148) when they report. The manifest rows added by b164bb877 are additive;
 expect them to be the most likely conflict site if 3B/3C also register serial files.
+
+## Stage 3C integration onto staging + inventory reconciliation (parent, orchestrator)
+
+Staging was at b51c8ba64 (clean) and upgrade/stage3c-extraction-isolated forked from c08d2c167,
+so fast-forward was no longer possible. Integrated by `git cherry-pick c08d2c167..e4d9fb4e3`.
+No conflicts; every commit applied on the first attempt. SHA map (cohort -> staging):
+
+    d04dd23f2 B11  -> 4d76268fc
+    89a6eeec3 B12  -> de290719f
+    3b6a5970d docs -> 0fd2d8efe
+    80f586b07 B13  -> 490535857
+    e4d9fb4e3 docs -> 1bc6071da   (staging HEAD after this integration)
+
+The original commits remain intact on upgrade/stage3c-extraction-isolated; nothing was
+rewritten or reset.
+
+### Verification at the integrated SHA, with the FENCED toolchain
+
+CRITICAL TOOLCHAIN TRAP, recorded because it produced a false regression during this integration:
+verification MUST run fenced Bun 1.4.3
+(/srv/minio/native/ubuntu-root-offload/gbrain-port/toolchains/bun-v1.4.3/bun-linux-aarch64/bun).
+The system Bun on PATH is 1.3.14 and does NOT provide `process.threadCpuUsage`. Running the
+Stage 3C and dream/drain suites under 1.3.14 produced 29 failures in one batch and 2 in another
+with the message "process.threadCpuUsage is not a function" - a phantom regression in code the
+integration had not touched. Under fenced 1.4.3 the identical batches are green. Any verifier
+that sees unexpected failures in untouched files must check the Bun version before believing them.
+
+    (fenced Bun 1.4.3, ubuntu, TMPDIR /tmp/gb-verify outside all reserved roots)
+    cli-exit-drain + managed-atoms-retry + extract-atoms-quarantine + embed-cost-gate +
+      explicit-cap-no-pricing, --max-concurrency=2          -> 35 pass / 0 fail / exit 0
+    dream + dream-failed-phase-exit + dream-clean-status-skip-visibility, --max-concurrency=2
+                                                           -> 60 pass / 0 fail / exit 0
+    extract-atoms-drain-blocked-refusal + drain + drain-handler, --max-concurrency=1
+                                                           -> 38 pass / 0 fail / exit 0
+    five extract-atoms-drain-{stops,errors,structural,attempt,wait}, --max-concurrency=2
+                                                           -> 35 pass / 0 fail / exit 0
+    dream-drain-failure-summary.serial alone                -> 16 pass / 0 fail / exit 0
+    Stage 3D six-file suite re-verified under fenced 1.4.3  -> 57 pass / 0 fail / exit 0
+    bun run typecheck                                       -> rc=0, zero "error TS" lines
+    check:module-size, check:function-size, check:layering, check:test-isolation,
+      check:test-names, check:test-placeholders, check:windows-hide, check:newlines -> all exit 0
+    git status --porcelain -> 0 lines
+
+### Inventory reconciliation (corrects the prose remaining-lists)
+
+Enumerated programmatically from docs/upgrade/overlay-inventory.md: 27 behaviour rows, 24 RETAIN.
+RETAIN and integrated: B01-B17, B24, B25, B26. RETAIN and open: B27, plus B23 which is
+configuration rather than code. The prose remaining-lists in earlier checkpoint sections omitted
+B20/B21/B22 entirely; those three are NOT outstanding. docs/upgrade/stage2-drift-acceptance.md
+states "B20/B21/B22 integrated: one bounded verifier across roster, managed policy, config, Git
+discovery, filesystem and batched database reads; global file limit; persisted identity and sync
+eligibility; explicit incomplete coverage and authorized default-source comparison" - they landed
+as Stage 2's drift overlay (5f6aa6d0b, f1086df96), and the touched drift files still show
+f1086df96 as their latest commit.
+
+Open at this point: B27 only (in flight as t_e8aff02d, port preserved at
+profiles/monchobot/scripts/references/stage3b-b27-saved/), plus B23 configuration owed to rollout
+by Stage 2's own deferral. Stage 4 remains dependency-gated. Still never executed by any cohort:
+test/e2e/operator-quarantine-postgres.test.ts (DATABASE_URL-gated), so no Postgres parity claim.
