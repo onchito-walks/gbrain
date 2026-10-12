@@ -12,9 +12,12 @@ import { loadActivePackForWriteVocabulary } from '../schema-pack/write-vocabular
 export function canonicalPutPageContent(content: string, slug: string, pack: ParseOpts['activePack']): string {
   if (!pack) return content;
   const screen = screenImportContent({ content, path: `${slug}.md`, activePack: pack });
-  if (screen.status === 'refused') return content;
+  // Only an importable screen carries parsed content: a refusal keeps the raw
+  // bytes for the importer's own typed refusal, and a published screen (never
+  // produced by this call) has nothing to normalize.
+  if (screen.status !== 'importable') return content;
   const parsed = screen.parsed;
-  if (!parsed.typeExplicit) return content;
+  if (!parsed?.typeExplicit) return content;
   const classified = classifyStoredType(parsed.type, pack);
   if (classified.kind === 'undeclared') {
     const names = pack.page_types.map(type => sanitizeTypeForDisplay(type.name)).sort();
