@@ -38,6 +38,7 @@ import { stripCodeBlocks, isCrossSourceLinksEnabled } from './link-extraction.ts
 // #4222: shared generic-token reject list — same list gates enrichEntity
 // minting and drives the junk_entity_hubs doctor check.
 import { isGenericEntityToken } from './entity-name-quality.ts';
+import { quarantineFilterFragment } from './quarantine.ts';
 import { ALWAYS_LINKABLE_TYPES, linkableTypesFor, loadSourcePack, readMentionPolicy, type MentionPolicy, type PackTypes } from './mentions/policy.ts';
 import { siblingVerdict, type SiblingCandidate } from './mentions/siblings.ts';
 import { isShortCode } from './mentions/short-codes.ts';
@@ -499,7 +500,8 @@ export async function buildGazetteer(
     `SELECT slug, source_id, title, type, (frontmatter ->> 'google_contact_id') IS NOT NULL AS connector_stub
      FROM pages
      WHERE type = ANY($1::text[])
-       AND deleted_at IS NULL`,
+       AND deleted_at IS NULL
+       AND ${quarantineFilterFragment('pages')}`,
     [allTypes],
   )).filter(r => linkable(r.source_id, r.type));
   const stubPages = new Set(rows.filter(r => r.connector_stub).map(r => `${r.source_id ?? 'default'}\0${r.slug}`));
@@ -582,7 +584,8 @@ export async function buildGazetteer(
        FROM page_aliases pa
        JOIN pages p ON p.slug = pa.slug AND p.source_id = pa.source_id
        WHERE p.type = ANY($1::text[])
-         AND p.deleted_at IS NULL`,
+         AND p.deleted_at IS NULL
+         AND ${quarantineFilterFragment('p')}`,
       [allTypes],
     )).filter(r => linkable(r.source_id, r.type));
   } catch (err) {
