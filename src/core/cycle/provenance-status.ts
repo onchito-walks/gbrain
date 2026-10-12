@@ -43,6 +43,7 @@
 import type { BrainEngine } from '../engine.ts';
 import { normForGrounding } from './synthesize-verify.ts';
 import { sourceSlugCandidates } from '../atom-slug-alias.ts';
+import { quarantineFilterFragment } from '../quarantine.ts';
 
 export type AtomProvenanceStatus =
   | 'fresh'
@@ -144,6 +145,7 @@ export async function classifyAtomProvenanceRecords(
       `SELECT DISTINCT source_id AS sid, substring(content_hash from 1 for 16) AS sh
          FROM pages
         WHERE deleted_at IS NULL AND content_hash IS NOT NULL
+          AND ${quarantineFilterFragment('pages')}
           AND source_id = ANY($1::text[])`,
       [sourceIds],
     );
@@ -176,6 +178,7 @@ export async function classifyAtomProvenanceRecords(
       `SELECT slug, compiled_truth AS body
          FROM pages
         WHERE deleted_at IS NULL AND type <> 'atom'
+          AND ${quarantineFilterFragment('pages')}
           AND source_id = $1 AND slug = ANY($2::text[])`,
       [sid, [...slugs]],
     );

@@ -33,6 +33,7 @@ import type { BrainEngine } from '../../../core/engine.ts';
 import { classifyAtomProvenanceRecords, type AtomProvenanceRecord } from '../../../core/cycle/provenance-status.ts';
 import { LEGACY_SOURCE_SLUG_PREFIXES } from '../../../core/atom-slug-alias.ts';
 import { escapeLikePattern } from '../../../core/search/sql-ranking.ts';
+import { quarantineFilterFragment } from '../../../core/quarantine.ts';
 
 /** Prefix-only legacy alias arms, built from the ONE allow-list
  *  (core/atom-slug-alias.ts) the covered-atom retrieval predicate also uses, so
@@ -79,6 +80,7 @@ export function atomProvenanceDriftQuery(): string {
            FROM pages a
           WHERE a.type = 'atom'
             AND a.deleted_at IS NULL
+            AND ${quarantineFilterFragment('a')}
             AND a.frontmatter->>'source_hash' IS NOT NULL
             -- in-flight marker written before an unmanaged extraction commits
             AND (a.frontmatter->>'source_hash' NOT LIKE 'pending:%' OR a.frontmatter->>'managed_extraction' = 'true')
@@ -91,9 +93,11 @@ export function atomProvenanceDriftQuery(): string {
        ), live_hashes AS MATERIALIZED (
          SELECT DISTINCT source_id, substring(content_hash from 1 for 16) AS sh
            FROM pages WHERE deleted_at IS NULL AND content_hash IS NOT NULL
+             AND ${quarantineFilterFragment('pages')}
        ), live_slugs AS MATERIALIZED (
          SELECT DISTINCT source_id, slug FROM pages
           WHERE deleted_at IS NULL AND type <> 'atom'
+            AND ${quarantineFilterFragment('pages')}
        ), drift AS (
          SELECT atom.*,
                 -- a slug-unbound atom is never drift: its hash is over a file,

@@ -151,3 +151,34 @@ describe('B09 atom_provenance_drift doctor check', () => {
     expect(String(check.message)).toContain('does NOT restore the atom');
   });
 });
+
+describe('B10 quarantine visibility in the provenance populations', () => {
+  test('a quarantined page stops serving as live evidence, and comes back when restored', async () => {
+    const quarantine = async (on: boolean) => {
+      await engine.executeRaw(
+        on
+          ? `UPDATE pages SET frontmatter = COALESCE(frontmatter,'{}'::jsonb) || '{"quarantine":{"reason":"b10-test"}}'::jsonb WHERE slug = 'notes/live' AND source_id = 'default'`
+          : `UPDATE pages SET frontmatter = COALESCE(frontmatter,'{}'::jsonb) - 'quarantine' WHERE slug = 'notes/live' AND source_id = 'default'`);
+    };
+    await quarantine(true);
+    try {
+      const s = await statusesBySlug();
+      // The quarantined page is not a live hash or a live slug any more, so the
+      // exact and the alias-bound atoms both lose their source — and the quote
+      // probe has no live candidate at all.
+      expect(s.get('atoms/fresh')).toBe('source_gone');
+      expect(s.get('atoms/quote-present')).toBe('source_gone');
+      expect(s.get('atoms/alias-resolved')).toBe('source_gone');
+
+      const d = (await computeAtomProvenanceDriftCheck(engine)).details as Record<string, unknown>;
+      expect(d.source_changed).toBe(0);
+      expect(d.source_gone).toBe(28);
+      expect(d.quote_probe).toBe('none');
+      expect(d.quote_present_in_live_page).toBe(0);
+    } finally {
+      await quarantine(false);
+    }
+    // Restoring visibility restores the read-time verdict.
+    expect((await statusesBySlug()).get('atoms/quote-present')).toBe('quote_present_in_live_page');
+  });
+});
