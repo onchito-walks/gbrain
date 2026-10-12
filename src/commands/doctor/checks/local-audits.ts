@@ -524,9 +524,17 @@ async function runDefaultSourcePath(ctx: DoctorContext): Promise<Check[]> {
   }
 
   // 3b-multi-source. Bounded, honest coverage: anything uncompared stays warn.
-  try {
+  // Engine is nullable in runDoctor (--fast, or the DB phase skipped while
+  // another process holds the store): with no connection there is nothing to
+  // compare, so the drift check is not emitted at all. Emitting a warn here
+  // instead produced a warn without an executable fix, which the doctor
+  // contract (and test/agent-journey-recovery.serial.test.ts) forbids; the
+  // `connection` check already carries the fix for a database that cannot be
+  // opened. A connection that opens and then fails still reports not-verified
+  // from inside checkMultiSourceDrift.
+  if (engine !== null) try {
     const { checkMultiSourceDrift } = await import('../multi-source-drift-check.ts');
-    const drift = await checkMultiSourceDrift(engine);
+    const drift = await checkMultiSourceDrift(engine!);
     if (drift) checks.push(drift);
   } catch {
     // The verifier never surfaces DB/provider detail; keep one unknown result.
