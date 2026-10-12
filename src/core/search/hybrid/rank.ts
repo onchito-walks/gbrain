@@ -13,6 +13,7 @@ import type { KeywordArmConfidenceDecision } from '../arm-confidence.ts';
 import { type MetadataBoostGateDecision, decideMetadataBoosts, lexicalArmsVoted } from '../metadata-boost-gate.ts';
 import { type PostFusionOpts, RRF_K, cosineReScore, resolveWalkDedupCap, rrfFusionWeighted, runPostFusionStages, stampAtomProvenance, stampContentFlags, stampUnverifiedExtractions, textVectorArmNonEmpty } from '../hybrid.ts';
 import { type RelationalEvidenceSlotDecision, ensureRelationalEvidenceSlot } from '../relational-recall.ts';
+import { stampAtomDispositions } from '../atom-disposition.ts';
 import { type RelationalRerankPinDecision, pinRelationalRows } from '../relational-rerank-pin.ts';
 import { applyFeedbackStage } from '../feedback-boost.ts';
 import { type RerankFailedReason, type RerankPassThroughReason, type RerankSkipReason, applyReranker } from '../rerank.ts';
@@ -142,6 +143,9 @@ export async function fuseArms(
   await stampUnverifiedExtractions(engine, allLists.flatMap((l) => l.list), opts);
   // READ-ONLY: stamp read-time atom provenance status across all arms.
   await stampAtomProvenance(engine, allLists.flatMap((l) => l.list));
+  // READ-ONLY: stamp the read-time atom DISPOSITION enrichment across all arms
+  // (pre-fusion; survives the fusion result spread like provenance_status).
+  await stampAtomDispositions(engine, allLists.flatMap((l) => l.list), opts);
 
   const attribute = opts?.explain === true || trace !== undefined;
   let fused = rrfFusionWeighted(allLists, ctBoost, attribute);

@@ -21,6 +21,7 @@ import { normalizeKeywordArmConfidenceFloor } from '../arm-confidence.ts';
 import { normalizeMetadataBoostGate } from '../metadata-boost-gate.ts';
 import { normalizeRelationalRerankPin } from '../relational-rerank-pin.ts';
 import { recordSearchTelemetry } from '../telemetry.ts';
+import { stampAtomDispositions } from '../atom-disposition.ts';
 import { resolveEffectiveRecency, resolveEffectiveSalience } from './effective-modes.ts';
 import { resolveHardExcludes } from '../source-boost.ts';
 import { loadConfigSnapshot } from '../../config-snapshot.ts';
@@ -363,6 +364,11 @@ export async function serveSemanticCacheHit(
         : {}),
       rank1_score: budgeted[0] ? (budgeted[0].base_score ?? budgeted[0].score) : undefined,
     });
+    // READ-ONLY B27: a hit serves rows STORED EARLIER, so any `atom_disposition`
+    // they carry is stale — re-enrich against CURRENT data before returning. The
+    // stamp clears stale values first, so a cached atom row is never served with
+    // an out-of-date assessment (sibling-owned: the hit tail lives here).
+    await stampAtomDispositions(engine, budgeted, opts);
     return budgeted;
   }
   return null;

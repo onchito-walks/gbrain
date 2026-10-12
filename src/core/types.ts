@@ -1,5 +1,6 @@
 // Page types
 import type { AtomProvenanceStatus } from './cycle/provenance-status.ts';
+import type { AtomDisposition } from './search/atom-disposition.ts';
 // v0.38: `PageType` opens from a closed 23-element union to `string`. The
 // closed union was always a fiction — every gbrain user accumulated organic
 // types (`apple-note`, `therapy-session`, `tweet-bundle`, etc.) via
@@ -908,6 +909,20 @@ export interface SearchResult {
    * source fields).
    */
   provenance_status?: AtomProvenanceStatus;
+  /**
+   * READ-ONLY read-time atom DISPOSITION, stamped on atom results by
+   * `stampAtomDispositions` (search/atom-disposition.ts). It surfaces a
+   * historical evidence-repair assessment read from a SEPARATE canonical
+   * companion page (`operations/atom-evidence-repair-20261011/assessments-*`),
+   * validated field-exact against the live atom (atom_id / slug / source_hash /
+   * source_slug / body sha256) and scoped to the atom's OWN source. Always
+   * `historical: true` / `certified: false` with a warning — informational only,
+   * never a certification. A fail-closed marker (stale/conflicting/malformed)
+   * yields `status: 'untrusted'`. Private references are never exposed. Absent
+   * for non-atom results and for atoms with no companion assessment.
+   * Display/metadata only: it never changes coverage, filtering, or ranking.
+   */
+  atom_disposition?: AtomDisposition;
   /**
    * v0.36 (cross-modal wave): the chunk's modality discriminator from
    * content_chunks.modality. 'text' for the existing text-embedding rows,
