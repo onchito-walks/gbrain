@@ -540,6 +540,48 @@ function normalizeTypesParam(ctx: OperationContext, tool: 'search' | 'query', ra
   return types;
 }
 
+/**
+ * B03 — expose the engine's stable slug-prefix exclusion (SearchOpts.
+ * exclude_slug_prefixes) at the public op layer. Both engines' keyword /
+ * title / vector legs already union a caller-supplied
+ * `exclude_slug_prefixes` into their hard-exclude clause through
+ * resolveHardExcludes, but neither the `search` nor the `query` op declared
+ * the parameter — so the CLI/MCP validator dropped it as unknown and the
+ * only way to reach the engine field was an internal hybridSearch caller.
+ *
+ * Additive over DEFAULT_HARD_EXCLUDES and independent of `types` (a slug
+ * prefix is not a page type; this is the discriminator of choice for an
+ * opaque slug-namespaced corpus). Absent → exact current behavior. Note:
+ * `archive/` stays demoted (not excluded) per #1777.
+ */
+function normalizeExcludeSlugPrefixesParam(ctx: OperationContext, tool: 'search' | 'query', raw: unknown): string[] | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  // Same structural-empty convention as `types` (#5390): [] / '' / '   '
+  // carry no caller intent, so treat them as absent rather than throwing.
+  if (Array.isArray(raw) && raw.length === 0) return undefined;
+  if (typeof raw === 'string' && raw.trim() === '') return undefined;
+  // Array-only on purpose. Both public surfaces hand this field over as a
+  // real array: MCP params are JSON, and the CLI parses an array-typed flag
+  // as a JSON array literal (src/cli/main.ts parseOpArgs) before dispatch.
+  // Anything else is a caller mistake, refused below.
+  const example = ctx.remote === false ? 'atoms/,test/' : ['atoms/', 'test/'];
+  if (!Array.isArray(raw) || raw.some((s) => typeof s !== 'string')) {
+    throw invalidParam(ctx, tool, 'exclude_slug_prefixes',
+      '`exclude_slug_prefixes` must be an array of slug-prefix strings (e.g. ["atoms/"]).', { example });
+  }
+  const prefixes = [...new Set((raw as string[]).map((s) => s.trim()).filter(Boolean))];
+  if (prefixes.length === 0) {
+    throw invalidParam(ctx, tool, 'exclude_slug_prefixes',
+      '`exclude_slug_prefixes` was provided but contained no usable slug-prefix strings (e.g. ["atoms/"]).', { example });
+  }
+  return prefixes;
+}
+
+const EXCLUDE_SLUG_PREFIXES_PARAM_DESCRIPTION =
+  'Hide pages whose slug starts with any of these prefixes (e.g. ["atoms/"]). Additive over the ' +
+  'default hard-excludes, applied at SQL level on every retrieval leg. Independent of `types`. ' +
+  'CLI: --exclude-slug-prefixes atoms/,test/. Omit for exact current behavior.';
+
 const TYPES_PARAM_DESCRIPTION = "Page types, e.g. ['person'].";
 
 const SOURCE_ID_PARAM_DESCRIPTION = "One source, or '__all__'.";
@@ -671,6 +713,8 @@ const search: Operation = {
     source_id: { type: 'string', description: SOURCE_ID_PARAM_DESCRIPTION },
     // #3985: multi-type filter (plumbing shipped v0.33; exposed here).
     types: { type: 'array', items: { type: 'string' }, description: TYPES_PARAM_DESCRIPTION },
+    // B03: caller slug-prefix exclusion (engine SearchOpts.exclude_slug_prefixes).
+    exclude_slug_prefixes: { type: 'array', items: { type: 'string' }, description: EXCLUDE_SLUG_PREFIXES_PARAM_DESCRIPTION },
     // #3800: subagent token economy — per-call snippet cap.
     snippet_chars: { type: 'number', description: SNIPPET_CHARS_PARAM_DESCRIPTION },
     return_unit: RETURN_UNIT_PARAM,
@@ -695,6 +739,8 @@ const search: Operation = {
     const offset = paging.offset;
     // #3985: validated multi-type filter, threaded into both branches below.
     let types = normalizeTypesParam(ctx, 'search', p.types);
+    // B03: validated caller slug-prefix exclusion (independent axis, additive).
+    const excludeSlugPrefixes = normalizeExcludeSlugPrefixesParam(ctx, 'search', p.exclude_slug_prefixes);
     // #3800: snippet cap (param > subagent config default > full text).
     const snippetCap = await resolveSnippetCap(ctx, p);
     const plan = await evidencePlanFor(ctx, p, snippetCap, 'search');
@@ -730,7 +776,7 @@ const search: Operation = {
         if (types?.length === 0) return [];
       }
       const sourceBoosts = resolveBoostMap(undefined, await ctx.engine.getConfig(SOURCE_BOOSTS_KEY));
-      const keywordOpts = { ...readOpts, source_boosts: sourceBoosts, ...(types ? { types } : {}) };
+      const keywordOpts = { ...readOpts, source_boosts: sourceBoosts, ...(types ? { types } : {}), ...(excludeSlugPrefixes ? { exclude_slug_prefixes: excludeSlugPrefixes } : {}) };
       // F2 `match: "keyword"`: page-grain enumeration, no diversity pruning, every page keeps a row.
       // A query that is one entity's name lists records filed under any of its names (the agent no longer walks each alias).
       const names = paging.match === 'keyword' && !paging.cursor ? await wholeQueryEntityNames(ctx.engine, queryText, { ...scope, excludePrivate }) : null;
@@ -766,6 +812,7 @@ const search: Operation = {
       requireSafeChunks: ctx.remote !== false,
       takesHoldersAllowList: readHolders(ctx),
       ...(types ? { types } : {}),
+      ...(excludeSlugPrefixes ? { exclude_slug_prefixes: excludeSlugPrefixes } : {}),
       ...scope,
       ...(perCallMode ? { mode: perCallMode } : {}),
       // #4415: agent-explicit recency + salience (same posture as `query`).
@@ -834,6 +881,8 @@ const query: Operation = {
     offset: { type: 'number', description: 'Rows to skip.' },
     // #3985: multi-type filter (plumbing shipped v0.33; exposed here).
     types: { type: 'array', items: { type: 'string' }, description: TYPES_PARAM_DESCRIPTION },
+    // B03: caller slug-prefix exclusion (engine SearchOpts.exclude_slug_prefixes).
+    exclude_slug_prefixes: { type: 'array', items: { type: 'string' }, description: EXCLUDE_SLUG_PREFIXES_PARAM_DESCRIPTION },
     // #3800: subagent token economy — per-call snippet cap.
     snippet_chars: { type: 'number', description: SNIPPET_CHARS_PARAM_DESCRIPTION },
     return_unit: RETURN_UNIT_PARAM,
@@ -871,6 +920,8 @@ const query: Operation = {
     // #3985: validated multi-type filter (text path; the image-similarity
     // branch below also honors it — searchVector filters types at SQL level).
     let types = normalizeTypesParam(ctx, 'query', p.types);
+    // B03: validated caller slug-prefix exclusion (independent axis, additive).
+    const excludeSlugPrefixes = normalizeExcludeSlugPrefixesParam(ctx, 'query', p.exclude_slug_prefixes);
     // #3800: snippet cap (param > subagent config default > full text).
     const snippetCap = await resolveSnippetCap(ctx, p);
     const plan = await evidencePlanFor(ctx, p, snippetCap, 'query');
@@ -927,6 +978,7 @@ const query: Operation = {
         requireSafeChunks: ctx.remote !== false,
         takesHoldersAllowList: readHolders(ctx),
         ...(types ? { types } : {}),
+        ...(excludeSlugPrefixes ? { exclude_slug_prefixes: excludeSlugPrefixes } : {}),
         ...querySourceScope,
         ...dates,
         onVectorPoolMeta: info => {
@@ -993,6 +1045,8 @@ const query: Operation = {
       detail,
       // #3985: multi-type filter — SearchOpts.types reaches every leg.
       types,
+      // B03: caller slug-prefix exclusion reaches every hybrid leg too.
+      ...(excludeSlugPrefixes ? { exclude_slug_prefixes: excludeSlugPrefixes } : {}),
       language: (p.lang as string) || undefined,
       symbolKind: (p.symbol_kind as string) || undefined,
       nearSymbol: (p.near_symbol as string) || undefined,
@@ -1087,6 +1141,9 @@ const query: Operation = {
             // Preserve the caller's #3985 type filter on the re-run, as
             // normalized for the base call (#5390: [] and "" stay absent).
             ...(types ? { types } : {}),
+            // B03: and the caller's slug-prefix excludes — an escalated sweep
+            // that ignored them would hand back rows the caller asked to hide.
+            ...(excludeSlugPrefixes ? { exclude_slug_prefixes: excludeSlugPrefixes } : {}),
             language: (p.lang as string) || undefined,
             symbolKind: (p.symbol_kind as string) || undefined,
             // Preserve the caller's symbol-proximity constraints too — an
