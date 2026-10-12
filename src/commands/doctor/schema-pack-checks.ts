@@ -269,6 +269,11 @@ export function multiSourceDriftCheck(
   managed = false,
 ): Check {
   const details = {
+    verification_scope: 'markdown',
+    verification_complete: result.verification_complete,
+    checked_sources: result.checked_sources,
+    candidates_checked: result.candidates_checked,
+    coverage_issues: result.coverage_issues,
     walk_truncated: result.walk_truncated,
     unreadable_sources: result.unreadable_sources,
     git_root_skipped: result.git_root_skipped,
@@ -283,6 +288,13 @@ export function multiSourceDriftCheck(
       unreadable.map((u) => `${u.source_id} (${u.reason === 'root_unreadable' ? 'root unreadable' : `${u.dirs} unreadable dir(s)`})`).join(', ') +
       `. Fix the path or permissions (\`gbrain sources status\`), then re-run \`gbrain doctor\`.`
     : '';
+  if (result.verification_complete === false && result.coverage_issues?.some(issue =>
+    !['filesystem', 'git_root_unresolved', 'limit', 'deadline'].includes(issue.reason))) {
+    return { name: 'multi_source_drift', status: 'warn',
+      message: 'Multi-source drift verification incomplete; health is unknown for: ' +
+        result.coverage_issues.map(issue => `${issue.source_id} (${issue.reason})`).join(', ') + '.',
+      details: { ...details, code: 'not_verified', verified: false } };
+  }
   if (result.walk_truncated) {
     return {
       name: 'multi_source_drift',
@@ -311,6 +323,10 @@ export function multiSourceDriftCheck(
       message: `No cross-source slug drift among readable sources.${unreadableNote}${skipNote}`,
       details: { ...details, code: 'not_verified', verified: false },
     };
+  }
+  if (result.verification_complete === false && !unreadable.length && !result.git_root_skipped.length) {
+    return { name: 'multi_source_drift', status: 'warn', message: 'Multi-source drift verification incomplete; health is unknown.',
+      details: { ...details, code: 'not_verified', verified: false } };
   }
   if (result.git_root_skipped.length === 0) {
     return { name: 'multi_source_drift', status: 'ok', message: 'No cross-source slug drift detected.', details };

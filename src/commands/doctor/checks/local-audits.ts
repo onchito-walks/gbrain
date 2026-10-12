@@ -523,30 +523,17 @@ async function runDefaultSourcePath(ctx: DoctorContext): Promise<Check[]> {
     // Best-effort. A missing config table should not stop doctor.
   }
 
-  // 3b-multi-source. Multi-source drift (v0.31.8 — D8 + D17 + OV12 + OV13).
-  // Pre-v0.30.3 putPage misrouted multi-source writes to (default, slug).
-  // For each non-default source with local_path set, walk the FS and surface
-  // slugs that exist at default but NOT at the intended source. Only runs
-  // on multi-source brains (sources count > 1). Single-source brains skip.
-  // Engine is nullable in runDoctor (--fast / DB-down skip the DB phase);
-  // bail silently here when engine is null since the check needs DB access.
+  // 3b-multi-source. Bounded, honest coverage: anything uncompared stays warn.
   if (engine !== null) try {
-    const { findMisroutedPages } = await import('../../../core/multi-source-drift.ts');
-    const sources = await engine!.executeRaw<{ id: string; local_path: string | null }>(
-      `SELECT id, local_path FROM sources`,
-    );
-    const nonDefaultWithPath = sources.filter(s => s.id !== 'default' && s.local_path);
-    if (sources.length > 1 && nonDefaultWithPath.length > 0) {
-      const result = await findMisroutedPages(
-        engine!,
-        nonDefaultWithPath.map(s => ({ id: s.id, local_path: s.local_path as string })),
-      );
-      checks.push(multiSourceDriftCheck(result, nonDefaultWithPath.length, 'local', await managedPersistenceEnabled(engine!).catch(() => false)));
-    }
-  } catch (e) {
-    // A broken sources table must not stop doctor, but the check still
-    // reports that it verified nothing (#5432).
-    checks.push(multiSourceDriftNotVerified(e));
+    const { checkMultiSourceDrift } = await import('../multi-source-drift-check.ts');
+    const drift = await checkMultiSourceDrift(engine, {
+      managed: await managedPersistenceEnabled(engine).catch(() => false),
+    });
+    if (drift) checks.push(drift);
+  } catch {
+    // The verifier never surfaces DB/provider detail; keep one unknown result.
+    checks.push({ name: 'multi_source_drift', status: 'warn',
+      message: 'Multi-source drift verification failed or timed out; database/coverage state could not be read. Health is unknown.' });
   }
 
   // 3c. Orphan clone temp dirs (v0.28 P1). `gbrain sources add --url` clones

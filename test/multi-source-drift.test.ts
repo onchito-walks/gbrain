@@ -20,7 +20,7 @@
  * source git cannot place keeps the doctor verdict at "not verified".
  */
 
-import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
+import { describe, test, expect, beforeAll, afterAll, setDefaultTimeout } from 'bun:test';
 import { mkdirSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { join } from 'path';
@@ -33,6 +33,8 @@ import { multiSourceDriftCheck } from '../src/commands/doctor/schema-pack-checks
 
 let engine: PGLiteEngine;
 const TMP_ROOTS: string[] = [];
+// A cold PGLite schema build (234 migrations) can exceed bun's 5s hook budget.
+setDefaultTimeout(60_000);
 
 beforeAll(async () => {
   engine = new PGLiteEngine();
@@ -52,6 +54,14 @@ function makeTmpRoot(label: string): string {
   mkdirSync(dir, { recursive: true });
   TMP_ROOTS.push(dir);
   return dir;
+}
+
+function markOutsideGitWorkTree(root: string): void {
+  // A `.git` gitdir pointer makes THIS directory a repository boundary whose
+  // gitdir is missing: `git rev-parse --show-toplevel` fails here, which is
+  // the documented "git cannot place local_path in a work tree" condition.
+  // Needed because a host temp tree may otherwise resolve to an ancestor repo.
+  writeFileSync(join(root, '.git'), 'gitdir: /nonexistent/drift-fixture\n');
 }
 
 function seedFile(root: string, relPath: string, content = 'placeholder\n'): void {
@@ -181,6 +191,7 @@ describe('findMisroutedPages — heuristic correctness', () => {
 
   test('case 8 (#4712): a git-root-pinned source is skipped, not false-positived', async () => {
     const root = makeTmpRoot('case8');
+    markOutsideGitWorkTree(root);
     seedFile(root, 'page.md');
 
     await runSources(engine, ['add', 'src-case8', '--no-federated']);
@@ -204,6 +215,7 @@ describe('findMisroutedPages — heuristic correctness', () => {
 
   test('case 9 (#4712): git-root skip does not mask real drift on a sibling source-root source', async () => {
     const gitRootRoot = makeTmpRoot('case9-gitroot');
+    markOutsideGitWorkTree(gitRootRoot);
     seedFile(gitRootRoot, 'page.md');
     await runSources(engine, ['add', 'src-case9-gr', '--no-federated']);
     await engine.executeRaw(`UPDATE sources SET local_path = $1 WHERE id = $2`, [gitRootRoot, 'src-case9-gr']);

@@ -292,27 +292,13 @@ export async function doctorReportRemote(
     checks.push({ name: 'sync_failures', status: 'warn', message: 'Durable sync failure state could not be read; health is unknown.' });
   }
 
-  // 4b. Multi-source drift (v0.31.8 — D8 + D14). Same shape as the local
-  // doctor's check at the same name. Runs server-side; the result is
-  // returned to the thin-client over MCP.
+  // 4b. Multi-source drift: one shared bounded verifier for local and remote.
   try {
-    const { findMisroutedPages } = await import('../../core/multi-source-drift.ts');
-    // Source isolation: a scoped caller's roster (and the sample slugs the
-    // walk returns) stays inside its grant; unscoped = brain-wide.
-    const sources = await engine.executeRaw<{ id: string; local_path: string | null }>(
-      `SELECT id, local_path FROM sources ${opts.sourceIds ? 'WHERE id = ANY($1::text[])' : ''}`,
-      opts.sourceIds ? [opts.sourceIds] : undefined,
-    );
-    const nonDefaultWithPath = sources.filter(s => s.id !== 'default' && s.local_path);
-    if (sources.length > 1 && nonDefaultWithPath.length > 0) {
-      const result = await findMisroutedPages(
-        engine,
-        nonDefaultWithPath.map(s => ({ id: s.id, local_path: s.local_path as string })),
-      );
-      checks.push(multiSourceDriftCheck(result, nonDefaultWithPath.length, 'remote', await managedPersistenceEnabled(engine).catch(() => false)));
-    }
+    const { checkMultiSourceDrift } = await import('./multi-source-drift-check.ts');
+    const drift = await checkMultiSourceDrift(engine, { sourceIds: opts.sourceIds, remote: true });
+    if (drift) checks.push(drift);
   } catch (e) {
-    // Best-effort, but the check reports that it verified nothing (#5432).
+    const { multiSourceDriftNotVerified } = await import('./schema-pack-checks.ts');
     checks.push(multiSourceDriftNotVerified(e));
   }
 
