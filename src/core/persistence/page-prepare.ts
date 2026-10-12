@@ -298,6 +298,22 @@ async function assertStillSyncExcluded(tx: BrainEngine, row: WriteRequest, exclu
  * page guard and revision check on `row.slug` cover this import (the put_page apply diet).
  */
 /**
+ * A remote (untrusted) write keeps the page's stored protected facts/takes
+ * fences even when its body omits or rewrites them, so resubmitting a page
+ * cannot drop them. Cohesive block peeled out of preparePageMutation for the
+ * function-size ratchet; the transformation is unchanged.
+ */
+function preserveRemoteProtectedFences(content: string | undefined, row: WriteRequest, snapshot: PageSnapshot | null,
+  activePack: ParseOpts['activePack']): string | undefined {
+  if (!row.authority.remote || row.operation === 'remember' || row.operation.startsWith('takes_') || typeof content !== 'string') return content;
+  const parsed = parseMarkdown(content, row.slug, { activePack });
+  const compiled_truth = preserveProtectedTakes(parsed.compiled_truth, snapshot?.page.compiled_truth ?? '');
+  const timeline = preserveProtectedTakes(parsed.timeline ?? '', snapshot?.page.timeline ?? '');
+  if (compiled_truth === parsed.compiled_truth && timeline === (parsed.timeline ?? '')) return content;
+  return serializePageToMarkdown({ ...(snapshot?.page ?? { id: 0, source_id: row.source_id, created_at: new Date(), updated_at: new Date() }), ...parsed, compiled_truth, timeline }, parsed.tags);
+}
+
+/**
  * `options.clock` (#6278): the claim's phase clock; each await boundary names its step through `enterClaimStep`, and the
  * preparation's raw reads run bounded by its remaining budget (`boundedReads`; a statement carrying the foreground `signal` keeps it).
  */
@@ -389,13 +405,8 @@ export async function preparePageMutation(unbounded: BrainEngine, row: WriteRequ
     }
     content = serializePageToMarkdown(page, tags);
   }
-  if (row.authority.remote && row.operation !== 'remember' && !row.operation.startsWith('takes_') && typeof content==='string') {
-    const parsed=parseMarkdown(content,row.slug,{ activePack });
-    const compiled_truth=preserveProtectedTakes(parsed.compiled_truth,snapshot?.page.compiled_truth??'');
-    const timeline=preserveProtectedTakes(parsed.timeline??'',snapshot?.page.timeline??'');
-    if (compiled_truth!==parsed.compiled_truth || timeline!==(parsed.timeline??'')) content=serializePageToMarkdown({
-      ...(snapshot?.page??{id:0,source_id:row.source_id,created_at:new Date(),updated_at:new Date()}),...parsed,compiled_truth,timeline},parsed.tags);
-  }
+  const fenced = preserveRemoteProtectedFences(content, row, snapshot, activePack);
+  if (fenced !== undefined) content = fenced;
   // Core marking is owner-only: a remote write that omits always_load or
   // core_priority keeps the stored values instead of silently un-coring the page.
   if (row.authority.remote && snapshot && !snapshot.page.deleted_at && typeof content === 'string'

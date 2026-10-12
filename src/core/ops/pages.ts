@@ -1,6 +1,5 @@
 import { pageMutationSource, submitPageMutation, validateMutationSlug } from '../persistence/page-mutations.ts';
-import { suffixedSlugDryRun } from '../persistence/suffixed-slug.ts';
-import { putPageVocabularyContent } from '../persistence/put-page-vocabulary.ts';
+import { putPageDryRun } from './put-page-dry-run.ts';
 import { AGENT_CONTENT_PARAMS, PAGE_MUTATION_PARAMS, CAPTURE_EVENT_PARAMS, WRITE_WAIT_PARAM } from '../persistence/params.ts';
 import { assertPurgeParams } from '../persistence/purge-params.ts';
 /**
@@ -324,16 +323,7 @@ const put_page: Operation = {
   scope: 'write',
   handler: async (ctx, p) => {
     const sourceId = pageMutationSource(ctx, p, 'put_page');
-    if (ctx.dryRun) {
-      await putPageVocabularyContent(ctx, p, sourceId);
-      if (typeof p.slug === 'string') {
-        validatePageSlug(p.slug);
-        enforceClientSlugFence(ctx, p.slug, 'put_page');
-        enforceSubagentSlugFence(ctx, p.slug, 'put_page');
-        await suffixedSlugDryRun(ctx, sourceId, p.slug);
-      }
-      return { dry_run: true, action: 'put_page', slug: p.slug };
-    }
+    if (ctx.dryRun) return putPageDryRun(ctx, p, sourceId);
     return submitPageMutation(ctx, { operation: 'put_page', params: p }).catch(error => rethrowNamingRevisionSource(ctx, sourceId, p, error));
   },
   cliHints: { name: 'put', positional: ['slug'], stdin: 'content' },
