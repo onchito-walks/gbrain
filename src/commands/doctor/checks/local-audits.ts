@@ -524,11 +524,9 @@ async function runDefaultSourcePath(ctx: DoctorContext): Promise<Check[]> {
   }
 
   // 3b-multi-source. Bounded, honest coverage: anything uncompared stays warn.
-  if (engine !== null) try {
+  try {
     const { checkMultiSourceDrift } = await import('../multi-source-drift-check.ts');
-    const drift = await checkMultiSourceDrift(engine, {
-      managed: await managedPersistenceEnabled(engine).catch(() => false),
-    });
+    const drift = await checkMultiSourceDrift(engine);
     if (drift) checks.push(drift);
   } catch {
     // The verifier never surfaces DB/provider detail; keep one unknown result.

@@ -323,7 +323,8 @@ describe('findMisroutedPages — git-root pins inside a work tree (#5862)', () =
 });
 
 describe('multiSourceDriftCheck — skipped git-root sources (#5862)', () => {
-  const clean = { walk_truncated: false, count: 0, sample: [], unreadable_sources: [], limit: 10_000, timeout_ms: 5_000 };
+  const clean = { walk_truncated: false, count: 0, sample: [], unreadable_sources: [], limit: 10_000, timeout_ms: 5_000,
+    verification_complete: true, checked_sources: [], candidates_checked: 0, coverage_issues: [] };
 
   test('one skipped source beside a clean one is not verified, and says why', () => {
     const check = multiSourceDriftCheck({ ...clean, git_root_skipped: ['src-outside-git'] }, 2, 'local');

@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile } from './spawn.ts';
 import { open, readdir, realpath } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { isAbsolute, join, relative, sep } from 'node:path';

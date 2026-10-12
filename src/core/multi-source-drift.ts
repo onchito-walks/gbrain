@@ -2,8 +2,8 @@
 import { stat } from 'node:fs/promises';
 import type { BrainEngine } from './engine.ts';
 
-import { parseMarkdown } from './markdown.ts';
-import { slugifyPath } from './sync.ts';
+import { classifyImportHold, parseMarkdown } from './markdown.ts';
+import { hasMalformedPathSegment, slugifyPath } from './sync.ts';
 import { validateSlug } from './utils.ts';
 import { readSlugRootMode, resolveSlugRootMode } from './sync-anchor.ts';
 import { beforeDriftDeadline, DriftDeadlineError, resolveDriftGitScope, walkDriftMarkdown } from './multi-source-drift-walk.ts';
@@ -40,15 +40,18 @@ const BATCH_SIZE = 250;
  */
 function driftResolvedSlug(relPath: string, parsed: ReturnType<typeof parseMarkdown>): { slug?: string; conflict?: boolean } {
   const expected = slugifyPath(relPath);
-  if (parsed.errors?.some(error => error.code === 'YAML_PARSE')) return { conflict: true };
+  if (hasMalformedPathSegment(relPath) || classifyImportHold(parsed, { expectedSlug: expected })) return { conflict: true };
   if (expected === '') return { slug: parsed.slug && parsed.slug.length > 0 ? parsed.slug : undefined };
   if (parsed.slug !== expected && slugifyPath(parsed.slug) !== expected) return { conflict: true };
   return { slug: parsed.slug !== expected ? parsed.slug : expected };
 }
 
 export function positiveIntEnv(name: string): number | undefined {
-  const n = Number(process.env[name]);
-  return Number.isInteger(n) && n > 0 ? n : undefined;
+  const value = process.env[name];
+  if (value === undefined) return undefined;
+  const n = Number(value);
+  // An explicitly invalid budget is unknown coverage, not a silent default.
+  return Number.isInteger(n) && n > 0 ? n : Number.NaN;
 }
 const patterns = (value: string | null) => (value ?? '').split(/[\n,]/).map(p => p.trim()).filter(Boolean)
   .map(p => p.endsWith('/') ? `${p}**` : p);

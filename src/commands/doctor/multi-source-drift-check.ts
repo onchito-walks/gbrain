@@ -1,5 +1,6 @@
 import type { BrainEngine } from '../../core/engine.ts';
-import { findMisroutedPages, positiveIntEnv, type MisroutedResult, type SourceWithPath } from '../../core/multi-source-drift.ts';
+import { findMisroutedPages, positiveIntEnv, type SourceWithPath } from '../../core/multi-source-drift.ts';
+import { managedPersistenceEnabled } from '../../core/persistence/ownership.ts';
 import { beforeDriftDeadline } from '../../core/multi-source-drift-walk.ts';
 import type { Check } from '../doctor.ts';
 
@@ -10,12 +11,14 @@ export async function checkMultiSourceDrift(
   engine: BrainEngine | null,
   opts: { sourceIds?: string[]; remote?: boolean; managed?: boolean; limit?: number; timeoutMs?: number } = {},
 ): Promise<Check | null> {
-  const unknown = (message: string): Check => ({ name: 'multi_source_drift', status: 'warn', message });
+  const unknown = (message: string): Check => ({ name: 'multi_source_drift', status: 'warn', message,
+    details: { code: 'not_verified', verified: false, verification_complete: false } });
   if (!engine) return unknown('Multi-source drift verification unavailable: database not connected; health is unknown.');
   // A real Readwise tree can require more than five seconds of filesystem IO.
   // Keep one bounded deadline, shared by roster reads and the complete walk;
   // explicit caller budgets still take precedence and exhaustion remains WARN.
   const timeoutMs = opts.timeoutMs ?? positiveIntEnv('GBRAIN_DRIFT_TIMEOUT_MS') ?? 5_000;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return unknown('Multi-source drift verification unavailable: invalid time budget. Health is unknown.');
   const deadline = Date.now() + timeoutMs;
   try {
     const sources = await beforeDriftDeadline(deadline, () => engine.executeRaw<SourceWithPath>(
@@ -27,8 +30,9 @@ export async function checkMultiSourceDrift(
     if (opts.sourceIds && !opts.sourceIds.includes('default')) {
       return unknown('Multi-source drift verification unavailable in this source scope; comparison source is not authorized. Health is unknown.');
     }
+    const managed = opts.managed ?? await beforeDriftDeadline(deadline, () => managedPersistenceEnabled(engine));
     return multiSourceDriftCheck(await findMisroutedPages(engine, eligible,
-      { limit: opts.limit, timeoutMs: Math.max(0, deadline - Date.now()) }), eligible.length, opts.remote ? 'remote' : 'local', opts.managed ?? false);
+      { limit: opts.limit, timeoutMs: Math.max(0, deadline - Date.now()) }), eligible.length, opts.remote ? 'remote' : 'local', managed);
   } catch {
     // Do not echo DB errors: connection strings and excluded source names can be private.
     return unknown('Multi-source drift verification failed or timed out; database/coverage state could not be read. Health is unknown.');

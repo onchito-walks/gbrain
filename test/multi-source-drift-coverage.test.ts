@@ -8,6 +8,7 @@ import type { BrainEngine } from '../src/core/engine.ts';
 import { findMisroutedPages } from '../src/core/multi-source-drift.ts';
 import { checkMultiSourceDrift, multiSourceDriftCheck } from '../src/commands/doctor/multi-source-drift-check.ts';
 import { buildChecks, doctorReportRemote } from '../src/commands/doctor.ts';
+import { withEnv } from './helpers/with-env.ts';
 
 // A cold PGLite schema build and a full local doctor run can exceed bun's
 // default 5s per-test budget on a loaded host.
@@ -38,6 +39,61 @@ function proxy(failOn: string): BrainEngine {
 }
 
 describe('multi-source drift coverage honesty', () => {
+  test('DB-down local doctor explicitly reports unknown drift coverage', async () => {
+    const checks = await buildChecks(null, []);
+    expect(checks.find(c => c.name === 'multi_source_drift')).toMatchObject({
+      status: 'warn', details: { code: 'not_verified', verification_complete: false },
+    });
+  });
+  test('invalid environment and caller time budgets never start roster verification', async () => {
+    let reads = 0;
+    const unread = { executeRaw: async () => { reads++; return []; } } as unknown as BrainEngine;
+    for (const timeoutMs of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(await checkMultiSourceDrift(unread, { timeoutMs })).toMatchObject({ status: 'warn' });
+    }
+    for (const value of ['', 'invalid', '0', '-1', '1.5']) {
+      expect(await withEnv({ GBRAIN_DRIFT_TIMEOUT_MS: value }, () => checkMultiSourceDrift(unread))).toMatchObject({ status: 'warn' });
+      const source = await fixture();
+      const result = await withEnv({ GBRAIN_DRIFT_LIMIT: value }, () => findMisroutedPages(engine, [source]));
+      expect(result.verification_complete).toBe(false);
+    }
+    expect(reads).toBe(0);
+  });
+  test('roster, config and managed-policy failure stay unknown with no private error disclosure', async () => {
+    const source = await fixture();
+    await engine.executeRaw('UPDATE sources SET local_path=$2 WHERE id=$1', [source.id, source.local_path]);
+    for (const remote of [false, true]) {
+      const check = await checkMultiSourceDrift(proxy('SELECT id, local_path, config FROM sources'), { remote });
+      expect(check).toMatchObject({ status: 'warn', details: { verified: false } });
+      expect(check?.message).not.toContain('private-connection-secret');
+    }
+    const failedConfig = new Proxy(engine, { get(target, key) {
+      if (key === 'getConfig') return async () => { throw new Error('private-connection-secret'); };
+      const value = Reflect.get(target, key); return typeof value === 'function' ? value.bind(target) : value;
+    } });
+    expect((await findMisroutedPages(failedConfig, [source])).coverage_issues).toContainEqual({ source_id: source.id, reason: 'configuration' });
+    expect(await checkMultiSourceDrift(failedConfig)).toMatchObject({ status: 'warn', details: { verified: false } });
+  });
+  test('managed-policy read is inside the same doctor deadline', async () => {
+    const source = await fixture();
+    const stuck = new Proxy(engine, { get(target, key) {
+      if (key === 'executeRaw') return (sql: string) => sql.startsWith('SELECT id, local_path, config FROM sources')
+        ? Promise.resolve([source]) : new Promise(() => {});
+      const value = Reflect.get(target, key); return typeof value === 'function' ? value.bind(target) : value;
+    } });
+    const started = Date.now();
+    expect(await checkMultiSourceDrift(stuck, { timeoutMs: 100 })).toMatchObject({ status: 'warn', details: { verified: false } });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(80);
+    expect(Date.now() - started).toBeLessThan(1500);
+  });
+  test('environment timeout is inherited and an explicit timeout still overrides it', async () => {
+    const source = await fixture({});
+    await engine.executeRaw('UPDATE sources SET local_path=$2 WHERE id=$1', [source.id, source.local_path]);
+    const check = await withEnv({ GBRAIN_DRIFT_TIMEOUT_MS: '30000' }, () => checkMultiSourceDrift(engine));
+    expect(check?.status).toBe('ok');
+    expect(Number(check?.details?.timeout_ms)).toBeGreaterThan(25000);
+    expect(await withEnv({ GBRAIN_DRIFT_TIMEOUT_MS: 'invalid' }, () => checkMultiSourceDrift(engine, { timeoutMs: 1000 }))).toMatchObject({ status: 'ok' });
+  });
   test('missing root is unknown, never verified clean', async () => {
     const source = await fixture(); source.local_path += '/missing';
     const result = await findMisroutedPages(engine, [source]);
@@ -190,6 +246,17 @@ describe('multi-source drift coverage honesty', () => {
 });
 
 describe('sync identity and eligibility parity', () => {
+  test('malformed path and ambiguous identity use native import admission, never false drift advice', async () => {
+    // Native isSyncable excludes malformed paths before import admission.
+    const excluded = await fixture({ 'note [draft].md': '# Note' });
+    expect(await findMisroutedPages(engine, [excluded])).toMatchObject({
+      count: 0, verification_complete: true, candidates_checked: 0,
+    });
+    const ambiguous = await fixture({ 'page.md': '---\nslug: page\nslug: other\n---\n# Page' });
+    const result = await findMisroutedPages(engine, [ambiguous]);
+    expect(result.count).toBe(0);
+    expect(result.coverage_issues).toContainEqual({ source_id: ambiguous.id, reason: 'identity' });
+  });
   test('normalization-equivalent frontmatter restores exact imported slug', async () => {
     const source = await fixture({ 'Legacy Note.md': '---\nslug: Legacy Note\n---\n# Legacy' });
     await engine.putPage('Legacy Note', page);
