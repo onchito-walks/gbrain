@@ -13,7 +13,10 @@ import type { BrainEngine } from '../core/engine.ts';
 import { isQuarantined, getContentFlag, QUARANTINE_KEY, CONTENT_FLAG_KEY } from '../core/quarantine.ts';
 import { serializePageToMarkdown, serializeMarkdown } from '../core/markdown.ts';
 import { importFromContent } from '../core/import-file.ts';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { readFileSync, writeFileSync, mkdirSync, renameSync, rmSync, chmodSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { loadConfig } from '../core/config.ts';
 import { opError, type OperationContext } from '../core/ops/contract.ts';
 import { readFix } from '../core/ops/op-fix.ts';
@@ -24,6 +27,11 @@ import { QUARANTINE_OVERRIDE_KEY, quarantineOverrideFor } from '../core/quaranti
 import { reportPersistenceCliError } from './persistence-delegate.ts';
 import type { PageType } from '../core/types.ts';
 import { listWriteGateHolds, type WriteGateHold } from '../core/write-gate-store.ts';
+import {
+  parseOperatorManifest, planOperatorQuarantine, applyOperatorQuarantine, rollbackOperatorQuarantine,
+  buildOperatorQuarantineMarker, OperatorQuarantineError, OPERATOR_QUARANTINE_REASONS,
+  type OperatorQuarantineSnapshot,
+} from '../core/operator-quarantine.ts';
 
 export interface QuarantineRow {
   slug: string;
@@ -398,7 +406,241 @@ async function runScan(engine: BrainEngine, args: string[]): Promise<void> {
   }
 }
 
-export const QUARANTINE_HELP = `Usage: gbrain quarantine <list|clear|scan|release|drop> [options]
+// ---------------------------------------------------------------------------
+// Operator incident lane: set / rollback (metadata-only, fail-closed)
+//
+// `set`/`rollback` are the first-class, fail-closed lane for the wrong-root
+// DB-only sync incident (see src/core/operator-quarantine.ts). `set` writes
+// ONLY the `frontmatter.quarantine` marker to an EXACT immutable manifest of
+// (id, slug, source_id, content_hash, source_path) rows — never content,
+// files, aliases or chunks — as an explicit alternative to a bulk
+// `gbrain import` that would bypass the git-managed source owner gate.
+// Operator-only, host-bound (the thin client refuses it), allowlisted reason,
+// `--yes` required to mutate, and refused outright on a managed brain.
+// ---------------------------------------------------------------------------
+
+function flagValue(args: string[], name: string): string | undefined {
+  const i = args.indexOf(name);
+  return i === -1 ? undefined : args[i + 1];
+}
+
+function defaultOperatorSnapshotPath(incident: string, manifestSha256: string, now: Date): string {
+  const stamp = now.toISOString().replace(/[:.]/g, '-');
+  return join(homedir(), '.gbrain', 'backups', 'operator-quarantine', `qs-${incident}-${manifestSha256.slice(0, 12)}-${stamp}.json`);
+}
+
+/** Write a private (0600) file atomically: temp file in the same directory,
+ *  chmod before the rename so the final inode is never world-readable. */
+function writeAtomic(path: string, data: string, mode: number): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.tmp-${process.pid}`;
+  writeFileSync(tmp, data, { mode });
+  chmodSync(tmp, mode);
+  renameSync(tmp, path);
+}
+
+function writeJsonAtomic(path: string, value: unknown): void {
+  writeAtomic(path, JSON.stringify(value, null, 2) + '\n', 0o600);
+}
+
+/** Archive the raw manifest next to the snapshot, bound by the sha256 already
+ *  recorded in it, so the exact operator input survives with the artifact. */
+function archiveManifest(outPath: string, manifestRaw: string): string {
+  const archivePath = `${outPath.replace(/\.json$/i, '')}.manifest.jsonl`;
+  writeAtomic(archivePath, manifestRaw, 0o600);
+  return archivePath;
+}
+
+function sha256Hex(text: string): string {
+  return createHash('sha256').update(text, 'utf8').digest('hex');
+}
+
+/** The managed-writer refusal, raised BEFORE any artifact is written. The core
+ *  lane raises the same refusal at the mutation boundary; naming it here keeps
+ *  a refused run from leaving a provisional snapshot behind. */
+async function refuseOnManagedBrain(engine: BrainEngine, subject: string, json: boolean): Promise<boolean> {
+  if (!await managedPersistenceEnabled(engine)) return false;
+  const error = opError('writer_coordinator_required', `quarantine ${subject} cannot write pages on a managed brain.`,
+    `It performs a direct pages UPDATE outside the canonical owner, so nothing was changed; this lane targets DB-only incident rows on an unmanaged brain. On a managed brain the marker write goes through the coordinator: gbrain quarantine clear <slug> [--force].`,
+    { fix: readFix('Lists the hidden pages without changing anything.', { argv: ['gbrain', 'quarantine', 'list', '--json'] }) });
+  if (!await reportPersistenceCliError(error, json)) throw error;
+  return true;
+}
+
+async function runSet(engine: BrainEngine, args: string[]): Promise<void> {
+  const json = args.includes('--json');
+  const dryRun = args.includes('--dry-run');
+  const yes = args.includes('--yes');
+  const manifestPath = flagValue(args, '--manifest');
+  const reason = flagValue(args, '--reason');
+  const sourceId = flagValue(args, '--source-id') ?? 'default';
+  const incident = flagValue(args, '--incident') ?? reason ?? 'operator';
+  const snapshotOut = flagValue(args, '--snapshot-out');
+  const limitRaw = flagValue(args, '--limit');
+
+  const usage = () =>
+    console.error(
+      'Usage: gbrain quarantine set --manifest <JSONL> --reason <reason> [--source-id <id>] ' +
+      '[--incident <id>] [--limit N] [--snapshot-out <path>] [--dry-run] [--yes] [--json]',
+    );
+  if (!manifestPath || !reason) { usage(); process.exit(2); }
+  if (!(OPERATOR_QUARANTINE_REASONS as readonly string[]).includes(reason)) {
+    console.error(`Unknown --reason "${reason}". Allowed: ${OPERATOR_QUARANTINE_REASONS.join(', ')}.`);
+    process.exit(2);
+  }
+  if (limitRaw !== undefined && (!Number.isInteger(Number(limitRaw)) || Number(limitRaw) <= 0)) {
+    console.error(`--limit must be a positive integer (got "${limitRaw}").`);
+    process.exit(2);
+  }
+
+  let records, sha256: string, manifestRaw: string;
+  try {
+    manifestRaw = readFileSync(manifestPath, 'utf8');
+    ({ records, sha256 } = parseOperatorManifest(manifestRaw));
+  } catch (err) {
+    const msg = err instanceof OperatorQuarantineError ? err.message : String(err);
+    console.error(`Manifest rejected (${manifestPath}): ${msg}`);
+    process.exit(2);
+  }
+  const limit = limitRaw !== undefined ? Number(limitRaw) : undefined;
+  if (limit !== undefined && records.length > limit) {
+    console.error(`Manifest has ${records.length} records but --limit is ${limit}; refusing a partial apply.`);
+    process.exit(2);
+  }
+
+  if (dryRun) {
+    const plan = await planOperatorQuarantine(engine, records, { sourceId, incident, manifestSha256: sha256 });
+    if (json) {
+      console.log(JSON.stringify({
+        schema_version: 1, dry_run: true, reason, incident, source_id: sourceId,
+        manifest: manifestPath, manifest_sha256: sha256, source_root: plan.source_root,
+        eligible: plan.eligible.length, already_quarantined: plan.already.length, rejections: plan.rejections,
+      }, null, 2));
+    } else {
+      console.log(`[dry-run] set reason=${reason} incident=${incident} source=${sourceId} manifest_sha256=${sha256.slice(0, 12)}`);
+      console.log(`  eligible: ${plan.eligible.length}  already quarantined: ${plan.already.length}  rejected: ${plan.rejections.length}`);
+      for (const r of plan.rejections) console.log(`  REJECT ${r.id} ${r.slug} — ${r.reason}${r.detail ? ` (${r.detail})` : ''}`);
+    }
+    if (plan.rejections.length > 0) process.exit(1);
+    return;
+  }
+
+  if (!yes) {
+    console.error('Refusing to mutate without --yes. Re-run with --dry-run to preview, then add --yes.');
+    process.exit(2);
+  }
+  if (await refuseOnManagedBrain(engine, 'set', json)) return;
+
+  const now = new Date();
+  // Provisional before-state snapshot (derived from reads only), written
+  // atomically BEFORE the mutation so a rollback artifact is durable even if
+  // the process dies mid-apply.
+  const plan = await planOperatorQuarantine(engine, records, { sourceId, incident, manifestSha256: sha256 });
+  if (plan.rejections.length > 0) {
+    console.error(`Refusing to apply: ${plan.rejections.length} row(s) rejected; run with --dry-run for detail.`);
+    process.exit(1);
+  }
+  if (plan.eligible.length === 0) {
+    console.error('Nothing to apply (all rows already quarantined?).');
+    process.exit(1);
+  }
+  const marker = buildOperatorQuarantineMarker(reason, { incident, manifestSha256: sha256, now });
+  const outPath = snapshotOut ?? defaultOperatorSnapshotPath(incident, sha256, now);
+  // Archive the exact operator input beside the snapshot (0600), bound by the
+  // recorded sha256 so rollback can prove the artifact it replays.
+  const manifestArchive = archiveManifest(outPath, manifestRaw);
+  const provisional: OperatorQuarantineSnapshot = {
+    schema_version: 1, reason, incident, source_id: sourceId, manifest_sha256: sha256,
+    created_at: now.toISOString(), rows: plan.eligible.map((r) => ({ ...r, marker })),
+    manifest_path: manifestArchive,
+  };
+  writeJsonAtomic(outPath, provisional);
+
+  let applied: number;
+  let committed: OperatorQuarantineSnapshot;
+  try {
+    ({ applied, snapshot: committed } = await applyOperatorQuarantine(engine, records, { sourceId, reason, incident, manifestSha256: sha256, now }));
+  } catch (err) {
+    // The apply re-verified inside its transaction and refused (or failed);
+    // remove the provisional snapshot so it cannot be mistaken for an applied run.
+    try { rmSync(outPath, { force: true }); } catch { /* ignore */ }
+    try { rmSync(manifestArchive, { force: true }); } catch { /* ignore */ }
+    const msg = err instanceof OperatorQuarantineError ? err.message : String(err);
+    console.error(`Apply failed; no marker written: ${msg}`);
+    process.exit(1);
+  }
+  committed.manifest_path = manifestArchive;
+  // Overwrite the provisional artifact with the transaction's authoritative
+  // snapshot so rollback is bound to exactly what was applied.
+  writeJsonAtomic(outPath, committed);
+
+  if (json) {
+    console.log(JSON.stringify({ schema_version: 1, applied, already_quarantined: plan.already.length, reason, incident, manifest_sha256: sha256, snapshot: outPath }, null, 2));
+    return;
+  }
+  console.log(`Quarantined ${applied} page(s) (reason=${reason}, incident=${incident}).`);
+  console.log(`Before-state snapshot: ${outPath}`);
+  console.log(`Rollback: gbrain quarantine rollback --snapshot ${outPath} --yes`);
+}
+
+async function runRollback(engine: BrainEngine, args: string[]): Promise<void> {
+  const json = args.includes('--json');
+  const dryRun = args.includes('--dry-run');
+  const yes = args.includes('--yes');
+  const snapshotPath = flagValue(args, '--snapshot');
+  if (!snapshotPath) {
+    console.error('Usage: gbrain quarantine rollback --snapshot <path> [--dry-run] [--yes] [--json]');
+    process.exit(2);
+  }
+  let snap: OperatorQuarantineSnapshot;
+  try {
+    snap = JSON.parse(readFileSync(snapshotPath, 'utf8')) as OperatorQuarantineSnapshot;
+  } catch (err) {
+    console.error(`Cannot read snapshot (${snapshotPath}): ${String(err)}`);
+    process.exit(2);
+  }
+  if (!snap || snap.schema_version !== 1 || !Array.isArray(snap.rows)) {
+    console.error(`Snapshot ${snapshotPath} is not an operator-quarantine v1 snapshot.`);
+    process.exit(2);
+  }
+  if (dryRun) {
+    if (json) console.log(JSON.stringify({ schema_version: 1, dry_run: true, rows: snap.rows.length, incident: snap.incident }, null, 2));
+    else console.log(`[dry-run] would roll back ${snap.rows.length} row(s) (incident=${snap.incident}).`);
+    return;
+  }
+  if (!yes) {
+    console.error('Refusing to mutate without --yes.');
+    process.exit(2);
+  }
+  if (await refuseOnManagedBrain(engine, 'rollback', json)) return;
+  // Verify the archived manifest (when present) against the sha recorded in
+  // the snapshot, so a rollback replays a provably-intact artifact.
+  if (snap.manifest_path) {
+    let archived: string;
+    try {
+      archived = readFileSync(snap.manifest_path, 'utf8');
+    } catch (err) {
+      console.error(`Cannot read archived manifest (${snap.manifest_path}): ${String(err)}`);
+      process.exit(2);
+    }
+    if (sha256Hex(archived) !== snap.manifest_sha256) {
+      console.error(`Archived manifest (${snap.manifest_path}) sha256 does not match the snapshot; refusing rollback.`);
+      process.exit(2);
+    }
+  }
+  let rolledBack: number;
+  try {
+    ({ rolledBack } = await rollbackOperatorQuarantine(engine, snap));
+  } catch (err) {
+    const msg = err instanceof OperatorQuarantineError ? err.message : String(err);
+    console.error(`Rollback failed; no marker cleared: ${msg}`);
+    process.exit(1);
+  }
+  if (json) console.log(JSON.stringify({ schema_version: 1, rolled_back: rolledBack, incident: snap.incident }, null, 2));
+  else console.log(`Rolled back ${rolledBack} page(s) (incident=${snap.incident}).`);
+}
+
+export const QUARANTINE_HELP = `Usage: gbrain quarantine <list|clear|scan|set|rollback|release|drop> [options]
 
   list [--json] [--include-flagged]
       Pages the content-quality gate hid as junk (quarantine), and with
@@ -412,6 +654,18 @@ export const QUARANTINE_HELP = `Usage: gbrain quarantine <list|clear|scan|releas
   scan [--limit N] [--apply] [--no-embed] [--json]
       Re-check existing pages against the gate (preview by default).
       --apply re-imports them and is refused on a managed brain.
+  set --manifest <JSONL> --reason <reason> [--source-id <id>] [--incident <id>]
+      [--limit N] [--snapshot-out <path>] [--dry-run] [--yes] [--json]
+      Operator incident lane (host-bound; unmanaged brains only): apply ONLY
+      the quarantine marker to the exact rows of an immutable JSONL manifest
+      of {id, slug, source_id, content_hash, source_path} — the DB-only pages
+      a wrong-root sync left with no file under the source root. Writes no
+      content, file, alias or chunk; archives the manifest beside a 0600
+      before-state snapshot for rollback. --yes is required to mutate, and a
+      managed brain is refused up front.
+  rollback --snapshot <path> [--dry-run] [--yes] [--json]
+      Clear the markers a 'quarantine set' snapshot recorded, after
+      re-verifying the archived manifest sha and every page's provenance.
   release <h<id>> | drop <h<id>>
       Aliases of gbrain trust release|drop: release a held fact or take into
       memory (asks you to type its ref), or drop it.
@@ -433,6 +687,10 @@ export async function runQuarantine(engine: BrainEngine, args: string[]): Promis
       return runClear(engine, rest);
     case 'scan':
       return runScan(engine, rest);
+    case 'set':
+      return runSet(engine, rest);
+    case 'rollback':
+      return runRollback(engine, rest);
     default:
       console.error(QUARANTINE_HELP);
       process.exit(2);
