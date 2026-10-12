@@ -886,6 +886,17 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
         },
         "description": "Page types, e.g. ['person']."
       },
+      "exclude_slug_prefixes": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Hide pages whose slug starts with any of these prefixes (e.g. [\"atoms/\"]). Additive over the default hard-excludes, applied at SQL level on every retrieval leg. Independent of `types`. CLI: --exclude-slug-prefixes atoms/,test/. Omit for exact current behavior."
+      },
+      "include_covered_atoms": {
+        "type": "boolean",
+        "description": "Default covered-atom retrieval policy. Absent/false: an `atom` page is hidden when its content is already reachable through a live non-atom page of the same source (its frontmatter `source_slug` resolves to one, or the atom links out to one). Uncovered atoms are always kept. true returns every atom page."
+      },
       "snippet_chars": {
         "type": "number",
         "description": "Chars per row (0 = full)."
@@ -992,6 +1003,17 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
           "type": "string"
         },
         "description": "Page types, e.g. ['person']."
+      },
+      "exclude_slug_prefixes": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Hide pages whose slug starts with any of these prefixes (e.g. [\"atoms/\"]). Additive over the default hard-excludes, applied at SQL level on every retrieval leg. Independent of `types`. CLI: --exclude-slug-prefixes atoms/,test/. Omit for exact current behavior."
+      },
+      "include_covered_atoms": {
+        "type": "boolean",
+        "description": "Default covered-atom retrieval policy. Absent/false: an `atom` page is hidden when its content is already reachable through a live non-atom page of the same source (its frontmatter `source_slug` resolves to one, or the atom links out to one). Uncovered atoms are always kept. true returns every atom page."
       },
       "snippet_chars": {
         "type": "number",
