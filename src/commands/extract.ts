@@ -2507,10 +2507,7 @@ async function extractMentionsFromDb(
     // D3: scan both columns joined with a paragraph separator so an
     // end-of-compiled token doesn't accidentally merge with a
     // start-of-timeline token into a false phrase match.
-    // Rebuild reconciles a hidden origin to zero derived edges, without
-    // changing its content or links owned by humans/other scanners.
-    const body = isQuarantined(page.frontmatter) ? ''
-      : (page.title ?? '') + '\n\n' + page.compiled_truth + '\n\n' + (page.timeline ?? '');
+    const body = isQuarantined(page.frontmatter) ? '' : (page.title ?? '') + '\n\n' + page.compiled_truth + '\n\n' + (page.timeline ?? '');
     const mentions = body.trim()
       ? findMentionedEntities(body, gazetteer, {
           fromSlug: slug,

@@ -17,10 +17,10 @@ describe('OpenCode GO unified auth', () => {
       const auth = applyResolveAuth(recipe, cfg, touchpoint);
       let captured: Headers | undefined;
       const provider = createOpenAICompatible({ name: id, baseURL: cfg.base_urls![id]!, ...auth,
-        fetch: async (_url, init) => {
+        fetch: (async (_url: RequestInfo | URL, init?: RequestInit) => {
           captured = new Headers(init?.headers);
           return new Response(JSON.stringify({ id: 'fixture', object: 'chat.completion', created: 1, model: 'fixture', choices: [{ index: 0, message: { role: 'assistant', content: 'fixture response' }, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }), { headers: { 'content-type': 'application/json' } });
-        } });
+        }) as typeof fetch });
       await generateText({ model: provider.chatModel('fixture'), prompt: 'fixture', maxRetries: 0 });
       expect(captured!.get('x-opencode-session')).toBe('deployment-fixture');
       expect(captured!.get('authorization')).toBe('Bearer fixture');
