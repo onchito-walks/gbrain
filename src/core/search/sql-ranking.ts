@@ -21,6 +21,10 @@ import { quarantineFilterFragment } from '../quarantine.ts';
 import { unverifiedExtractionFragment } from '../extraction-review.ts';
 import { privatePagesFilterFragment } from './private-visibility.ts';
 import { currentTextProjectionFilter, requiresSafeChunks, safeChunksFilter } from './safe-chunks.ts';
+// B05 — the ONE verified legacy source-root rename allow-list, shared with the
+// read-time provenance classifier; re-exported below so the covered-atom
+// predicate and the classifier can never disagree about a frozen `source_slug`.
+import { LEGACY_SOURCE_SLUG_PREFIXES } from '../atom-slug-alias.ts';
 import { pageEligibleSql } from '../eligibility/sql.ts';
 import type { TrustTier } from '../trust/tier.ts';
 
@@ -154,15 +158,36 @@ export function buildHardExcludeClause(slugColumn: string, prefixes: string[]): 
  *
  * @param slugColumn — qualified outer slug column (engine-supplied, trusted)
  * @returns raw SQL fragment with a leading space, e.g. `AND NOT (p.slug = ANY (...))`
+ *
+ * B05 — verified legacy source-root aliases for the frozen `source_slug` of an
+ * atom. The historical whole-vault `hermes-moncho/` → root rename left atoms
+ * carrying `hermes-moncho/<path>` while the live page sits at `<path>`, so an
+ * exact-only predicate judged them source-gone. One PREFIX-ONLY de-prefixed arm
+ * per verified rename is added INSIDE the same same-source / non-atom EXISTS, so
+ * a prefix collision against another source or another atom page never counts as
+ * coverage. Deliberately not the generic `slug_aliases` registry (empty on the
+ * affected brain and not guaranteed on pre-v105 brains — an inlined EXISTS over
+ * it could break the hot search WHERE clause), never a basename or fuzzy match,
+ * and the frozen field is never rewritten.
  */
 export function buildCoveredAtomExclusionClause(slugColumn: string): string {
+  const sourceSlug = `(a.frontmatter ->> 'source_slug')`;
+  // Exact current slug first, then one de-prefixed alias arm per verified rename.
+  const srcSlugMatch = [
+    `src.slug = ${sourceSlug}`,
+    ...LEGACY_SOURCE_SLUG_PREFIXES.map(
+      prefix =>
+        `(${sourceSlug} LIKE ${buildLikePrefixLiteral(prefix)} AND src.slug = substring(${sourceSlug} from ${prefix.length + 1}))`,
+    ),
+  ].join(' OR ');
+
   return `AND NOT (${slugColumn} = ANY (
     SELECT a.slug FROM pages a
     WHERE a.type = 'atom'
       AND a.deleted_at IS NULL
       AND (
         EXISTS (SELECT 1 FROM pages src
-                 WHERE src.slug = (a.frontmatter ->> 'source_slug')
+                 WHERE (${srcSlugMatch})
                    AND src.deleted_at IS NULL
                    AND src.type <> 'atom'
                    AND src.source_id = a.source_id)
