@@ -43,6 +43,7 @@ import { preserveProtectedTakes } from './protected-takes.ts';
 import { isAutoLinkEnabled } from '../link-extraction.ts';
 import { prepareAutomaticLinks } from './links-preparation.ts';
 import { loadActivePackForEngine } from '../schema-pack/engine-resolution.ts';
+import { canonicalPutPageContent } from './put-page-vocabulary.ts';
 import { preparePageAdvisories, remoteLinkHint, pageNoopAdvisories, timelineRowsRemovedAdvisory } from './page-advisories.ts';
 import { assertKnowledgePublicationAllowed } from '../shared-skills/knowledge-guard.ts';
 import { colonSlugWindowsRefusal, isWindowsColonTarget, nativeFileTarget } from './native-file-target.ts';
@@ -324,6 +325,9 @@ export async function preparePageMutation(unbounded: BrainEngine, row: WriteRequ
   if ((snapshot?.page.id ?? null) !== row.page_id) throw pageIdentityError(snapshot != null || row.page_id === null, 'The accepted page identity changed.');
   const observedRevision = snapshot?.revision ?? null;
   const activePack = pack?.manifest;
+  if (row.operation === 'put_page' && p.kind === undefined && typeof p.content === 'string') {
+    canonicalPutPageContent(p.content, row.slug, activePack);
+  }
   if (row.operation === 'put_page' && p.allow_empty !== true && snapshot && !snapshot.page.deleted_at
     && typeof p.content === 'string' && `${snapshot.page.compiled_truth}\n${snapshot.page.timeline ?? ''}`.trim()) {
     const incoming = parseMarkdown(p.content, row.slug, { activePack });
@@ -359,6 +363,7 @@ export async function preparePageMutation(unbounded: BrainEngine, row: WriteRequ
   // #5616: edits apply to the caller's view of the locked snapshot (revision checked above).
   const edited = row.operation === 'edit_page' ? editLockedPage(row, snapshot) : undefined;
   let content = edited?.content ?? preparedIntent?.content ?? p.content as string;
+  if (row.operation === 'put_page' && p.kind === undefined && typeof content === 'string') content = canonicalPutPageContent(content, row.slug, activePack);
   let versionTags: string[] | undefined = preparedIntent?.tags;
   // A replacement/restore publishes a live page. Only a recorded version may
   // explicitly restore a tombstone; legacy versions leave this state unchanged.

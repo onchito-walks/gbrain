@@ -1,5 +1,6 @@
 import { pageMutationSource, submitPageMutation, validateMutationSlug } from '../persistence/page-mutations.ts';
 import { suffixedSlugDryRun } from '../persistence/suffixed-slug.ts';
+import { putPageVocabularyContent } from '../persistence/put-page-vocabulary.ts';
 import { AGENT_CONTENT_PARAMS, PAGE_MUTATION_PARAMS, CAPTURE_EVENT_PARAMS, WRITE_WAIT_PARAM } from '../persistence/params.ts';
 import { assertPurgeParams } from '../persistence/purge-params.ts';
 /**
@@ -324,6 +325,7 @@ const put_page: Operation = {
   handler: async (ctx, p) => {
     const sourceId = pageMutationSource(ctx, p, 'put_page');
     if (ctx.dryRun) {
+      await putPageVocabularyContent(ctx, p, sourceId);
       if (typeof p.slug === 'string') {
         validatePageSlug(p.slug);
         enforceClientSlugFence(ctx, p.slug, 'put_page');

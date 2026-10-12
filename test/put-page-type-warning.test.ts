@@ -1,11 +1,9 @@
 /**
- * #5880 — put_page warns (never rejects) when its explicit page type is not
+ * B01 supersedes #5880: put_page rejects when its explicit page type is not
  * declared by the write source's active schema pack. Pre-fix an ordinary
  * put_page (MCP, `gbrain put`, `gbrain call put_page`) stored any type
  * silently, while capture rejected it and subagent writes normalized it.
- * The committed result now carries `type_warning` (stable code, cause, fix,
- * docs) and the caller's logger gets the same line; the page is still
- * stored as written.
+ * The rejected page is not stored; canonical and alias controls still pass.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -70,25 +68,16 @@ const putPage = (ctx: OperationContext, slug: string, type: string) =>
     content: `---\ntype: ${type}\ntitle: Example\n---\n\nBody text.`,
   })) as Promise<Record<string, any>>;
 
-describe('#5880 put_page undeclared type warning', () => {
-  test('trusted local write: stored as-is, result + logger carry page_type_undeclared', async () => {
+describe('B01 put_page explicit type admission', () => {
+  test('trusted local write: undeclared type refuses rather than merely warning', async () => {
     const warns: string[] = [];
-    const result = await putPage(ctxWithLog(false, warns), 'notes/undeclared-local', 'meeting-transcript');
-    expect(result.type_warning).toMatchObject({
-      code: 'page_type_undeclared',
-      type: 'meeting-transcript',
-      pack: 'gbrain-base-v2',
-      docs: 'docs/architecture/schema-packs.md#undeclared-page-types',
-    });
-    expect(result.type_warning.fix).toContain('gbrain schema add-type meeting-transcript');
-    expect(warns.some((w) => w.includes('page_type_undeclared') && w.includes('meeting-transcript'))).toBe(true);
-    const [row] = await engine.executeRaw<{ type: string }>(`SELECT type FROM pages WHERE slug = 'notes/undeclared-local'`);
-    expect(row.type).toBe('meeting-transcript');
+    await expect(putPage(ctxWithLog(false, warns), 'notes/undeclared-local', 'meeting-transcript')).rejects.toMatchObject({ code: 'invalid_params' });
+    expect(await engine.executeRaw(`SELECT type FROM pages WHERE slug = 'notes/undeclared-local'`)).toEqual([]);
+    expect(warns).toEqual([]);
   });
 
-  test('remote (MCP) write gets the same warning', async () => {
-    const result = await putPage(ctxWithLog(true, []), 'notes/undeclared-remote', 'banana');
-    expect(result.type_warning?.code).toBe('page_type_undeclared');
+  test('remote (MCP) write gets the same refusal', async () => {
+    await expect(putPage(ctxWithLog(true, []), 'notes/undeclared-remote', 'banana')).rejects.toMatchObject({ code: 'invalid_params' });
   });
 
   test('declared types and aliases do not warn', async () => {
