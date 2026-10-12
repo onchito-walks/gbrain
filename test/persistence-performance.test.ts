@@ -1,52 +1,47 @@
-import { describe, expect, spyOn, test } from 'bun:test';
+import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { overlapPercent, summarizeReadRuns } from '../scripts/persistence/read-metrics.ts';
 import { runReadPerformance } from '../scripts/persistence/performance.ts';
-import { runReadLatencyWorkload } from '../scripts/persistence/read-workload.ts';
+import { observeResidentMemory, type ResidentMemoryObservation } from '../scripts/persistence/read-workload.ts';
 import { WriteTimingRecorder } from '../scripts/persistence/read-admission.ts';
-import { withEnv } from './helpers/with-env.ts';
 import { childEnvironment } from '../scripts/persistence/validate.ts';
-import { samplePeakRss } from '../scripts/persistence/harness.ts';
 
 describe('read-load evidence', () => {
-  test('resident RSS telemetry tolerates only Bun memoryUsage failures without inventing a peak', () => {
-    const unavailable = () => { throw new Error('Failed to get memory usage'); };
-    expect(samplePeakRss(null, unavailable)).toBeNull();
-    expect(samplePeakRss(null, () => 512)).toBe(512);
-    expect(samplePeakRss(512, unavailable)).toBe(512);
-    expect(samplePeakRss(512, () => 256)).toBe(512);
-    expect(samplePeakRss(512, () => 1024)).toBe(1024);
-    expect(() => samplePeakRss(512, () => { throw new Error('unexpected sampler failure'); })).toThrow('unexpected sampler failure');
-  });
-
-  test.each([false, true])('unavailable RSS stays explicit without invalidating real reads and writes (all=%s)', async all => {
-    const home = mkdtempSync(join(tmpdir(), 'gbrain-read-rss-'));
-    const original = process.memoryUsage;
+  // Full 200-query/public-write regressions remain in the serial integration
+  // companion. Unit accounting does not need two minute-long database workloads.
+  test.each([false, true])('RSS accounting exposes failures and recovery (all=%s)', all => {
+    let state: ResidentMemoryObservation = { rss_bytes: null, peak_rss_bytes: null, unavailable_samples: 0 };
     let calls = 0;
-    const memory = spyOn(process, 'memoryUsage').mockImplementation(Object.assign(() => {
+    const reader = () => {
       if (++calls === 1 || all) throw new Error('Failed to get memory usage');
-      return original.call(process);
-    }, { rss: original.rss }));
-    try {
-      await withEnv({ GBRAIN_HOME: home }, async () => {
-        const result = await runReadLatencyWorkload({ pages: 4, queries: 200, writers: 1, writesPerWriter: 100 });
-        expect(result.ok).toBe(true);
-        expect(result.phase_b.writes_completed).toBeGreaterThan(0);
-        expect(result.phase_b.writes_failed).toBe(0);
-        expect(result.rss_unavailable_samples).toBeGreaterThan(0);
-        expect(result.metrics[0].rss_bytes).toBeNull();
-        if (all) {
-          expect(result.metrics.every((sample: { rss_bytes: number | null }) => sample.rss_bytes === null)).toBe(true);
-          expect(result.peak_rss_bytes).toBeNull();
-        } else {
-          expect(result.rss_unavailable_samples).toBe(1);
-          expect(result.peak_rss_bytes).toBeGreaterThan(0);
-        }
-      });
-    } finally { memory.mockRestore(); rmSync(home, { recursive: true, force: true }); }
-  }, 60000);
+      return calls === 2 ? 128 : 64;
+    };
+    state = observeResidentMemory(reader, state);
+    expect(state.rss_bytes).toBeNull();
+    expect(state.peak_rss_bytes).toBeNull();
+    expect(state.unavailable_samples).toBe(1);
+    state = observeResidentMemory(reader, state);
+    state = observeResidentMemory(reader, state);
+    expect(state.unavailable_samples).toBe(all ? 3 : 1);
+    expect(state.rss_bytes).toBe(all ? null : 64);
+    expect(state.peak_rss_bytes).toBe(all ? null : 128);
+  });
+  test('unavailability after successful samples retains the measured peak', () => {
+    const measured = observeResidentMemory(() => 256, { rss_bytes: null, peak_rss_bytes: null, unavailable_samples: 0 });
+    const failed = observeResidentMemory(() => { throw new Error('Failed to get memory usage'); }, measured);
+    expect(failed).toEqual({ rss_bytes: null, peak_rss_bytes: 256, unavailable_samples: 1 });
+    expect(measured.unavailable_samples).toBe(0);
+  });
+  test('unexpected RSS failures propagate instead of counting as unavailable', () => {
+    const state: ResidentMemoryObservation = { rss_bytes: null, peak_rss_bytes: null, unavailable_samples: 0 };
+    const unexpected = new Error('unexpected failure');
+    try { observeResidentMemory(() => { throw unexpected; }, state); throw new Error('did not throw'); }
+    catch (error) { expect(error).toBe(unexpected); }
+    expect(() => observeResidentMemory(() => { throw 'Failed to get memory usage'; }, state)).toThrow();
+    expect(state.unavailable_samples).toBe(0);
+  });
 
   test('rejects invalid workload sizes before opening a datastore', async () => {
     await expect(runReadPerformance({ pages: 0 })).rejects.toThrow('Invalid pages');

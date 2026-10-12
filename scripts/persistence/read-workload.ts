@@ -18,6 +18,34 @@ import { BoundedRecords, ReadDiagnostics, type FailureStage } from './read-diagn
 
 export interface ReadWorkloadOptions {
   engine?: 'pglite' | 'postgres'; databaseUrl?: string; pages?: number; queries?: number; writers?: number; writesPerWriter?: number;
+  /**
+   * Scoped RSS reader. Defaults to `() => process.memoryUsage().rss`, so the
+   * benchmark still measures real resident memory. Tests inject a deterministic
+   * reader instead of mutating the `process.memoryUsage` global, which leaks
+   * across tests when a workload does not reach its own cleanup (timeout/kill).
+   */
+  observeRss?: () => number;
+}
+
+export interface ResidentMemoryObservation {
+  rss_bytes: number | null; peak_rss_bytes: number | null; unavailable_samples: number;
+}
+
+/**
+ * Fold one RSS reading into the running observation. Only Bun's known
+ * unavailability signal (`Failed to get memory usage`) is tolerated and counted;
+ * any other error is a real failure and must propagate unchanged. Kept as a pure
+ * function so the accounting (unavailable count, null sample, peak) is testable
+ * deterministically without a workload or a process-global mutation.
+ */
+export function observeResidentMemory(read: () => number, previous: ResidentMemoryObservation): ResidentMemoryObservation {
+  try {
+    const rss = read();
+    return { rss_bytes: rss, peak_rss_bytes: Math.max(previous.peak_rss_bytes ?? 0, rss), unavailable_samples: previous.unavailable_samples };
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== 'Failed to get memory usage') throw error;
+    return { rss_bytes: null, peak_rss_bytes: previous.peak_rss_bytes, unavailable_samples: previous.unavailable_samples + 1 };
+  }
 }
 const queries = ['lorem ipsum', 'consequat', 'voluptatem', 'aspernatur', 'magna', 'reprehenderit', 'commodo',
   'inventore', 'fixture page', 'section 1', 'section 2', 'page 100', 'doloremque', 'architecto', 'incididunt'];
@@ -38,6 +66,7 @@ export async function runReadLatencyWorkload(options: ReadWorkloadOptions = {}) 
   const at = performance.now(); const result: Record<string, any> = { ok: false, platform: platform(), engine: kind, runtime: `bun-${Bun.version}`,
     phase_a: null, phase_b: null, overlap_pct: 0, write_path: 'public put_page handler', verdict: 'informational' };
   let stop = false; let metricsTimer: ReturnType<typeof setInterval> | undefined;
+  const readRss = options.observeRss ?? (() => process.memoryUsage().rss);
   let metricsWork: Promise<void> | undefined; let backgroundFailure: unknown;
   let stage: FailureStage = 'connect';
   let restoreBegin: (() => void) | undefined;
@@ -130,14 +159,9 @@ export async function runReadLatencyWorkload(options: ReadWorkloadOptions = {}) 
           'idle', count(*) FILTER(WHERE state='idle'), 'idle_in_transaction', count(*) FILTER(WHERE state='idle in transaction'))
           FROM pg_stat_activity WHERE datname=current_database()) AS database_sessions` : ''} FROM persistence_requests`);
       sampleStage = 'metrics_rss';
-      let rss: number | null;
-      try { rss = process.memoryUsage().rss; }
-      catch (error) {
-        if (!(error instanceof Error) || error.message !== 'Failed to get memory usage') throw error;
-        rss = null; rssUnavailable++;
-      }
+      const observed = observeResidentMemory(readRss, { rss_bytes: null, peak_rss_bytes: peakRss, unavailable_samples: rssUnavailable });
+      const rss = observed.rss_bytes; peakRss = observed.peak_rss_bytes; rssUnavailable = observed.unavailable_samples;
       peakQueueAge = Math.max(peakQueueAge, Number(row.age)); peakRecovery = Math.max(peakRecovery, Number(row.recovery));
-      if (rss !== null) peakRss = Math.max(peakRss ?? 0, rss);
       sampleRecords.add({ at_ms: performance.now() - at, queue_count: row.pending, queue_age_ms: Number(row.age), recovery_bytes: Number(row.recovery),
         rss_bytes: rss, pool: engine instanceof PostgresEngine ? {
           tracked_subset: engine.getPoolDiagnostics(), database_sessions: row.database_sessions,
