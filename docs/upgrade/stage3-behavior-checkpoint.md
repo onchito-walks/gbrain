@@ -44,3 +44,44 @@ The remaining set is too large for this bounded run. Smallest sensible continuat
 4. B15/B24/B25/B26: guarded operator lane and verification tooling. Do not bypass managed-writer refusal; adapt native contracts.
 
 Re-use Stage 1 classification and these commits. Do not reconstruct history, deploy, or release Stage 4 as if Stage 3 were finished. Whole-candidate matrix, PostgreSQL E2E, compiled caller, migration rehearsal and live acceptance remain later-stage gates.
+
+## Stage 3A continuation — B01 committed, B02 not started (task t_7686aa20)
+
+Isolated worktree /srv/minio/native/ubuntu-root-offload/gbrain-port/wt-stage3a-admission,
+branch upgrade/stage3a-admission-isolated, forked from exact staging SHA
+0f478c9e967b2373ea0ad50ee3e5beb130305bd6. Shared staging untouched and clean at that SHA.
+
+B01 — committed 79a8a2ccac908108dc1549657d015bcc1cdf58a0 (one behavior, focused regression).
+  Files: src/core/persistence/put-page-vocabulary.ts (new; canonicalPutPageContent +
+  putPageVocabularyContent), src/core/ops/pages.ts (dry-run enforcement),
+  src/core/persistence/page-mutations.ts (admission preflight before registration, terminal-UUID
+  replay preserved, intent.content normalized once), src/core/persistence/page-prepare.ts
+  (publication canonicalization on the locked snapshot), test/put-page-vocabulary.serial.test.ts
+  (new), test/put-page-type-warning.test.ts (refusal replaces the upstream #5880 warning contract).
+  Actual put_page operation tests, not helper-only: refusal matrix remote x dry run asserts
+  rejection with equal disk+DB snapshot over 13 tables and no provider fetch; valid controls
+  prove canonical + alias ('project-card') persistence as type: initiative through the native
+  writer, byte-stable terminal-UUID replay, revision-preserving replacement refusal, implicit-type
+  preservation of the curated type, and best-effort verbatim writes under an unresolvable pack.
+  Fixture scope: the disposable vault is git-init'ed so discovery cannot climb into the ancestor
+  Hermes checkout (that climb produced 'The stable coordination lock must live outside the
+  canonical checkout'); state() settles the consumer so effect rows are comparable.
+  Commands (fenced bun 1.4.3, ubuntu, TMPDIR node_modules/.cache/stage3a-tmp inside the worktree):
+    bun test --timeout 120000 test/put-page-vocabulary.serial.test.ts test/put-page-type-warning.test.ts
+    -> 11 pass / 0 fail / 37 expect() calls / 2 files / 12.13s / exit 0
+    bun run typecheck -> exit 0
+  No physical-root ownership guard was weakened; no deployment, build, restart, live DB write,
+  routing/grant/firebreak change or publication. No edits to /srv/minio/hermes/home/src/gbrain.
+
+B02 — NOT implemented. No canonical sync.exclude admission guard exists in either the staging
+  tree or the deployed 0.58.1.0 source for the put_page live-write path (grep of page-mutations.ts /
+  page-prepare.ts in /srv/minio/hermes/home/src/gbrain at e90ad6edd found none; only the #6368
+  tombstone-purge exclusion exists, page-prepare.ts:190-193 and :283-293), so B02 is new work that
+  needs its own design, actual-operation tests (local/remote x live/dry) and focused commit.
+  install/registry check: /srv/minio/hermes-native/.hermes/scripts/gbrain-overlay-registry.json
+  carries no B01/B02 patch body to reuse.
+
+Remaining after this checkpoint: B02 (this cohort) plus B03/B04/B05/B09/B10/B11/B12/B13/B15/
+  B24/B25/B26/B27 and B23 rollout config. Stage 3 is NOT complete. This run exhausted its own
+  iteration budget (24/24 for profile monchobotjr, not the ~90 assumed by the brief) before B02
+  could be implemented and committed.
