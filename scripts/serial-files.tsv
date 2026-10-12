@@ -23,6 +23,7 @@ test/ai/no-batch-cap-suppression.serial.test.ts	global-state	global-state: proce
 test/ambient-recall-hooks.serial.test.ts	R1	R1: mutates process.env (GBRAIN_HOME, GBRAIN_HOOKS)
 test/ambient-writeback-lifecycle.serial.test.ts	global-state	global-state: R3: constructs PGLiteEngine outside beforeAll
 test/apply-migrations-safety.serial.test.ts	R2	R2: mock.module(dynamic specifier) replaces modules for every file in the process
+test/atom-disposition-cache-hit.serial.test.ts	R2	R2: mock.module(../src/core/embedding.ts, ../src/core/search/query-cache.ts) replaces modules for every file in the process
 test/attendance-repair-cli.serial.test.ts	global-state	global-state: R3: constructs PGLiteEngine outside beforeAll; binds local servers/ports
 test/audit-parser-probe.serial.test.ts	R1	R1: mutates process.env (GBRAIN_AUDIT_DIR)
 test/audit-slug-fallback.serial.test.ts	R1	R1: mutates process.env (GBRAIN_AUDIT_DIR)
