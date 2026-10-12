@@ -320,6 +320,9 @@ export function defaultResolveAuth(
  *
  * @internal exported for tests; not part of the public gateway API.
  */
+export { opencodeGoSessionHeaders } from './opencode-go-session.ts';
+import { opencodeGoSessionHeaders } from './opencode-go-session.ts';
+
 export function applyResolveAuth(
   recipe: Recipe,
   cfg: AIGatewayConfig,
@@ -337,9 +340,11 @@ export function applyResolveAuth(
       recipe.setup_hint,
     );
   }
-  const defaults = recipe.resolveDefaultHeaders
+  const recipeDefaults = recipe.resolveDefaultHeaders
     ? recipe.resolveDefaultHeaders(cfg.env)
     : recipe.default_headers;
+  const goHeaders = opencodeGoSessionHeaders(recipe, cfg);
+  const defaults = goHeaders ? { ...(recipeDefaults ?? {}), ...goHeaders } : recipeDefaults;
 
   // v0.37.6.0 — defaults MUST NOT shadow the resolved auth header. SDK applies
   // headers after apiKey, so an `Authorization` entry in defaults would replace
