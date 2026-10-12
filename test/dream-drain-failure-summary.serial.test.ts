@@ -19,10 +19,14 @@ import { LockUnavailableError } from '../src/core/db-lock.ts';
 let nextResult: ExtractAtomsDrainResult | Error;
 let drainCalls: Array<{ sourceId: string | undefined; windowSeconds: number }> = [];
 
+// Load the REAL module first, so the stub keeps every OTHER export at its real
+// implementation (dream.ts calls the pure `formatDrainBlockedRefusal` on a B13
+// refusal, and a hand-copied literal here would silently drift from it). Only
+// the drain LOOP is stubbed — that is this file's whole point.
+const realDrain = await import('../src/core/cycle/extract-atoms-drain.ts');
+
 mock.module('../src/core/cycle/extract-atoms-drain.ts', () => ({
-  MAX_DRAIN_FAILURE_RECORDS: 25,
-  MAX_DRAIN_FAILURE_SOURCE_CHARS: 256,
-  MAX_DRAIN_FAILURE_REASON_CHARS: 200,
+  ...realDrain,
   runExtractAtomsDrainForSource: async (_engine: unknown, opts: { sourceId: string | undefined; windowSeconds: number }) => {
     drainCalls.push({ sourceId: opts.sourceId, windowSeconds: opts.windowSeconds });
     if (nextResult instanceof Error) throw nextResult;
@@ -216,6 +220,26 @@ describe('dream --drain stop contract (#5809)', () => {
     const r = await runDrainCaptured([]);
     expect(r.exitCode).toBe(11);
     expect(r.stderr).toContain('Rerun: gbrain dream --drain --window 300');
+  });
+
+  // B13: a batch that REFUSED to run (unpriced cost gate / fail-closed
+  // quarantine re-check) must reach the operator as a named refusal — never as
+  // a provider outage, and never as a clean stop. Only `drained` exits 0.
+  test('a blocked stop (B13 refusal) names the refusal, exits 11 and never reads as drained', async () => {
+    nextResult = baseResult({ status: 'blocked', stopped: 'blocked', remaining: 4, extracted: 0, batches: 1, blocked_reason: 'no_pricing' });
+    const r = await runDrainCaptured(['--json', '--window', '90']);
+    const payload = JSON.parse(r.stdout.find((line) => line.trim().startsWith('{'))!);
+    // The refusal + its reason ride the --json payload; the run stays resumable.
+    expect(payload).toMatchObject({
+      status: 'blocked', stopped: 'blocked', blocked_reason: 'no_pricing',
+      remaining: 4, extracted: 0, batches: 1, resume_command: 'gbrain dream --drain --window 90',
+    });
+    expect(r.exitCode).toBe(11);
+    expect(r.stderr).toContain('refused this batch before any model call');
+    expect(r.stderr).toContain('reason=no_pricing');
+    expect(r.stderr).toContain('this is a refusal, not a provider outage');
+    expect(r.stderr).toContain('Rerun: gbrain dream --drain --window 90');
+    expect(r.stderr).not.toContain('provider calls failed');
   });
 
   test('a drained run prints no rerun hint and exits 0', async () => {

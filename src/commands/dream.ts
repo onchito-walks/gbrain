@@ -668,6 +668,20 @@ async function runDrain(
   }
   // null remaining = the final count query failed; do not report success.
   if (result.stopped === 'drained' && result.remaining === 0) return;
+  // B13: a refused batch (unpriced cost gate / fail-closed quarantine re-check)
+  // must be unmistakable on the operator surface — the generic "stopped:
+  // blocked" line below is technically true but reads like any other stop, and
+  // the pre-B13 shape never even reached here. Name the refusal (and the exact
+  // command that clears it is the phase's own guidance, already on stderr).
+  if (result.status === 'blocked') {
+    const { formatDrainBlockedRefusal } = await import('../core/cycle/extract-atoms-drain.ts');
+    process.stderr.write(
+      `${formatDrainBlockedRefusal(result, { final: true }) ?? `[drain] refused this batch (${result.stopped})`} — ` +
+        `nothing was extracted and the backlog is unchanged; this is a refusal, not a provider outage. ` +
+        `Refusals: 'no_pricing' means the extraction/embed route has no registered price (see the guidance above); ` +
+        `'quarantine_recheck_failed' means the quarantine re-check could not be answered (fail-closed).\n`,
+    );
+  }
   process.stderr.write(budgetNotice
     ? `[drain] stopped: budget; spent ${usd(result.spent_usd)} of the ${usd(result.budget_usd)} per-run cap (cycle.extract_atoms.budget_usd); ` +
       `${result.remaining ?? '?'} page(s) remaining. Rerun: ${drainCommand(opts)}, or raise the cap: gbrain config set cycle.extract_atoms.budget_usd <usd>\n`

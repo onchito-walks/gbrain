@@ -104,6 +104,9 @@ export interface ExtractAtomsDrainDeps {
    * #6425: `budgetSkipped` counts items the batch skipped because the
    * attempt's per-run cap was spent, with `budget` the spend and the cap. The
    * attempt shares one tracker across batches, so the drain stops `budget`.
+   *
+   * B13: `blocked` is the batch's structural-REFUSAL signal — see its field
+   * doc inside the return type.
    */
   runBatch: (signals: { signal: AbortSignal; stopSignal: AbortSignal }) => Promise<{
     extracted: number;
@@ -114,6 +117,18 @@ export interface ExtractAtomsDrainDeps {
     failures?: Array<{ source: string; reason: string }>;
     budgetSkipped?: number;
     budget?: { spentUsd: number; capUsd: number };
+    /**
+     * B13: the batch REFUSED to run its work — the phase stopped before any
+     * model call because it could not account for the run (unpriced billable
+     * route under a cost cap) or could not verify the batch (fail-closed
+     * quarantine re-check). Distinct from `providerFailure` (which means a
+     * provider call was attempted and every one of them errored) and from
+     * `budgetSkipped` (ordinary per-run cap accounting, which stays `ok`).
+     * `blockedReason` names the refusal so the caller's error text and the
+     * durable job's retry cannot be mistaken for a provider outage.
+     */
+    blocked?: boolean;
+    blockedReason?: string;
   }>;
   /**
    * Count remaining eligible-but-unextracted pages, or null on query error.
@@ -147,11 +162,15 @@ export interface ExtractAtomsDrainOpts {
  * Why a drain stopped. `window`/`no_progress`/`max_batches`/`budget` are soft
  * stops after a final recount (`budget`: the attempt's per-run cap is spent); `deadline` (job deadline), `lock_lost` (cycle lock
  * lease lost) and `aborted` (job cancelled or shutting down) are hard stops
- * whose `remaining` is the last count taken before the stop.
+ * whose `remaining` is the last count taken before the stop. `provider_failure`
+ * (the batch's every attempted item errored) and `blocked` (B13: the batch
+ * refused to run its work at all) are LATCHED stops — like `provider_failure`,
+ * a `blocked` stop survives the final recount so the result can never read as
+ * a clean `drained`.
  */
 export type DrainStop =
   | 'drained' | 'window' | 'deadline' | 'lock_lost' | 'aborted'
-  | 'no_progress' | 'max_batches' | 'provider_failure' | 'budget';
+  | 'no_progress' | 'max_batches' | 'provider_failure' | 'budget' | 'blocked';
 
 export const DRAIN_COUNT_TIMEOUT_MS = 60_000;
 
@@ -174,12 +193,16 @@ export interface ExtractAtomsDrainResult {
   phase: 'extract_atoms';
   /**
    * issue #3218: 'provider_failure' when any batch reported `providerFailure`
-   * (every item it attempted errored). The Minion handler throws on this
-   * status so the durable job retries instead of completing over a backlog
-   * that made zero forward progress. Partial-success batches (>=1 item
-   * succeeded) always report 'ok', unchanged from before.
+   * (every item it attempted errored). B13: 'blocked' when a batch reported a
+   * structural refusal (`blocked`) — the unpriced cost gate or the fail-closed
+   * quarantine re-check — which never reached a provider at all. The Minion
+   * handler throws on both so the durable job retries instead of completing
+   * over a backlog that made zero forward progress; `blocked_reason` says
+   * which refusal it was, so the retry text never reads as an outage.
+   * Partial-success batches (>=1 item succeeded) always report 'ok', unchanged
+   * from before.
    */
-  status: 'ok' | 'provider_failure';
+  status: 'ok' | 'provider_failure' | 'blocked';
   extracted: number;
   skipped: number;
   /** Eligible pages still pending (see DrainStop for hard stops). null if no count succeeded. */
@@ -210,6 +233,13 @@ export interface ExtractAtomsDrainResult {
    * reported one (`source: reason`), or null for a clean run.
    */
   last_error: string | null;
+  /**
+   * B13: present exactly when `status` is 'blocked'. Names the refusal the
+   * phase reported (`no_pricing` for the cost gate, `quarantine_recheck_failed`
+   * for the fail-closed re-check, or another `blocked_reason`), so a consumer
+   * can act on a structural refusal without confusing it with an outage.
+   */
+  blocked_reason?: string;
   /** #6425: on a `budget` stop, the attempt's spend and its per-run cap (`cycle.extract_atoms.budget_usd`). */
   spent_usd?: number;
   budget_usd?: number;
@@ -232,6 +262,56 @@ export function formatDrainProviderFailure(
   );
 }
 
+/**
+ * B13: dead-letter / retry text for a drain stopped by a structural REFUSAL
+ * (`status: 'blocked'`), or null when the run was not blocked. Kept separate
+ * from `formatDrainProviderFailure` on purpose: a refusal never reached the
+ * provider, so a message about "all provider calls failed" would send the
+ * operator hunting a provider problem that does not exist. Names the refusal
+ * and keeps the same batches/remaining shape so both surfaces can be read
+ * together.
+ */
+export function formatDrainBlockedRefusal(
+  result: Pick<ExtractAtomsDrainResult, 'batches' | 'remaining' | 'blocked_reason'>,
+  opts: { final?: boolean } = {},
+): string | null {
+  if (result.blocked_reason === undefined) return null;
+  return (
+    `extract-atoms-drain: refused this batch before any model call ` +
+    `(reason=${result.blocked_reason}, batches=${result.batches}, remaining=${result.remaining ?? '?'})` +
+    `${opts.final ? '' : ' — retrying'}`
+  );
+}
+
+/**
+ * B13: classify ONE phase result's `details` into the drain's blocked-batch
+ * signal. Pure, so the mapping is unit-testable without a DB or a provider.
+ *
+ * Two refusal shapes mean "this batch did no work, and its non-progress must
+ * not be read as a clean or an ordinary run":
+ *
+ *   - `details.blocked === true` — the B12 fail-closed quarantine re-check
+ *     could not be answered; `blocked_reason` names it.
+ *   - `details.reason === 'no_pricing'` — the B11 cost gate refused an unpriced
+ *     billable route before any model call.
+ *
+ * It deliberately does NOT key off `budget_exhausted`. The native `no_pricing`
+ * receipt sets that flag to `true` (the refusal is recorded as an expected
+ * limit, not a halt), so using it as the discriminator would BOTH miss the
+ * distinction the caller needs and sweep in the ordinary budget-skip path
+ * (`pages_skipped_budget > 0`), which is a normal `status: 'ok'` stop.
+ */
+export function deriveExtractAtomsBatchOutcome(
+  details: Record<string, unknown> | undefined,
+): { blocked: boolean; blockedReason?: string } {
+  const d = details ?? {};
+  if (d.blocked !== true && d.reason !== 'no_pricing') return { blocked: false };
+  const named = [d.blocked_reason, d.reason].find(
+    (v): v is string => typeof v === 'string' && v.trim().length > 0,
+  );
+  return { blocked: true, ...(named ? { blockedReason: named } : {}) };
+}
+
 export async function runExtractAtomsDrain(
   deps: ExtractAtomsDrainDeps,
   opts: ExtractAtomsDrainOpts,
@@ -247,6 +327,13 @@ export async function runExtractAtomsDrain(
   // the returned `status`, independent of how `stopped` reads after the
   // final (possibly overriding) remaining-count check below.
   let providerFailure = false;
+  // B13: latched once any batch reports a structural refusal (the unpriced cost
+  // gate, or the fail-closed quarantine re-check). Like `providerFailure` it
+  // drives `status` independently of how `stopped` reads after the final
+  // recount, and the loop breaks after that first batch so a refusal can never
+  // hot-retry inside this run — the caller's own bounded retry policy decides.
+  let blocked = false;
+  let blockedReason: string | null = null;
   // #4539: accumulate per-item failure visibility across batches.
   let failureCount = 0;
   // #4730: bounded typed per-item records (batch order, sanitized).
@@ -257,7 +344,7 @@ export async function runExtractAtomsDrain(
   let budget: { spentUsd: number; capUsd: number } | undefined;
   const result = (stopped: DrainStop, remaining: number | null): ExtractAtomsDrainResult => ({
     phase: 'extract_atoms',
-    status: providerFailure ? 'provider_failure' : 'ok',
+    status: blocked ? 'blocked' : providerFailure ? 'provider_failure' : 'ok',
     extracted,
     skipped,
     remaining,
@@ -267,6 +354,7 @@ export async function runExtractAtomsDrain(
     failures,
     omitted_failure_count: failureCount - failures.length,
     last_error: lastError,
+    ...(blocked ? { blocked_reason: blockedReason ?? 'blocked' } : {}),
     ...(stopped === 'budget' && budget ? { spent_usd: budget.spentUsd, budget_usd: budget.capUsd } : {}),
   });
   try {
@@ -366,6 +454,24 @@ export async function runExtractAtomsDrain(
           if (hard.signal.aborted) break;
           deps.onBatch?.({ batch: batches, extracted: r.extracted, remaining: before });
 
+          // B13: the batch REFUSED to run its work — the unpriced cost gate or
+          // the fail-closed quarantine re-check. Nothing reached the provider,
+          // and the backlog did not move, so the pre-B13 path below (zero
+          // extracted, zero skipped → recount → unchanged → 'no_progress')
+          // reported a clean `status: 'ok'` over a backlog that was actually
+          // refused. Latch the refusal, stop after this ONE batch (the same
+          // hot-loop guard provider_failure uses, so a refusal never spins),
+          // and let the final recount settle `remaining` without overwriting
+          // the refusal back to 'drained'.
+          if (r.blocked) {
+            blocked = true;
+            blockedReason = typeof r.blockedReason === 'string' && r.blockedReason.trim()
+              ? r.blockedReason
+              : 'blocked';
+            stopped = 'blocked';
+            break;
+          }
+
           // issue #3218: every item this batch attempted failed (0 succeeded, >=1
           // error) — a total provider outage, not ordinary no-op/partial progress.
           // Stop immediately (same hot-loop guard as no_progress below) and flag
@@ -409,9 +515,11 @@ export async function runExtractAtomsDrain(
         // overwrite 'provider_failure' back to 'drained' — that would report the
         // contradictory {status: 'provider_failure', stopped: 'drained'} and
         // mislead the CLI/JSON consumer (dream.ts prints both fields verbatim).
+        // B13 latches `blocked` in the same way: a refusal that happens to leave
+        // a zero recount is still a refusal, never a drain completion.
         // status already takes precedence for the Minion handler's retry
         // decision; keep `stopped` consistent with it once a failure latched.
-        if (!providerFailure && remaining === 0) stopped = 'drained';
+        if (!providerFailure && !blocked && remaining === 0) stopped = 'drained';
         return result(stopped, remaining);
       } finally {
         clearTimeout(deadlineTimer);
@@ -525,6 +633,7 @@ export async function runExtractAtomsDrainForSource(
               typeof (f as { error?: unknown }).error === 'string',
           )
           .map(({ source, error }) => ({ source, reason: error }));
+        const outcome = deriveExtractAtomsBatchOutcome(d);
         return {
           extracted: Number(d.atoms_extracted ?? 0),
           skipped: Number(d.duplicates_skipped ?? 0),
@@ -533,6 +642,8 @@ export async function runExtractAtomsDrainForSource(
           failures: typedFailures,
           budgetSkipped: Number(d.pages_skipped_budget ?? 0) + Number(d.transcripts_skipped_budget ?? 0),
           budget: { spentUsd: Number(d.estimated_spend_usd ?? 0), capUsd: Number(d.budget_usd ?? 0) },
+          blocked: outcome.blocked,
+          ...(outcome.blockedReason ? { blockedReason: outcome.blockedReason } : {}),
         };
       },
       countRemaining: (signal) => countExtractAtomsBacklog(engine, extractionSourceId, { signal }),

@@ -19,7 +19,7 @@ export function makeExtractAtomsDrainHandler(engine: BrainEngine): MinionHandler
       const { retryManagedAtomBatch } = await import('../../persistence/atom-retry.ts');
       return retryManagedAtomBatch(engine, job.data.sourceId, job.data.retryRequestId, `job:${job.id}`);
     }
-    const { formatDrainProviderFailure, runExtractAtomsDrainForSource, structuralAtomRefusal } =
+    const { formatDrainBlockedRefusal, formatDrainProviderFailure, runExtractAtomsDrainForSource, structuralAtomRefusal } =
       await import('../../cycle/extract-atoms-drain.ts');
     const { LockUnavailableError } = await import('../../db-lock.ts');
     const sourceId = typeof job.data.sourceId === 'string' ? job.data.sourceId : undefined;
@@ -67,6 +67,22 @@ export function makeExtractAtomsDrainHandler(engine: BrainEngine): MinionHandler
       }
       if (result.status === 'provider_failure') {
         throw new Error(formatDrainProviderFailure(result));
+      }
+      // B13: a blocked batch (unpriced cost gate / fail-closed quarantine
+      // re-check) refused to run any work at all. Returning `result` here would
+      // hand a false-green `{status: 'blocked'}` to the worker's completion
+      // path, so the durable job would be marked done with the backlog
+      // untouched — and the pre-B13 shape was worse still (`status: 'ok'` /
+      // `stopped: 'no_progress'`). Throw instead, with the REFUSAL text, so the
+      // worker's ordinary bounded retry policy (attempt + backoff, then
+      // dead-letter) applies: the reason is named, the operator is not sent
+      // hunting an outage, and the retry cannot spin — this loop already
+      // stopped after the one blocked batch.
+      if (result.status === 'blocked') {
+        const finalText = pastDeadline();
+        const refusal = formatDrainBlockedRefusal(result, { final: finalText })
+          ?? `extract-atoms-drain: refused this batch before any model call (${counts})`;
+        throw finalText ? new UnrecoverableError(refusal) : new Error(refusal);
       }
       return result;
     } catch (e) {
