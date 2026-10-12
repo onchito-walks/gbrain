@@ -209,3 +209,42 @@ Handoff: upgrade/stage3d-operator-isolated is a strict descendant of c08d2c167 a
 no Stage 3B/3C work, so it integrates independently; the parent must recheck staging's HEAD
 and clean status before fast-forward or cherry-pick (the three cohorts diverge from the same
 base).
+
+## Stage 3D integration onto staging — done by the parent (orchestrator), ahead of the merge point
+
+Staging precondition checked: HEAD was exactly c08d2c167bdd6db54504872fd92447c074b6c59f with a
+clean worktree, and upgrade/stage3d-operator-isolated was a strict descendant, so `git merge
+--ff-only` applied with no rebase, reset, force or history rewrite. Staging HEAD is now
+29d534148 ("docs(upgrade): record Stage 3D B15/B24/B25/B26 commits and verification"); all five
+Stage 3D commits (ed1250c3a B24, b164bb877 B15, 33fe033de B25, 105651f50 B26, 29d534148 receipt)
+entered as unchanged ancestors. Worktree clean after the merge.
+
+Why integrated early: the remaining Stage 3 cohorts have repeatedly stopped on iteration
+budgets, and five finished, verified commits sitting on a branch are exactly the work most at
+risk of being re-derived. Integration is additive and does not touch 3B/3C worktrees.
+
+Parent re-verification AT the integrated SHA 29d534148 (not a re-run of the cohort's own claim):
+
+    bun test --max-concurrency=4 --timeout 300000 test/operator-quarantine-set.serial.test.ts \
+      test/persistence-rss-workload.serial.test.ts test/persistence-performance.test.ts \
+      test/codegraph-probe.test.ts test/scripts/serial-files.test.ts \
+      test/scripts/serial-runner-scheduler-contract.test.ts
+    -> 57 pass / 0 fail / 721 expect() calls / 6 files / 100.97s / exit 0
+    bun run typecheck -> rc=0, zero "error TS" lines
+    check:module-size, check:function-size, check:layering, check:test-isolation,
+    check:test-names, check:test-placeholders -> all exit 0
+    git status --porcelain -> 0 lines
+
+Matches the cohort's recorded 57/0/721 exactly. `--max-concurrency=4` was used deliberately:
+every Hermes worker runs in a hard 4 GiB cgroup
+(tools/process_registry._WORKER_MEMORY_MAX_CAP_BYTES) and `bun test` defaults to 20 concurrent
+tests, which is what OOM-killed this cohort's first run.
+
+Still open from Stage 3D and NOT resolved by this integration: test/e2e/operator-quarantine-postgres.test.ts
+is DATABASE_URL-gated and has still never been executed; real-Postgres engine parity remains a
+later-stage gate and the green PGLite-oracle serial suite must not be read as parity.
+
+Integration order note for t_4dd80505: staging has advanced past c08d2c167, so upgrade/stage3b-retrieval-isolated
+and upgrade/stage3c-extraction-isolated are no longer fast-forwardable and will need cherry-pick
+(or a rebase onto 29d534148) when they report. The manifest rows added by b164bb877 are additive;
+expect them to be the most likely conflict site if 3B/3C also register serial files.
