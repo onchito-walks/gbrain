@@ -1,8 +1,11 @@
 # Stage 3C continuation — extraction refusal + quarantine hardening (task t_7e96fdd1)
 
-Status: PARTIAL. B11 and B12 are implemented, tested and committed on an isolated
-branch. **B13 is NOT implemented.** Stage 3 is NOT complete; Stage 4 stays gated;
-t_4dd80505 still owns final Stage 3 acceptance.
+Status: **SUPERSEDED** by `docs/upgrade/stage3c-extraction-acceptance.md`.
+B11, B12 **and B13** are implemented, tested and committed on the isolated branch
+`upgrade/stage3c-extraction-isolated`. Integration onto the shared staging branch
+is owed to the parent (isolation rule). Stage 3 is NOT complete — behaviors owned
+by other cohorts remain; Stage 4 stays gated; `t_4dd80505` still owns final
+Stage 3 acceptance.
 
 ## Isolation (per the parent's concurrency notice)
 
@@ -113,7 +116,12 @@ bun test --timeout 120000 [test/extract-atoms-page-discovery.test.ts,
 
 `check:module-size` and `check:function-size` exit 0 at this commit.
 
-## B13 — NOT implemented (the remaining gap in this cohort)
+## B13 — SUPERSEDED (this section recorded the plan while B13 was still open)
+
+Implemented and committed as `80f586b0` on this branch; the design below is
+exactly what shipped. The acceptance receipt
+(`docs/upgrade/stage3c-extraction-acceptance.md`) carries the behavior, the
+evidence and the integration handoff.
 
 Required behavior: a blocked extraction drain (unpriced cost gate / fail-closed quarantine
 re-check) must become a **visible retryable failure instead of a false-green**, while the native
