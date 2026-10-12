@@ -4,7 +4,9 @@
  * call), carries the shared no_pricing guidance in its details, records the
  * stop as an expected limit (not a halt) for extract_health, and doctor's
  * extract_health names the registration command until the price is
- * registered. A default cap still warns and runs (#5825).
+ * registered. Under a DEFAULT cap an unpriced route refuses the same way,
+ * unless the caller opts into the pre-B11 uncapped behavior
+ * (`unpricedPolicy: 'uncapped'`, used by the Life Chronicle phase).
  *
  * Hermetic: in-memory PGLite, chat stubbed through the `_chat` seam, embed
  * transport stubbed. No network or API keys.
@@ -172,16 +174,32 @@ describe('explicit extract_atoms cap + unpriced model', () => {
 });
 
 describe('default extract_atoms cap + unpriced model', () => {
-  test('warns and runs (#5825)', async () => {
+  // #5825 introduced "drop the default cap and run uncapped" so an unpriced
+  // model did not wedge the phase at $0. B11 supersedes that: running uncapped
+  // still sends the unpriced call, and the tracker meters an unpriced served
+  // model at nothing, so the phase now REFUSES under the default cap too and
+  // records the native no_pricing receipt for doctor. The Life Chronicle phase,
+  // which accounts for unknown spend itself (`unpriced_calls`), keeps the old
+  // behavior by passing `unpricedPolicy: 'uncapped'`.
+  test('refuses with the no_pricing guidance instead of running uncapped', async () => {
     useEmbedModel(PRICED_EMBED);
     await engine.setConfig('models.dream.extract_atoms', UNPRICED_CHAT);
 
     const { result, stderr } = await runOnce();
-    expect(result.status).toBe('ok');
-    expect(chatCalls).toBe(1);
-    expect(result.details?.atoms_extracted).toBe(1);
-    expect(stderr).toContain('running without a cost gate');
+    expect(result.status).toBe('warn');
+    // TIGHTENED: the old expectation was 1 chat call + 1 extracted atom.
+    expect(chatCalls).toBe(0);
+    expect(result.details?.atoms_extracted).toBe(0);
+    expect(result.details?.reason).toBe('no_pricing');
+    expect(result.details?.cap_source).toBe('default');
+    expect(result.details?.no_pricing).toMatchObject({ code: 'no_pricing', model: UNPRICED_CHAT, kind: 'chat' });
+    expect(stderr).not.toContain('running without a cost gate');
     expect(stderr).toContain(`gbrain pricing set ${UNPRICED_CHAT} --input`);
-    expect(await readExtractAtomsNoPricing(engine)).toEqual([]);
+
+    // The refusal IS recorded for doctor, and the stop is an expected limit.
+    const records = await readExtractAtomsNoPricing(engine);
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ source_id: 'default', model: UNPRICED_CHAT, cap_source: 'default' });
+    expect(await rollup()).toEqual({ halt: 0, expected: 1, completed: 0 });
   }, 60_000);
 });

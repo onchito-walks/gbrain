@@ -20,15 +20,26 @@ import { classifyRunStop, upsertExtractRollup } from '../extract/rollup-writer.t
  * `enforceCap: true` → construct the tracker with `maxCostUsd`. `false` → run
  * uncapped (the tracker then warns once on unpriced models instead of throwing)
  * and `unpricedModel`/`unpricedKind` name the call that made the cap
- * unenforceable. `refusal` → an explicit budget met an unpriced route: the run
- * makes no model call and reports the guidance. Pure: no config or gateway
- * access, so it is unit-testable.
+ * unenforceable. `refusal` → a billable route is unpriced, so the run makes no
+ * model call and reports the native `no_pricing` guidance. Pure: no config or
+ * gateway access, so it is unit-testable.
  */
 export interface ExtractAtomsCostGate {
   enforceCap: boolean;
   unpricedModel?: string;
   unpricedKind?: 'chat' | 'embed';
-  /** Explicit budget + unpriced chat or embed route: refuse, with the no_pricing guidance. */
+  /**
+   * Which cap the unpriced route made unenforceable: `operator` = the operator
+   * SET `cycle.extract_atoms.budget_usd`, `default` = the built-in cap. Carried
+   * so the recorded receipt names the cap truthfully instead of implying the
+   * operator chose one.
+   */
+  unpricedCapSource?: 'operator' | 'default';
+  /**
+   * A billable route is unpriced: refuse, with the no_pricing guidance. This is
+   * the ONLY outcome for an unpriced route — there is no uncapped-run fallback
+   * (see resolveExtractAtomsCostGate).
+   */
   refusal?: NoPricingGuidance;
 }
 
@@ -39,27 +50,50 @@ export interface ExtractAtomsCostGate {
  * which case the import runs with `noEmbed` and nothing embeds). Operator
  * `pricing.overrides` are consulted first, matching BudgetTracker.reserve().
  *
- * `explicitBudget` = the operator SET `cycle.extract_atoms.budget_usd`. A
- * default cap is dropped for an unpriced route (warn and run, so a new model
- * still works). A cap the operator set is a spending limit: the run is
- * refused with guidance to look the price up and register it, for the chat
- * model and the embed route alike.
+ * `explicitBudget` = the operator SET `cycle.extract_atoms.budget_usd`. It does
+ * not decide WHETHER an unpriced route refuses — an explicit cap always refuses
+ * (`do not duplicate its explicit-budget behavior` on the retained overlay) — it
+ * only labels which cap was unenforceable, so the receipt and the doctor message
+ * name the right one.
+ *
+ * `unpricedPolicy` is the caller's policy for an unpriced billable route under a
+ * DEFAULT (non-explicit) cap:
+ *
+ *   - `refuse` (default): fail closed with the `no_pricing` guidance and zero
+ *     model calls. extract_atoms takes this because it cannot account for the
+ *     run otherwise — the tracker bills an unpriced served model at nothing, so
+ *     `totalSpent` would under-report an uncapped run's real spend, and the
+ *     phase's `estimated_spend_usd` would read like "$0, this route is free".
+ *   - `uncapped`: drop the cap, warn once, and run (the pre-B11 behavior), for a
+ *     caller that accounts for unknown spend itself instead of refusing. The
+ *     Life Chronicle phase does exactly that (`unpriced_calls`, rows marked
+ *     `unpriced: true`), so it opts out explicitly.
+ *
+ * Either way the gate never invents spend: a listed price/API-rate equivalent is
+ * NOT an invoice charge, and no `pricing.overrides` row is written.
  */
 export function resolveExtractAtomsCostGate(
   extractModel: string,
   embedModel: string | null,
   overrides?: PricingOverrides,
-  opts: { explicitBudget?: boolean } = {},
+  opts: { explicitBudget?: boolean; unpricedPolicy?: 'refuse' | 'uncapped' } = {},
 ): ExtractAtomsCostGate {
   const unpriced: { model: string; kind: 'chat' | 'embed' } | null =
     !isModelPriceable(extractModel, 'chat', overrides) ? { model: extractModel, kind: 'chat' }
       : embedModel !== null && !isModelPriceable(embedModel, 'embed', overrides) ? { model: embedModel, kind: 'embed' }
         : null;
   if (!unpriced) return { enforceCap: true };
-  if (opts.explicitBudget) {
-    return { enforceCap: true, unpricedModel: unpriced.model, unpricedKind: unpriced.kind, refusal: noPricingGuidance(unpriced.model, unpriced.kind) };
+  const policy = opts.explicitBudget ? 'refuse' : (opts.unpricedPolicy ?? 'refuse');
+  if (policy === 'uncapped') {
+    return { enforceCap: false, unpricedModel: unpriced.model, unpricedKind: unpriced.kind };
   }
-  return { enforceCap: false, unpricedModel: unpriced.model, unpricedKind: unpriced.kind };
+  return {
+    enforceCap: true,
+    unpricedModel: unpriced.model,
+    unpricedKind: unpriced.kind,
+    unpricedCapSource: opts.explicitBudget ? 'operator' : 'default',
+    refusal: noPricingGuidance(unpriced.model, unpriced.kind),
+  };
 }
 
 /** Config key holding the last refusal for a source; doctor's extract_health reads every one. */
@@ -93,6 +127,11 @@ export async function settleExtractAtomsCostGate(
 ): Promise<PhaseResult | null> {
   const key = `${target.keyPrefix}${sourceId}`;
   if (!gate.refusal) {
+    // No refusal: the gate is enforceable. `enforceCap: false` is kept as a
+    // fallback shape for callers that build an ExtractAtomsCostGate directly;
+    // resolveExtractAtomsCostGate no longer produces it for an unpriced route
+    // (an unpriced billable model now always refuses), so this branch no longer
+    // means "an unpriced route is running uncapped".
     if (!gate.enforceCap) {
       console.error(
         `[${target.phase}] ${gate.unpricedKind} model "${gate.unpricedModel}" is not in the pricing maps; ` +
@@ -105,8 +144,9 @@ export async function settleExtractAtomsCostGate(
   }
   const message = noPricingMessage(gate.refusal, { capUsd: run.budgetCap });
   console.error(`[${target.phase}] ${message}`);
+  const capSource = gate.unpricedCapSource ?? 'default';
   if (!run.dryRun) {
-    await engine.setConfig(key, JSON.stringify({ ...gate.refusal, at: new Date().toISOString() })).catch(() => {});
+    await engine.setConfig(key, JSON.stringify({ ...gate.refusal, cap_source: capSource, at: new Date().toISOString() })).catch(() => {});
     if (target.rollup) await upsertExtractRollup(engine, { kind: 'atoms', source_id: sourceId, cost_delta: 0, ...classifyRunStop({ budget_exhausted: true }) });
   }
   return {
@@ -121,6 +161,7 @@ export async function settleExtractAtomsCostGate(
       ...(target.phase === 'extract_atoms' ? { atoms_extracted: 0 } : {}),
       budget_usd: run.budgetCap,
       budget_exhausted: true,
+      cap_source: capSource,
       model: run.extractModel,
       dry_run: run.dryRun,
     },

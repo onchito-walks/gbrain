@@ -44,7 +44,10 @@ export async function runChronicleJob(engine: BrainEngine, opts: {
   const settings = await chronicleSettings(engine);
   const pricingOverrides = await loadPricingOverrides(engine);
   const model = getChatModel();
-  const gate = resolveExtractAtomsCostGate(model, null, pricingOverrides, { explicitBudget: settings.explicitBudget });
+  // unpricedPolicy 'uncapped': this per-row job has no cost gate of its own and
+  // records unknown spend on the row, so it keeps the pre-B11 behavior for a
+  // default cap (only an operator cap refuses here).
+  const gate = resolveExtractAtomsCostGate(model, null, pricingOverrides, { explicitBudget: settings.explicitBudget, unpricedPolicy: 'uncapped' });
   if (gate.refusal) return { slug, status: 'failed', reason: `no_pricing: ${noPricingMessage(gate.refusal, { capUsd: settings.jobBudgetUsd })}` };
   const trigger = opts.trigger === 'auto' ? 'auto' : 'backfill';
   // A write decision or backfill already queued this content: the cycle phase owns it.

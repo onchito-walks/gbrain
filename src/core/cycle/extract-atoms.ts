@@ -942,8 +942,8 @@ export async function runPhaseExtractAtoms(
   }
   // A cap is enforceable only when the tracker can price every call under it:
   // the extraction chat model AND the embed route importFromContent calls.
-  // A default cap is dropped for an unpriced route (warn and run); a cap the
-  // operator set refuses the run with no_pricing guidance (cost-gate module).
+  // An unpriced billable route REFUSES the run (zero model calls) with the
+  // native `no_pricing` guidance, default cap and operator cap alike.
   const pricingOverrides = await loadPricingOverrides(engine);
   const costGate = resolveExtractAtomsCostGate(extractModel, resolveEmbedModelForCostGate(), pricingOverrides, { explicitBudget });
   const refused = await settleExtractAtomsCostGate(engine, sourceId, costGate, { budgetCap, extractModel, dryRun: opts.dryRun ?? false });

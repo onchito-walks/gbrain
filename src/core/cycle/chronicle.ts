@@ -183,7 +183,10 @@ export async function runPhaseChronicle(engine: BrainEngine, opts: ChroniclePhas
   }
   const model = getChatModel();
   const pricingOverrides = await loadPricingOverrides(engine);
-  const gate = resolveExtractAtomsCostGate(model, null, pricingOverrides, { explicitBudget: settings.explicitBudget });
+  // unpricedPolicy 'uncapped': chronicle accounts for unknown spend itself
+  // (unpriced_calls + rows marked unpriced), so it keeps running under its
+  // default cap instead of failing closed the way extract_atoms does.
+  const gate = resolveExtractAtomsCostGate(model, null, pricingOverrides, { explicitBudget: settings.explicitBudget, unpricedPolicy: 'uncapped' });
   const refused = await settleExtractAtomsCostGate(engine, 'brain', gate, { budgetCap: settings.jobBudgetUsd, extractModel: model, dryRun },
     { phase: 'chronicle', keyPrefix: CHRONICLE_NO_PRICING_KEY_PREFIX, rollup: false });
   if (refused) return { ...refused, details: { ...details, ...refused.details } };
