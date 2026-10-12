@@ -28,7 +28,8 @@ import { claimWorktree, getWorktreeBinding, managedPersistenceEnabled } from './
 import { clientRequestIdOf, parseMutationPrecondition } from './preconditions.ts';
 import { assertPurgeParams } from './purge-params.ts';
 import type { Principal, WriteRequest } from './model.ts';
-import { normalizeSubagentPageInput, undeclaredPageTypeWarning, type PageTypeWarning } from './page-input.ts';
+import { normalizeSubagentPageInput, type PageTypeWarning } from './page-input.ts';
+import { putPageVocabularyContent } from './put-page-vocabulary.ts';
 import { assertKnowledgePublicationAllowed } from '../shared-skills/knowledge-guard.ts';
 import { isUnboundSourcePage, readDatabaseOnlyActivatedSources, readUnboundWritePolicy, unboundSourceError } from './unbound-source.ts';
 import { colonSlugWindowsRefusal, isWindowsColonTarget } from './native-file-target.ts';
@@ -196,6 +197,7 @@ export interface PageBatchMember { id: string; index: number; size: number; requ
 export async function submitPageMutation(ctx: OperationContext,
   input: { operation: string; params: Record<string, unknown>; waitMs?: number; managedFileImport?: true; timelineSection?: TimelineSection }): Promise<Record<string, unknown>> {
   assertPersistenceAccepting(ctx.engine);
+  if (input.operation === 'put_page' && input.managedFileImport !== true) await preflightPutPageVocabulary(ctx, input.params);
   // #6007: wait_ms is a reply deadline from arrival, never part of the write's identity.
   const arrived = performance.now();
   const { wait_ms: wireWait, ...params } = input.params;
@@ -229,6 +231,20 @@ export async function submitPageMutation(ctx: OperationContext,
  * it: either the authorized prior request with this request_id (a replay), or
  * the admission to submit. `put_pages` admits several of these together.
  */
+/** Refuse new input before local registration, without changing durable replay. */
+async function preflightPutPageVocabulary(ctx: OperationContext, params: Record<string, unknown>): Promise<void> {
+  const sourceId = pageMutationSource(ctx, params, 'put_page');
+  if (typeof params.request_id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(params.request_id)) {
+    try {
+      const principal = await requestPrincipalForContext(ctx);
+      if (await getWriteRequest(ctx.engine, principal, params.request_id)) return;
+    } catch (error) {
+      if (!(error instanceof OperationError) || error.code !== 'writer_registration_required') throw error;
+    }
+  }
+  await putPageVocabularyContent(ctx, params, sourceId);
+}
+
 export async function preparePageAdmission(ctx: OperationContext,
   input: { operation: string; params: Record<string, unknown>; managedFileImport?: true; batch?: PageBatchMember; timelineSection?: TimelineSection }
 ): Promise<{ prior: WriteRequest; admission?: undefined; typeWarning?: undefined; slugAdvisory?: undefined } | { prior?: undefined; admission: WriteAdmission; typeWarning: PageTypeWarning | null; slugAdvisory: string | null }> {
@@ -281,9 +297,11 @@ export async function preparePageAdmission(ctx: OperationContext,
   if (input.operation === 'put_page' && input.managedFileImport !== true && p.kind === undefined && typeof p.content === 'string') {
     intent.timeline_section = isTimelineSection(input.timelineSection) ? input.timelineSection : timelineSectionOf(p.content, slug);
   }
+  if (input.operation === 'put_page' && input.managedFileImport !== true) {
+    intent.content = await putPageVocabularyContent(ctx, { ...intent, slug }, sourceId);
+  }
   if (input.operation === 'put_page') await normalizeSubagentPageInput(ctx, intent);
-  const typeWarning = input.operation === 'put_page' && input.managedFileImport !== true
-    ? await undeclaredPageTypeWarning(ctx, { ...intent, slug }, sourceId) : null;
+  const typeWarning = null;
   if (input.operation === 'capture') {
     if (typeof p.content !== 'string' || !normalizeForHash(p.content) || detectBinaryNullByte(Buffer.from(p.content)) !== -1) {
       throw new OperationError('invalid_params', 'Capture requires nonempty text without binary NUL bytes.',
