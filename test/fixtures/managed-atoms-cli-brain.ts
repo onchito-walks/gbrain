@@ -47,7 +47,12 @@ try {
     const atoms = await engine.executeRaw<{ slug: string; visibility: string }>("SELECT slug,frontmatter->>'visibility' AS visibility FROM pages WHERE source_id='default' AND type='atom' AND deleted_at IS NULL");
     const chunks = await engine.executeRaw<{ count: number }>("SELECT count(*)::integer AS count FROM content_chunks c JOIN pages p ON p.id=c.page_id WHERE p.source_id='default' AND p.type='atom'");
     const receipts = await engine.executeRaw<{ request_id: string; state: string; slug: string; outcome: Record<string, unknown> }>("SELECT request_id,state,slug,outcome FROM persistence_requests WHERE operation='submit_job' ORDER BY sequence");
-    const search = await engine.searchKeyword('lampreyfixture', { sourceId: 'default', limit: 10 });
+    // Stage 3B (B04): `--include-covered` is the documented opt-out from the
+    // default covered-atom carve-out. The default call stays byte-identical to
+    // the pre-carve-out read, so the default path is what gets pinned.
+    const includeCovered = process.argv.includes('--include-covered');
+    const search = await engine.searchKeyword('lampreyfixture', { sourceId: 'default', limit: 10,
+      ...(includeCovered ? { includeCoveredAtoms: true } : {}) });
     const [pending] = await engine.executeRaw<{ count: number }>("SELECT count(*)::integer AS count FROM persistence_requests WHERE state IN ('queued','running','recovering')");
     const [leases] = await engine.executeRaw<{ count: number }>('SELECT count(*)::integer AS count FROM gbrain_cycle_locks');
     const files = atoms.map(atom => ({ slug: atom.slug, content: readFileSync(join(home, 'repo', `${atom.slug}.md`), 'utf8') }));
