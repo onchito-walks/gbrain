@@ -9,6 +9,7 @@ import { renderTrustedText, type TrustFields } from '../eligibility/labels.ts';
 import { loadPageTrust } from '../eligibility/stamp.ts';
 import { resolveReadEligibility, type ReadEligibility } from '../eligibility/policy.ts';
 import { admitsTrust } from '../trust/tier.ts';
+import type { AtomDisposition } from '../search/atom-disposition.ts';
 
 /**
  * #6259: how a get_page reader sees a page the content-quality gate hid as junk.
@@ -67,6 +68,12 @@ export interface GetPageProjectionOpts {
   quarantined?: QuarantinedView | null;
   /** #5575 A6: the page's trust tier and short write origin. */
   trust?: TrustFields;
+  /**
+   * READ-ONLY B27: a validated historical atom disposition (search/atom-disposition.ts),
+   * loaded by the caller AFTER scope/private handling resolved the final readable row.
+   * Reading shape only — the `content_only` round-trip shape stays minimal.
+   */
+  atom_disposition?: AtomDisposition;
 }
 
 /**
@@ -114,6 +121,7 @@ export function projectGetPage(page: Page, o: GetPageProjectionOpts) {
     ...(o.includeContent && !omitted ? { content: content() } : {}),
     // #5575 A6: the reading shape carries the page's trust; the content_only round-trip shape stays minimal.
     ...(o.trust ?? {}),
+    ...(o.atom_disposition ? { atom_disposition: o.atom_disposition } : {}),
     ...extras,
   };
 }

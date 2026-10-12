@@ -8,6 +8,7 @@ import type { LexicalArms } from './arms.ts';
 import { applyFeedbackStage } from '../feedback-boost.ts';
 import { type PostFusionOpts, RRF_K, rrfFusionWeighted, runPostFusionStages, stampAtomProvenance, stampContentFlags, stampUnverifiedExtractions } from '../hybrid.ts';
 import { type RelationalEvidenceSlotDecision, ensureRelationalEvidenceSlot } from '../relational-recall.ts';
+import { stampAtomDispositions } from '../atom-disposition.ts';
 import type { SearchResult } from '../../types.ts';
 import type { FusionListEntry } from '../fusion-lists.ts';
 import { applyAliasHop } from '../alias-hop.ts';
@@ -38,6 +39,9 @@ export async function searchWithoutEmbeddings(
   await stampUnverifiedExtractions(engine, [...keywordResults, ...titleResults, ...relationalList], opts);
   // READ-ONLY: stamp read-time atom provenance status on the same candidates.
   await stampAtomProvenance(engine, [...keywordResults, ...titleResults, ...relationalList]);
+  // READ-ONLY: stamp the read-time atom DISPOSITION enrichment on the same
+  // candidates (separate canonical companion assessments; same-source + visible).
+  await stampAtomDispositions(engine, [...keywordResults, ...titleResults, ...relationalList], opts);
   let noEmbedResults = keywordResults;
   const trace = opts?.explainTarget;
   if (trace) {
@@ -163,6 +167,9 @@ export async function searchVectorFallback(
   await stampUnverifiedExtractions(engine, [...keywordResults, ...titleResults, ...relationalList], opts);
   // READ-ONLY: stamp read-time atom provenance status on the same candidates.
   await stampAtomProvenance(engine, [...keywordResults, ...titleResults, ...relationalList]);
+  // READ-ONLY: stamp the read-time atom DISPOSITION enrichment on the same
+  // candidates (separate canonical companion assessments; same-source + visible).
+  await stampAtomDispositions(engine, [...keywordResults, ...titleResults, ...relationalList], opts);
   let fallbackResults = keywordResults;
   const trace = opts?.explainTarget;
   if (trace) {
