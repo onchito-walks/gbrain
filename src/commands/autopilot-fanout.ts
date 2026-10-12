@@ -741,7 +741,8 @@ export async function dispatchGlobalMaintenance(
     'autopilot-global-maintenance',
     { repoPath: opts.repoPath, phases: MAINTENANCE_PHASES },
     {
-      queue: 'default',
+      // Brain-wide maintenance must not occupy source-freshness workers.
+      queue: 'maintenance',
       // Structural single-flight: one global job per slot; maxPending:1
       // coalesces any surplus — including across slot rotation while a slow
       // brain-wide pass is still in flight — so duplicates never stack.

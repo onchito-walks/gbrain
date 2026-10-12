@@ -173,6 +173,7 @@ describe('dispatchGlobalMaintenance — single-flight gate', () => {
     expect(r.dispatched).toBe(true);
     expect(added.length).toBe(1);
     expect(added[0].name).toBe('autopilot-global-maintenance');
+    expect(added[0].opts.queue).toBe('maintenance');
     expect(added[0].opts.idempotency_key).toBe('autopilot-global:s1');
     // Structural single-flight: maxPending (waiting + live-lock active),
     // NOT maxWaiting — an in-flight active run must suppress re-dispatch
@@ -225,6 +226,7 @@ describe('dispatchPerSource — per-source jobs carry SOURCE phases only', () =>
     await dispatchPerSource(engine, queue, { repoPath: '/tmp', slot: 's', timeoutMs: 1, fanoutMax: 4, jsonMode: true, emit: () => {}, log: () => {} });
     expect(added.length).toBe(2);
     for (const j of added) {
+      expect(j.opts.queue).toBe('default');
       expect(j.data.phases).toEqual(SOURCE_FRESHNESS_PHASES);
       expect(j.data.phases).not.toContain('synthesize');
       expect(j.data.phases).not.toContain('patterns');
