@@ -267,6 +267,7 @@ test/models-nightly-probe-routes.serial.test.ts	global-state	global-state: patch
 test/models-per-task-extract-atoms.serial.test.ts	global-state	global-state: patches process stdout/stderr/console
 test/models-per-task-facts-extraction.serial.test.ts	global-state	global-state: patches process stdout and mutates process.env through withEnv
 test/models-probe-max-output-tokens.serial.test.ts	global-state	global-state: binds local servers/ports
+test/multi-source-drift-compiled.serial.test.ts	global-state	global-state: constructs a PGLiteEngine per case and boots the whole schema in-process (no afterAll disconnect)
 test/native-base-url-fold.serial.test.ts	R1	R1: mutates process.env (GBRAIN_HOME, OPENAI_BASE_URL)
 test/nightly-probe-compiled-binary.serial.test.ts	global-state	global-state: compiles a probe harness with bun build --compile and runs it plus a source-mode copy as subprocesses
 test/oauth-client-setup.serial.test.ts	global-state	global-state: R3: constructs PGLiteEngine outside beforeAll; R4: PGLiteEngine without an afterAll disconnect
@@ -274,6 +275,7 @@ test/observational-startup.serial.test.ts	R2	R2: mock.module(../src/cli/commands
 test/openai-latest.serial.test.ts	R1	R1: mutates process.env (GBRAIN_HOME, GBRAIN_MODEL_DISCOVERY)
 test/openclaw-compact-transcript-runtime.serial.test.ts	global-state	global-state: swaps the context engine's module-level transcript-runtime loader and SDK load state
 test/openclaw-context-engine-native.serial.test.ts	global-state	global-state: binds local servers/ports
+test/operator-quarantine-set.serial.test.ts	R1	R1: mutates process.env (saves/restores OPENAI_API_KEY) and configureGateway swaps the process-wide AI gateway; one PGLiteEngine for the whole file
 test/ops-run-onboard-scope-gate.serial.test.ts	R2	R2: mock.module(../src/core/onboard/checks.ts, ../src/core/remediation/index.ts, ../src/core/onboard/render.ts) replaces modules for every file in the process
 test/page-summary-length.serial.test.ts	R1	R1: mutates process.env (GBRAIN_AUDIT_DIR)
 test/pending-write-exit.serial.test.ts	global-state	global-state: binds local servers/ports
@@ -293,7 +295,9 @@ test/pglite-snapshot-timezone.serial.test.ts	R1	R1: mutates process.env (GBRAIN_
 test/pglite-wal-repair.serial.test.ts	global-state	global-state: R3: constructs PGLiteEngine outside beforeAll; R4: PGLiteEngine without an afterAll disconnect; patches process stdout/stderr/console
 test/physical-root-overlap-vanished-dir.serial.test.ts	R2	R2: mock.module(node:fs) makes readdirSync throw ENOENT for one path
 test/projections-drain-cli.serial.test.ts	global-state	global-state: R3: constructs PGLiteEngine outside beforeAll
+test/put-page-exclude.serial.test.ts	global-state	global-state: constructs a PGLiteEngine per case, boots the whole schema in-process, and spyOn-seams shared engine/config reads across cases
 test/put-page-push-reporting.serial.test.ts	R1	R1: mutates process.env (GBRAIN_HOME)
+test/put-page-vocabulary.serial.test.ts	global-state	global-state: constructs a PGLiteEngine per case, boots the whole schema in-process, and spyOn-seams shared engine config reads across cases
 test/quarantine-override.serial.test.ts	global-state	global-state: replaces console.log, console.error and process.exit to capture the quarantine CLI, and patches a shared engine's readPageSnapshot for the revision race
 test/query-cache-knobs-hash.serial.test.ts	R1	R1: mutates process.env (GBRAIN_FTS_LANGUAGE)
 test/query-image-date-readiness.serial.test.ts	R2	R2: mock.module(../src/core/ai/gateway.ts) replaces modules for every file in the process
@@ -328,6 +332,7 @@ test/search/crag-think-source-scope.serial.test.ts	R2	R2: mock.module(../../src/
 test/search/hybrid-reranker-integration.serial.test.ts	R1	R1: mutates process.env (GBRAIN_HOME, GBRAIN_AUDIT_DIR)
 test/search/operation-expansion-contract.serial.test.ts	global-state	global-state: spyOn hybrid.hybridSearchCached, console.log
 test/search/output-redaction.serial.test.ts	R2	R2: mock.module(../../src/core/eval-capture.ts, ../../src/core/search/hybrid.ts, ../../src/core/ai/gateway.ts, ../../src/core/think/index.ts) replaces modules for every file in the process
+test/search/quarantine-exact-slug-hybrid.serial.test.ts	global-state	global-state: one PGLiteEngine connected + initSchema in beforeAll and shared by every case in the file
 test/search/relational-rerank-pin-hybrid.serial.test.ts	R1	R1: mutates process.env (GBRAIN_HOME)
 test/seed-pglite.serial.test.ts	global-state	global-state: R3: constructs PGLiteEngine outside beforeAll; R4: PGLiteEngine without an afterAll disconnect
 test/self-upgrade-checkonly.serial.test.ts	R1	R1: mutates process.env (GBRAIN_HOME)
