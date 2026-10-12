@@ -2496,7 +2496,7 @@ async function extractMentionsFromDb(
     // itself a completed decision. (#4304: the --since filter moved to the
     // ref level above — out-of-window pages never reach this loop.)
     const key = `${source_id}::${slug}`;
-    if (!page || isQuarantined(page.frontmatter) || (typeFilter && page.type !== typeFilter)) {
+    if (!page || (!rebuild && isQuarantined(page.frontmatter)) || (typeFilter && page.type !== typeFilter)) {
       pendingForFlush.push(key);
       unpersistedCount++;
       continue;
@@ -2507,7 +2507,10 @@ async function extractMentionsFromDb(
     // D3: scan both columns joined with a paragraph separator so an
     // end-of-compiled token doesn't accidentally merge with a
     // start-of-timeline token into a false phrase match.
-    const body = (page.title ?? '') + '\n\n' + page.compiled_truth + '\n\n' + (page.timeline ?? '');
+    // Rebuild reconciles a hidden origin to zero derived edges, without
+    // changing its content or links owned by humans/other scanners.
+    const body = isQuarantined(page.frontmatter) ? ''
+      : (page.title ?? '') + '\n\n' + page.compiled_truth + '\n\n' + (page.timeline ?? '');
     const mentions = body.trim()
       ? findMentionedEntities(body, gazetteer, {
           fromSlug: slug,

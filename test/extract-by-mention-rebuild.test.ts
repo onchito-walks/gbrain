@@ -109,6 +109,22 @@ async function mentionTargets(fromSlug: string): Promise<Array<{ to: string; kin
 }
 
 describe('extract links --by-mention --rebuild (#3674)', () => {
+  test('quarantined origins sweep scanner edges but retain manual links and original content', async () => {
+    await seedEntities();
+    await seedContentPage('notes/hidden', 'Acme Corp appears in retained fixture content.');
+    await engine.executeRaw("UPDATE pages SET frontmatter=jsonb_build_object('quarantine',jsonb_build_object('reason','wrong-root-sync')) WHERE slug='notes/hidden'");
+    await engine.addLinksBatch([
+      { from_slug: 'notes/hidden', to_slug: 'companies/acme', link_type: 'mentions', link_source: 'mentions' },
+      { from_slug: 'notes/hidden', to_slug: 'companies/acme', link_type: 'related', link_source: 'manual' },
+    ]);
+    await runCli(['links', '--by-mention', '--source', 'db']);
+    expect((await mentionTargets('notes/hidden')).length).toBe(1);
+    await runCli(['links', '--by-mention', '--rebuild', '--source', 'db']);
+    expect(await mentionTargets('notes/hidden')).toEqual([]);
+    const manual = await engine.executeRaw<{ n: number }>("SELECT count(*)::int AS n FROM links WHERE link_source='manual'");
+    expect(manual[0]!.n).toBe(1);
+    expect((await engine.getPage('notes/hidden', { sourceId: 'default' }))!.compiled_truth).toBe('Acme Corp appears in retained fixture content.');
+  });
   test('Hangul boundary repair removes historical false links but keeps real mentions', async () => {
     await engine.putPage('people/jiwon', {
       type: 'person', title: '지원', compiled_truth: '', timeline: '', frontmatter: {},
