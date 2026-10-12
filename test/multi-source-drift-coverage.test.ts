@@ -39,9 +39,20 @@ function proxy(failOn: string): BrainEngine {
 }
 
 describe('multi-source drift coverage honesty', () => {
-  test('DB-down local doctor explicitly reports unknown drift coverage', async () => {
+  test('DB-down local doctor reports the connection fix; the drift verdict stays honestly unknown', async () => {
+    // Reconciled with the pinned UPSTREAM doctor surface. When there is no
+    // engine at all the doctor must not emit a drift check: the agent-facing
+    // contract requires every WARN to carry an executable fix
+    // (test/agent-journey-recovery.serial.test.ts) and the early-stop goldens
+    // pin the exact check list for exactly these null-engine cases
+    // (test/fixtures/goldens/doctor/early-stop-null-engine-*.json). The
+    // honesty this behaviour protects is asserted where it lives: the drift
+    // module itself returns an explicit, non-certifying unknown verdict when it
+    // is asked with no engine, and the connection check carries the fix.
     const checks = await buildChecks(null, []);
-    expect(checks.find(c => c.name === 'multi_source_drift')).toMatchObject({
+    expect(checks.find(c => c.name === 'multi_source_drift')).toBeUndefined();
+    expect(checks.find(c => c.name === 'connection')).toBeTruthy();
+    expect(await checkMultiSourceDrift(null)).toMatchObject({
       status: 'warn', details: { code: 'not_verified', verification_complete: false },
     });
   });
