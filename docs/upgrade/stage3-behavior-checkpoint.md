@@ -110,3 +110,102 @@ Remaining: B03/B04/B05/B09/B10/B11/B12/B13/B15/B24/B25/B26/B27 and the B23 rollo
 ### Stage 3A integration onto staging (task t_7686aa20)
 
 Integration note: shared staging /srv/minio/native/ubuntu-root-offload/gbrain-port/wt-upgrade-v060178 was clean and exactly at 0f478c9e967b2373ea0ad50ee3e5beb130305bd6 when checked; upgrade/stage3a-admission-isolated is a strict descendant, so it was fast-forwarded (git merge --ff-only) and now reads 071d7b3644c54c17249c837bbbbce45ac89e1638 with a clean worktree. Same code, re-verified at the integrated SHA in the staging worktree: bun test test/put-page-exclude.serial.test.ts test/put-page-vocabulary.serial.test.ts test/put-page-type-warning.test.ts -> 16 pass / 0 fail / 66 expect() calls / 13.12s / exit 0 (TMPDIR=/tmp/gbrain-stage3a-tmp). No rebase, reset, force or history rewrite was used; B01 79a8a2cca and receipt 86635643f are unchanged ancestors. Stage 3B (t_e8aff02d) forks from this head ("current staging SHA" at dispatch) and inherits B01/B02.
+
+## Stage 3D — B24 + B15 + B25 + B26 committed in isolation (task t_efe12bf4, run 88)
+
+Isolated worktree /srv/minio/native/ubuntu-root-offload/gbrain-port/wt-stage3d-operator,
+branch upgrade/stage3d-operator-isolated, forked from staging SHA
+c08d2c167bdd6db54504872fd92447c074b6c59f. Shared staging untouched, clean, still at
+that SHA. Fenced Bun 1.4.3 as ubuntu, TMPDIR=/tmp/gbrain-stage3d-tmp (outside the
+reserved physical roots /srv/minio/hermes-native/.hermes and the worktrees). NOT
+integrated onto staging and NOT pushed — the parent integrates serially after all
+three Stage 3 cohorts report.
+
+HEAD 105651f50 test(persistence): scoped RSS observer and intact serial persistence workloads (B26)
+  33fe033de tools(codegraph): local-only disposable-brain codegraph probe + regression (B25)
+  b164bb877 feat(quarantine): operator quarantine-set/rollback lane with exact-row guards (B15)
+  ed1250c3a fix(serial-runner): B24 exact unsharded scheduler permutation, fail-closed shards
+
+- ed1250c3a — B24 (committed by the crashed first run of this task, re-verified here, no
+  change needed). Lane-aware membership: UNSHARDED (1/1) requires the scheduler's stdout to
+  be an exact permutation of the discovered pool — missing, unexpected or duplicated entries
+  fall back to deterministic discovery order with a loud warning (refusing would drop the
+  whole lane); SHARDED honors a successful EMPTY shard and fails the run CLOSED on scheduler
+  failure, because the fallback there would run the whole corpus inside one shard; bad
+  weights stay advisory in both lanes via --fallback-on-error. Contract test runs the real
+  script in a sandbox against a stubbed `bun scripts/sharding.ts`.
+- b164bb877 — B15 operator quarantine-set/rollback lane. Ported (origin fc1f16d0a,
+  ab677151f, 25705e88e, flag registry 8902d5e63) as NEW code fitted to the v0.60.178
+  contracts; 101 changed lines against the 666-line retained file, the bulk being the
+  executeRawJsonb raw-object binding that fixes the postgres.js `$N::jsonb` double-encode
+  (#2339) that PGLite masks. Manifest identity gates (id, slug, source_id, content_hash,
+  source_path under a real source root; rejections named, never silently skipped), FOR UPDATE
+  capture, guarded affected-row count, projection-job snapshot/reseal/orphan-seal, set-based
+  reversible rollback, private 0600 snapshot archived with its sha256, managed-persistence
+  refusal up front AND at the core mutation boundary, thin-client host-bound hint, regenerated
+  flag registry. `gbrain quarantine set|rollback` are new subcommands.
+- 33fe033de — B25 local-only disposable-brain codegraph probe + a regression that runs the
+  real tool as a subprocess over a two-file fixture and pins source-qualified provenance
+  (every attributed caller edge carries from_slug; beta/alpha edges land on the alpha.ts page,
+  the entry() edge on beta.ts) plus the native code_callers/code_blast answers.
+- 105651f50 — B26 scoped RSS observer: `observeRss` injection + pure `observeResidentMemory`
+  (unavailable-sample count and measured peak kept per workload; only Bun's known
+  `Failed to get memory usage` is tolerated, every other error propagates), which removes the
+  process-global `spyOn(process, 'memoryUsage')` that could contaminate later tests in the
+  same process. Both ORIGINAL full PGLite workloads (4 pages, 200 queries per phase, 1 writer,
+  writesPerWriter 100, unchanged 60 s bound) are retained in the new serial file; upstream
+  harness.samplePeakRss is untouched and still used by scripts/persistence/worker.ts.
+
+Evidence at HEAD 105651f50 (fenced Bun 1.4.3, ubuntu, TMPDIR outside all reserved roots):
+
+    bun test --timeout 300000 test/operator-quarantine-set.serial.test.ts \
+      test/persistence-rss-workload.serial.test.ts test/persistence-performance.test.ts \
+      test/codegraph-probe.test.ts test/scripts/serial-files.test.ts \
+      test/scripts/serial-runner-scheduler-contract.test.ts
+    -> 57 pass / 0 fail / 721 expect() calls / 6 files / 66.65s / exit 0
+       (per file at its own commit: B15 24 pass / 0 fail / 156 expect / 15.04s;
+        B24 contract 6 pass / 0 fail / 20 expect; B25 2 pass / 0 fail / 16 expect / 21.77s;
+        B26 serial 2 pass / 0 fail / 25 expect / 45.74s; B26 fast lane 12 pass / 0 fail /
+        68 expect / 3.08s; serial manifest 11 pass / 0 fail / 426 expect)
+    bun run typecheck -> exit 0
+    check:module-size, check:function-size, check:windows-hide, check:layering,
+    check:test-isolation, check:test-names, check:test-placeholders, check:newlines,
+    git diff --check -> all exit 0
+
+Honest boundaries and disclosures:
+
+1. test/e2e/operator-quarantine-postgres.test.ts is DATABASE_URL-gated and was NOT executed
+   (no disposable Postgres probe DB is authorized in this cohort). Real-Postgres engine parity
+   stays a later-stage gate with the whole-candidate matrix, compiled caller, migration
+   rehearsal and live acceptance. Do not read the green PGLite-oracle serial suite as Postgres
+   parity.
+2. Manifest repair disclosed: the frozen base c08d2c167 FAILS test/scripts/serial-files.test.ts
+   (11 tests, 1 fail) because four serial files added by earlier Stage 3 cohorts
+   (test/multi-source-drift-compiled.serial.test.ts, test/put-page-exclude.serial.test.ts,
+   test/put-page-vocabulary.serial.test.ts, test/search/quarantine-exact-slug-hybrid.serial.test.ts)
+   had no row in scripts/serial-files.tsv. Those four rows plus the new operator-quarantine
+   serial file are registered in b164bb877, which is why that commit also touches the manifest.
+   Nothing else in it is a repair; the manifest guard is green from b164bb877 onward.
+3. The crashed first run (run 86, SIGTERM during `bun test test/codegraph-probe.test.ts`)
+   left one uncommitted assertion that cannot hold: `every(from_slug.endsWith('alpha'))` —
+   probe slugs are `<root>-alpha-ts`, and the transitive walk legitimately includes the
+   beta.ts caller `entry()`. Corrected to per-caller provenance assertions, then committed.
+4. b164bb877 and 33fe033de are re-authored SHAs of the crashed run's local B15/B25 work. No
+   retained history was rewritten: origin fc1f16d0a/ab677151f/25705e88e/8902d5e63 (and every
+   official/upstream commit) are unchanged ancestors, and the port is new code, not a
+   wholesale copy.
+5. No deployment, build, service restart, live DB write, routing/credential/grant/firebreak
+   change, publication or edit under /srv/minio/hermes/home/src/gbrain in this cohort;
+   deploy_authorized=false stands. Dependency lifecycle was never run against the deployed
+   gbrain in this cohort.
+
+Exact remaining Stage 3 inventory for the original owner (t_4dd80505): runtime B03, B04, B05,
+B09, B10, B11, B12, B13, B27 (B01/B02 landed in Stage 3A; B06/B07/B08/B14/B16/B17 in the
+Stage 3 behavior cohort), plus the B23 = 30000 ms drift-budget rollout configuration. Tooling
+B15/B24/B25/B26 are committed on upgrade/stage3d-operator-isolated only. Stage 3 is NOT
+complete and Stage 4 stays dependency-gated.
+
+Handoff: upgrade/stage3d-operator-isolated is a strict descendant of c08d2c167 and contains
+no Stage 3B/3C work, so it integrates independently; the parent must recheck staging's HEAD
+and clean status before fast-forward or cherry-pick (the three cohorts diverge from the same
+base).
