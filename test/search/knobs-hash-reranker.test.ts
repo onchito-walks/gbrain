@@ -44,6 +44,15 @@ function baseKnobs(): ResolvedSearchKnobs {
   };
 }
 
+test('quarantine opt-in has its own key; absent and false preserve the default', () => {
+  const knobs = baseKnobs();
+  const normal = knobsHash(knobs);
+  expect(knobsHash(knobs, { includeQuarantined: false })).toBe(normal);
+  const recovery = knobsHash(knobs, { includeQuarantined: true });
+  expect(recovery).not.toBe(normal);
+  expect(knobsHash(knobs, { includeQuarantined: true })).toBe(recovery);
+});
+
 describe('KNOBS_HASH_VERSION + version invariants', () => {
   test('version is 30 (…; 24→25 keywordOrFallback knob kof= #3617; 25→26 salience/recency + intent_patterns fold #4415; 26→27 adaptive-return gate + intent fold E5b/F11; 27→28 compiledTruthBoost synthetic-row suppression #4256/#3695; 28→29 evb= expansion variant budget fold; 29→30 exact-title order #5889)', () => {
     // v0.35.0.0: 1→2 to fold reranker fields. v0.35.6.0: 2→3 to fold

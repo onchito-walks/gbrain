@@ -922,6 +922,8 @@ export const KNOBS_HASH_VERSION = 30;
  * don't know the column produce a stable hash for the default case.
  */
 export interface KnobsHashContext {
+  /** Internal quarantine recovery posture; absent/false share the default key. */
+  includeQuarantined?: boolean;
   /**
    * #5691: the brain's `embedding_query_prefix`. The query embedding the
    * cache keys on is computed from prefix + query, so a row written under one
@@ -1199,6 +1201,8 @@ export function knobsHash(
     // System One (append-only, emitted only when a decide slot is not off, so
     // the all-off key is unchanged and needs no version bump).
     ...(ctx?.decide ? [`dec=${ctx.decide}`] : []),
+    // Opt-in-only part preserves all existing default-posture keys.
+    ...(ctx?.includeQuarantined === true ? ['iq=1'] : []),
     // Multi-hop planner (append-only, emitted only when on, so every
     // planner-off key is unchanged and needs no version bump).
     ...(knobs.relational_planner ? ['rp=1'] : []),
