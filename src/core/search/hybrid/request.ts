@@ -214,6 +214,12 @@ export async function resolveHybridRequest(
     exclude_slugs: opts?.exclude_slugs,
     exclude_slug_prefixes: opts?.exclude_slug_prefixes,
     include_slug_prefixes: opts?.include_slug_prefixes,
+    // Stage 3B B04 — the default covered-atom retrieval policy rides the same
+    // per-call contract as the prefix excludes. Dropping it here would leave
+    // the engines' carve-out active for an `include_covered_atoms: true`
+    // caller (and vice versa) even though the cache key already separates the
+    // two postures.
+    includeCoveredAtoms: opts?.includeCoveredAtoms,
     // Per-brain `search.source_boosts` (read in the mode snapshot) over the
     // defaults; the env override still wins inside resolveBoostMap.
     source_boosts: resolveBoostMap(undefined, modeInput.sourceBoosts),

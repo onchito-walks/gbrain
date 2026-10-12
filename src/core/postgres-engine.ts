@@ -110,7 +110,7 @@ import { logConnectionEvent } from './connection-audit.ts';
 import { drainBackgroundWorkBeforeDisconnect } from './background-work.ts';
 import { validateSlug, contentHash, isBlankBody, rowToPage, rowToStalePage, rowToChunk, rowToSearchResult, parseEmbedding, tryParseEmbedding, isUndefinedTableError, warnOncePerProcess } from './utils.ts';
 import { resolveBoostMap, resolveHardExcludes } from './search/source-boost.ts';
-import { buildSourceFactorCase, buildHardExcludeClause, buildVisibilityClause, buildBestPerPagePoolCte, buildOrFallbackWebsearchQuery, boundWebsearchQuery, collapseWebsearchDashRuns } from './search/sql-ranking.ts';
+import { buildSourceFactorCase, buildRetrievalExclusionClause, buildVisibilityClause, buildBestPerPagePoolCte, buildOrFallbackWebsearchQuery, boundWebsearchQuery, collapseWebsearchDashRuns } from './search/sql-ranking.ts';
 import { buildKeywordChunkMatch } from './search/keyword-chunk-match.ts';
 import { privatePagesFilterFragment, privateSnapshotFilterFragment, privateLinkOriginFilterFragment, privateTimelineEventFilterFragment, privateProvenanceFilterFragment } from './search/private-visibility.ts';
 import { DEFAULT_EMBEDDING_MODEL, DEFAULT_EMBEDDING_DIMENSIONS } from './ai/defaults.ts';
@@ -991,7 +991,7 @@ export class PostgresEngine implements BrainEngine {
     const boostMap = opts?.source_boosts ?? resolveBoostMap();
     const sourceFactorCase = buildSourceFactorCase('p.slug', boostMap, opts?.detail);
     const hardExcludePrefixes = resolveHardExcludes(opts?.exclude_slug_prefixes, opts?.include_slug_prefixes);
-    const hardExcludeClause = buildHardExcludeClause('p.slug', hardExcludePrefixes);
+    const hardExcludeClause = buildRetrievalExclusionClause('p.slug', hardExcludePrefixes, opts?.includeCoveredAtoms);
 
     // #3986: CJK query branch — engine parity with PGLite's v0.32.7
     // fallback. websearch_to_tsquery with an ASCII-stemming config can't
@@ -1213,7 +1213,7 @@ export class PostgresEngine implements BrainEngine {
     const boostMap = opts?.source_boosts ?? resolveBoostMap();
     const sourceFactorCase = buildSourceFactorCase('p.slug', boostMap, opts?.detail);
     const hardExcludePrefixes = resolveHardExcludes(opts?.exclude_slug_prefixes, opts?.include_slug_prefixes);
-    const hardExcludeClause = buildHardExcludeClause('p.slug', hardExcludePrefixes);
+    const hardExcludeClause = buildRetrievalExclusionClause('p.slug', hardExcludePrefixes, opts?.includeCoveredAtoms);
 
     // #3986: CJK branch — same fallback as searchKeyword but chunk-grain
     // (no page-dedup). Parity with PGLite searchKeywordChunks.

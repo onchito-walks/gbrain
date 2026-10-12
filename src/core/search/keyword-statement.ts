@@ -23,7 +23,7 @@ import type { SearchOpts } from '../types.ts';
 import { escapeLikePattern, hasCJK, splitCJKQueryTerms } from '../cjk.ts';
 import { getFtsLanguage } from '../fts-language.ts';
 import { resolveBoostMap, resolveHardExcludes } from './source-boost.ts';
-import { buildHardExcludeClause, buildSourceFactorCase, buildVisibilityClause } from './sql-ranking.ts';
+import { buildRetrievalExclusionClause, buildSourceFactorCase, buildVisibilityClause } from './sql-ranking.ts';
 
 /** Counts stop here; a capped count is reported as "10000+". */
 export const KEYWORD_COUNT_CAP = 10_000;
@@ -75,7 +75,7 @@ export function buildKeywordMatch(query: string, opts: SearchOpts | undefined): 
   if (opts?.beforeDate) filters += add(opts.beforeDate, n => `${dated} ${opts.beforeDateInclusive ? '<=' : '<'} ${n}::text::timestamptz`);
   if (opts?.sourceIds?.length) filters += add(opts.sourceIds, n => `p.source_id = ANY(${n}::text[])`);
   else if (opts?.sourceId) filters += add(opts.sourceId, n => `p.source_id = ${n}`);
-  const hardExclude = buildHardExcludeClause('p.slug', resolveHardExcludes(opts?.exclude_slug_prefixes, opts?.include_slug_prefixes));
+  const hardExclude = buildRetrievalExclusionClause('p.slug', resolveHardExcludes(opts?.exclude_slug_prefixes, opts?.include_slug_prefixes), opts?.includeCoveredAtoms);
   const factor = buildSourceFactorCase('p.slug', opts?.source_boosts ?? resolveBoostMap(), opts?.detail);
   return {
     where: `${predicate}${filters} ${hardExclude} ${buildVisibilityClause('p', 's', opts)} AND cc.modality = 'text'`,

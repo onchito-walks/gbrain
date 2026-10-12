@@ -14,7 +14,7 @@ import { normalizeAlias } from './alias-normalize.ts';
 import { resolveBoostMap, resolveHardExcludes } from './source-boost.ts';
 import {
   boundWebsearchQuery,
-  buildHardExcludeClause,
+  buildRetrievalExclusionClause,
   buildSourceFactorCase,
   buildVisibilityClause,
 } from './sql-ranking.ts';
@@ -52,7 +52,7 @@ export function buildSearchTitlesStatement(query: string, opts: SearchOpts | und
 
   const boostMap = opts?.source_boosts ?? resolveBoostMap();
   const sourceFactorCase = buildSourceFactorCase('p.slug', boostMap, opts?.detail);
-  const hardExcludeClause = buildHardExcludeClause('p.slug', resolveHardExcludes(opts?.exclude_slug_prefixes, opts?.include_slug_prefixes));
+  const hardExcludeClause = buildRetrievalExclusionClause('p.slug', resolveHardExcludes(opts?.exclude_slug_prefixes, opts?.include_slug_prefixes), opts?.includeCoveredAtoms);
   const visibilityClause = buildVisibilityClause('p', 's', opts);
   // FTS config name (e.g. 'english', 'pt_br'). Validated by getFtsLanguage()
   // — safe to interpolate into raw SQL.

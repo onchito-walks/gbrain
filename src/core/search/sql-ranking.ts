@@ -136,6 +136,59 @@ export function buildHardExcludeClause(slugColumn: string, prefixes: string[]): 
 }
 
 /**
+ * Stage 3B B04 — default covered-atom retrieval policy. An `atom` page is
+ * hard-excluded from one retrieval leg only when its content is already
+ * reachable through a live non-atom page of the SAME source:
+ *   (a) its frontmatter `source_slug` resolves to such a page, or
+ *   (b) the atom's OWN outgoing link (`page_links.from_page_id = a.id`)
+ *       reaches such a page.
+ * Uncovered atoms — no `source_slug`, an unresolved or soft-deleted one, or
+ * no covering link — are ALWAYS retained, so no unique passage becomes
+ * unreachable. Note the edge direction: the link runs FROM the atom TO the
+ * covering page; an inverse join on `to_page_id` would exclude the wrong
+ * atoms.
+ *
+ * Read-only: the subquery re-reads live `pages` / `page_links` per query,
+ * correlated per atom on `source_id`, rather than snapshotting the corpus.
+ * It never touches an atom body or its frozen provenance.
+ *
+ * @param slugColumn — qualified outer slug column (engine-supplied, trusted)
+ * @returns raw SQL fragment with a leading space, e.g. `AND NOT (p.slug = ANY (...))`
+ */
+export function buildCoveredAtomExclusionClause(slugColumn: string): string {
+  return `AND NOT (${slugColumn} = ANY (
+    SELECT a.slug FROM pages a
+    WHERE a.type = 'atom'
+      AND a.deleted_at IS NULL
+      AND (
+        EXISTS (SELECT 1 FROM pages src
+                 WHERE src.slug = (a.frontmatter ->> 'source_slug')
+                   AND src.deleted_at IS NULL
+                   AND src.type <> 'atom'
+                   AND src.source_id = a.source_id)
+        OR EXISTS (SELECT 1 FROM page_links pl
+                    INNER JOIN pages t ON t.id = pl.to_page_id
+                      AND t.deleted_at IS NULL
+                      AND t.type <> 'atom'
+                      AND t.source_id = a.source_id
+                   WHERE pl.from_page_id = a.id)
+      )
+  ))`;
+}
+
+/**
+ * The ONE retrieval-exclusion fragment every leg interpolates: the
+ * hard-exclude prefix clause plus, unless the caller opted out with
+ * `includeCoveredAtoms: true`, the default covered-atom carve-out. Kept in a
+ * single composer so one leg cannot silently apply a different exclusion
+ * policy than its siblings.
+ */
+export function buildRetrievalExclusionClause(slugColumn: string, prefixes: string[], includeCoveredAtoms?: boolean): string {
+  return buildHardExcludeClause(slugColumn, prefixes)
+    + (includeCoveredAtoms === true ? '' : buildCoveredAtomExclusionClause(slugColumn));
+}
+
+/**
  * v0.26.5 — Build the soft-delete + archived-source visibility filter.
  *
  * Two filters in one fragment:

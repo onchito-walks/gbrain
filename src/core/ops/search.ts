@@ -27,7 +27,7 @@ import { expandQuery } from '../search/expansion.ts';
 import { dedupResults } from '../search/dedup.ts';
 import { markKeywordHits } from '../search/evidence.ts';
 import { captureEvalCandidate, isEvalCaptureEnabled, isEvalScrubEnabled } from '../eval-capture.ts';
-import type { HybridSearchMeta, SearchResult } from '../types.ts';
+import type { HybridSearchMeta, SearchOpts, SearchResult } from '../types.ts';
 import { bumpLastRetrievedAt } from '../last-retrieved.ts';
 import { applySnippetCap, DEFAULT_AGENT_SNIPPET_CHARS } from '../search/snippet-cap.ts';
 import { redactRetrievalOutput } from '../search/output-redaction.ts';
@@ -582,6 +582,41 @@ const EXCLUDE_SLUG_PREFIXES_PARAM_DESCRIPTION =
   'default hard-excludes, applied at SQL level on every retrieval leg. Independent of `types`. ' +
   'CLI: --exclude-slug-prefixes atoms/,test/. Omit for exact current behavior.';
 
+const INCLUDE_COVERED_ATOMS_PARAM_DESCRIPTION =
+  'Default covered-atom retrieval policy. Absent/false: an `atom` page is hidden when its content ' +
+  'is already reachable through a live non-atom page of the same source (its frontmatter ' +
+  '`source_slug` resolves to one, or the atom links out to one). Uncovered atoms are always kept. ' +
+  'true returns every atom page.';
+
+/** The caller's two retrieval-exclusion knobs, normalized once per call. */
+interface RetrievalExclusionParams {
+  excludeSlugPrefixes?: string[];
+  includeCoveredAtoms: boolean;
+}
+
+/** Stage 3B B04 — the caller's retrieval-exclusion policy for one op call. */
+function normalizeRetrievalExclusionParams(ctx: OperationContext, tool: 'search' | 'query', p: Record<string, unknown>): RetrievalExclusionParams {
+  return {
+    excludeSlugPrefixes: normalizeExcludeSlugPrefixesParam(ctx, tool, p.exclude_slug_prefixes),
+    // `=== true` mirrors the engines: an explicit false and an absent flag are
+    // the same "default carve-out active" posture.
+    includeCoveredAtoms: p.include_covered_atoms === true,
+  };
+}
+
+/**
+ * The spreadable SearchOpts fragment carrying that policy. `exclude_slug_prefixes`
+ * stays absent when unset (exact current behavior); `includeCoveredAtoms` goes
+ * through verbatim so the engines' `=== true` check and the cache key's `ica`
+ * bit agree on both the default and the opt-out.
+ */
+function retrievalExclusionSearchOpts(exclusion: RetrievalExclusionParams): Pick<SearchOpts, 'exclude_slug_prefixes' | 'includeCoveredAtoms'> {
+  return {
+    ...(exclusion.excludeSlugPrefixes ? { exclude_slug_prefixes: exclusion.excludeSlugPrefixes } : {}),
+    includeCoveredAtoms: exclusion.includeCoveredAtoms,
+  };
+}
+
 const TYPES_PARAM_DESCRIPTION = "Page types, e.g. ['person'].";
 
 const SOURCE_ID_PARAM_DESCRIPTION = "One source, or '__all__'.";
@@ -715,6 +750,8 @@ const search: Operation = {
     types: { type: 'array', items: { type: 'string' }, description: TYPES_PARAM_DESCRIPTION },
     // B03: caller slug-prefix exclusion (engine SearchOpts.exclude_slug_prefixes).
     exclude_slug_prefixes: { type: 'array', items: { type: 'string' }, description: EXCLUDE_SLUG_PREFIXES_PARAM_DESCRIPTION },
+    // B04: default covered-atom retrieval policy opt-out.
+    include_covered_atoms: { type: 'boolean', description: INCLUDE_COVERED_ATOMS_PARAM_DESCRIPTION },
     // #3800: subagent token economy — per-call snippet cap.
     snippet_chars: { type: 'number', description: SNIPPET_CHARS_PARAM_DESCRIPTION },
     return_unit: RETURN_UNIT_PARAM,
@@ -739,8 +776,7 @@ const search: Operation = {
     const offset = paging.offset;
     // #3985: validated multi-type filter, threaded into both branches below.
     let types = normalizeTypesParam(ctx, 'search', p.types);
-    // B03: validated caller slug-prefix exclusion (independent axis, additive).
-    const excludeSlugPrefixes = normalizeExcludeSlugPrefixesParam(ctx, 'search', p.exclude_slug_prefixes);
+    const exclusion = normalizeRetrievalExclusionParams(ctx, 'search', p);
     // #3800: snippet cap (param > subagent config default > full text).
     const snippetCap = await resolveSnippetCap(ctx, p);
     const plan = await evidencePlanFor(ctx, p, snippetCap, 'search');
@@ -776,7 +812,7 @@ const search: Operation = {
         if (types?.length === 0) return [];
       }
       const sourceBoosts = resolveBoostMap(undefined, await ctx.engine.getConfig(SOURCE_BOOSTS_KEY));
-      const keywordOpts = { ...readOpts, source_boosts: sourceBoosts, ...(types ? { types } : {}), ...(excludeSlugPrefixes ? { exclude_slug_prefixes: excludeSlugPrefixes } : {}) };
+      const keywordOpts = { ...readOpts, source_boosts: sourceBoosts, ...(types ? { types } : {}), ...retrievalExclusionSearchOpts(exclusion) };
       // F2 `match: "keyword"`: page-grain enumeration, no diversity pruning, every page keeps a row.
       // A query that is one entity's name lists records filed under any of its names (the agent no longer walks each alias).
       const names = paging.match === 'keyword' && !paging.cursor ? await wholeQueryEntityNames(ctx.engine, queryText, { ...scope, excludePrivate }) : null;
@@ -812,7 +848,7 @@ const search: Operation = {
       requireSafeChunks: ctx.remote !== false,
       takesHoldersAllowList: readHolders(ctx),
       ...(types ? { types } : {}),
-      ...(excludeSlugPrefixes ? { exclude_slug_prefixes: excludeSlugPrefixes } : {}),
+      ...retrievalExclusionSearchOpts(exclusion),
       ...scope,
       ...(perCallMode ? { mode: perCallMode } : {}),
       // #4415: agent-explicit recency + salience (same posture as `query`).
@@ -883,6 +919,8 @@ const query: Operation = {
     types: { type: 'array', items: { type: 'string' }, description: TYPES_PARAM_DESCRIPTION },
     // B03: caller slug-prefix exclusion (engine SearchOpts.exclude_slug_prefixes).
     exclude_slug_prefixes: { type: 'array', items: { type: 'string' }, description: EXCLUDE_SLUG_PREFIXES_PARAM_DESCRIPTION },
+    // B04: default covered-atom retrieval policy opt-out.
+    include_covered_atoms: { type: 'boolean', description: INCLUDE_COVERED_ATOMS_PARAM_DESCRIPTION },
     // #3800: subagent token economy — per-call snippet cap.
     snippet_chars: { type: 'number', description: SNIPPET_CHARS_PARAM_DESCRIPTION },
     return_unit: RETURN_UNIT_PARAM,
@@ -920,8 +958,7 @@ const query: Operation = {
     // #3985: validated multi-type filter (text path; the image-similarity
     // branch below also honors it — searchVector filters types at SQL level).
     let types = normalizeTypesParam(ctx, 'query', p.types);
-    // B03: validated caller slug-prefix exclusion (independent axis, additive).
-    const excludeSlugPrefixes = normalizeExcludeSlugPrefixesParam(ctx, 'query', p.exclude_slug_prefixes);
+    const exclusion = normalizeRetrievalExclusionParams(ctx, 'query', p);
     // #3800: snippet cap (param > subagent config default > full text).
     const snippetCap = await resolveSnippetCap(ctx, p);
     const plan = await evidencePlanFor(ctx, p, snippetCap, 'query');
@@ -978,7 +1015,7 @@ const query: Operation = {
         requireSafeChunks: ctx.remote !== false,
         takesHoldersAllowList: readHolders(ctx),
         ...(types ? { types } : {}),
-        ...(excludeSlugPrefixes ? { exclude_slug_prefixes: excludeSlugPrefixes } : {}),
+        ...retrievalExclusionSearchOpts(exclusion),
         ...querySourceScope,
         ...dates,
         onVectorPoolMeta: info => {
@@ -1045,8 +1082,7 @@ const query: Operation = {
       detail,
       // #3985: multi-type filter — SearchOpts.types reaches every leg.
       types,
-      // B03: caller slug-prefix exclusion reaches every hybrid leg too.
-      ...(excludeSlugPrefixes ? { exclude_slug_prefixes: excludeSlugPrefixes } : {}),
+      ...retrievalExclusionSearchOpts(exclusion),
       language: (p.lang as string) || undefined,
       symbolKind: (p.symbol_kind as string) || undefined,
       nearSymbol: (p.near_symbol as string) || undefined,
@@ -1141,9 +1177,7 @@ const query: Operation = {
             // Preserve the caller's #3985 type filter on the re-run, as
             // normalized for the base call (#5390: [] and "" stay absent).
             ...(types ? { types } : {}),
-            // B03: and the caller's slug-prefix excludes — an escalated sweep
-            // that ignored them would hand back rows the caller asked to hide.
-            ...(excludeSlugPrefixes ? { exclude_slug_prefixes: excludeSlugPrefixes } : {}),
+            ...retrievalExclusionSearchOpts(exclusion),
             language: (p.lang as string) || undefined,
             symbolKind: (p.symbol_kind as string) || undefined,
             // Preserve the caller's symbol-proximity constraints too — an
