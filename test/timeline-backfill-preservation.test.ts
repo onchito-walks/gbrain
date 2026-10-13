@@ -183,6 +183,7 @@ for (const kind of ['pglite', ...(process.env.DATABASE_URL ? ['postgres'] : [])]
 
 describe('v0.12.0 phase D runs the timeline backfill additively', () => {
   test('the migration passes --migration-backfill to `gbrain extract timeline --source db`', () => {
+    // test-reads-source-ok[structural]: pins the subprocess flag wiring; runtime additive preservation is exercised above.
     const src = readFileSync(join(__dirname, '..', 'src', 'commands', 'migrations', 'v0_12_0.ts'), 'utf-8');
     expect(src).toContain("runGbrainSubprocess('gbrain extract timeline --source db --migration-backfill'");
     // The un-flagged form (ordinary reconciliation) is what destroyed the rows.
