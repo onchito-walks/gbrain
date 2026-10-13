@@ -326,11 +326,9 @@
           },
           {
             "lane": "tx",
-            "params": [
-              "string"
-            ],
-            "sql": "SELECT value FROM config WHERE key = $1",
-            "textSha256": "32d050605cb95dccb4dcc33a20003cfd10f1fd8e194c317d54e08869acb32e9c"
+            "params": [],
+            "sql": "SELECT key, value FROM config",
+            "textSha256": "b135aa60460896401db49d10bcac75feb3a70de956a0d4cf19f132849053becc"
           },
           {
             "lane": "tx",
@@ -502,11 +500,9 @@
           },
           {
             "lane": "tx",
-            "params": [
-              "string"
-            ],
-            "sql": "SELECT value FROM config WHERE key = $1",
-            "textSha256": "32d050605cb95dccb4dcc33a20003cfd10f1fd8e194c317d54e08869acb32e9c"
+            "params": [],
+            "sql": "SELECT key, value FROM config",
+            "textSha256": "b135aa60460896401db49d10bcac75feb3a70de956a0d4cf19f132849053becc"
           },
           {
             "lane": "tx",
