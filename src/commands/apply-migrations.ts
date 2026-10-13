@@ -38,6 +38,12 @@ import { shellQuote, type Effect } from '../core/agent-output.ts';
 import { writeJsonDocument } from '../core/cli-force-exit.ts';
 import { consentGate } from '../core/consent-cli.ts';
 import { opError, type OperationError } from '../core/ops/contract.ts';
+import {
+  checkTargets,
+  collectWriterTargets,
+  isolationViolationMessage,
+  parseRehearsalRoots,
+} from '../core/rehearsal/isolation-guard.ts';
 import { exitCliError, usageError, writeCliError } from '../cli/cli-error.ts';
 import {
   checkSchemaAfterOrchestrators,
@@ -755,6 +761,41 @@ async function runLockedMigrations(
     if (peek.held && peek.isServe && peek.pid !== undefined && peek.pid !== process.pid) {
       throw new LiveServeLockError(`GBrain's local database is already open through \`gbrain serve\` (MCP, PID ${peek.pid}); apply-migrations needs it to itself. Nothing was applied.`,
         { pid: peek.pid, transport: peek.http ? 'http' : 'stdio' });
+    }
+  }
+
+  // Rehearsal isolation guard. When GBRAIN_REHEARSAL_ROOTS is set, every
+  // writer target this brain can reach (source roots, sync/corpus config,
+  // shared-skill migration roots, $HOME/$TMPDIR) must resolve — after
+  // following symlinks — inside one of the allowlisted disposable roots.
+  // A disposable database on its own does not isolate filesystem writes:
+  // without this check a rehearsal whose DB still points at the live vault
+  // writes real notes. Fail closed, before any orchestrator runs.
+  const rehearsalRoots = parseRehearsalRoots(process.env);
+  if (rehearsalRoots && toRun.length > 0) {
+    const guardCfg = loadConfig();
+    if (guardCfg) {
+      const { engine: guardEngine } = await connectAtSchemaVersion(guardCfg);
+      try {
+        const isolation = checkTargets(await collectWriterTargets(guardEngine), rehearsalRoots);
+        doc.rehearsal_isolation = {
+          enabled: true,
+          roots: isolation.roots,
+          checked: isolation.checked,
+          violations: isolation.violations,
+        };
+        if (!isolation.ok) {
+          fail('refused', opError(
+            'config_error',
+            isolationViolationMessage(isolation),
+            'Remap every listed target onto a disposable copy, then re-run.',
+            { reason: 'rehearsal_isolation' },
+          ));
+          return 2;
+        }
+      } finally {
+        await guardEngine.disconnect();
+      }
     }
   }
 
