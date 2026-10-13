@@ -109,7 +109,7 @@ export async function applyAttendanceDelta(tx: Pick<BrainEngine, 'executeRaw' | 
 }
 
 /** Validate and normalize one origin's candidate rows (deduplicated, producer and origin stamped). */
-function derivedLinkRows(origin: DerivedLinkOrigin, links: LinkBatchInput[], opts: DerivedLinkReplacementOptions) {
+export function derivedLinkRows(origin: DerivedLinkOrigin, links: LinkBatchInput[], opts: DerivedLinkReplacementOptions) {
   const producers = ['markdown', 'wikilink-resolved', ...(opts.includeFrontmatter === false ? [] : ['frontmatter'])];
   const unique = new Map<string, LinkBatchInput>();
   for (const link of links) {
