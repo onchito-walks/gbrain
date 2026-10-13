@@ -141,6 +141,15 @@ describe('B04 covered-atom policy at the engine SQL seam', () => {
     expect(page?.compiled_truth).toContain(TOKEN);
     expect(page?.frontmatter?.source_slug).toBe('notes/a-page');
   });
+
+  test('a covered slug in another source never hides a same-slug uncovered page', async () => {
+    // The old global slug NOT ANY set accidentally crossed this boundary.
+    await put('atoms/covered-by-source-slug', 'other', doc('atom', 'Uncovered same slug', `${TOKEN} unique other-source evidence`));
+    const hits = await engine.searchKeyword(TOKEN, { limit: 50, sourceId: 'other' });
+    expect(hits.some(hit => hit.slug === 'atoms/covered-by-source-slug' && hit.source_id === 'other')).toBe(true);
+    expect((await engine.searchKeyword(TOKEN, { limit: 50, sourceId: 'default' }))
+      .some(hit => hit.slug === 'atoms/covered-by-source-slug')).toBe(false);
+  });
 });
 
 describe('B04 cache-key identity', () => {

@@ -147,8 +147,9 @@ describeIfDB('operator quarantine-set — Postgres apply/rollback (jsonb encodin
     await sealAll(records);
 
     const beforeHashes = (await engine.executeRaw<{ id: number; content_hash: string; generation: number }>(
-      `SELECT id, content_hash, generation FROM pages ORDER BY id`,
+      `SELECT id, content_hash, generation FROM pages WHERE id = ANY($1::int[]) ORDER BY id`, [records.map(r => r.id)],
     ));
+    const untouched = await engine.executeRaw(`SELECT id, content_hash, generation, frontmatter FROM pages WHERE NOT (id = ANY($1::int[])) ORDER BY id`, [records.map(r => r.id)]);
     const beforeChunks = (await engine.executeRaw<{ n: number }>(`SELECT count(*)::int AS n FROM content_chunks`))[0]!.n;
     const beforeAliases = (await engine.executeRaw<{ n: number }>(`SELECT count(*)::int AS n FROM page_aliases`))[0]!.n;
     const beforeClock = (await engine.executeRaw<{ last_value: string }>(`SELECT last_value FROM page_generation_clock_seq`))[0]!.last_value;
@@ -181,8 +182,11 @@ describeIfDB('operator quarantine-set — Postgres apply/rollback (jsonb encodin
     }
 
     const afterHashes = (await engine.executeRaw<{ id: number; content_hash: string; generation: number }>(
-      `SELECT id, content_hash, generation FROM pages ORDER BY id`,
+      `SELECT id, content_hash, generation FROM pages WHERE id = ANY($1::int[]) ORDER BY id`, [records.map(r => r.id)],
     ));
+    expect(beforeHashes).toHaveLength(5);
+    expect(afterHashes.map(r => r.id)).toEqual(beforeHashes.map(r => r.id));
+    expect(await engine.executeRaw(`SELECT id, content_hash, generation, frontmatter FROM pages WHERE NOT (id = ANY($1::int[])) ORDER BY id`, [records.map(r => r.id)])).toEqual(untouched);
     for (let i = 0; i < beforeHashes.length; i++) {
       expect(afterHashes[i]!.content_hash).toBe(beforeHashes[i]!.content_hash);
       expect(Number(afterHashes[i]!.generation)).toBeGreaterThan(Number(beforeHashes[i]!.generation));

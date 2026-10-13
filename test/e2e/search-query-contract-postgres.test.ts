@@ -29,11 +29,11 @@ import { withEnv } from '../helpers/with-env.ts';
 
   test('restricted runtime roles retain RLS and local settings through relaxed retries', async () => {
     await engine.executeRaw('CREATE ROLE query_contract_reader NOLOGIN');
-    const tables = ['pages', 'content_chunks', 'sources'];
+    const tables = ['pages', 'content_chunks', 'sources', 'links'];
     const original = await engine.executeRaw<{ relname: string; relrowsecurity: boolean }>(`SELECT relname, relrowsecurity FROM pg_class WHERE relname = ANY($1::text[])`, [tables]);
     try {
       await engine.executeRaw('GRANT USAGE ON SCHEMA public TO query_contract_reader');
-      await engine.executeRaw('GRANT SELECT ON pages, content_chunks, sources TO query_contract_reader');
+      await engine.executeRaw('GRANT SELECT ON pages, content_chunks, sources, links, page_links TO query_contract_reader');
       for (const table of tables) {
         await engine.executeRaw(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY`);
         await engine.executeRaw(`CREATE POLICY query_contract_allow ON ${table} FOR SELECT TO query_contract_reader USING (true)`);
@@ -66,12 +66,12 @@ import { withEnv } from '../helpers/with-env.ts';
   /** Runs `check` as a reader that sees pages only from a statement where `predicate` holds. */
   async function asSettingProbeReader(predicate: string, check: (reader: PostgresEngine) => Promise<void>) {
     await engine.executeRaw('CREATE ROLE query_contract_probe NOLOGIN');
-    const tables = ['pages', 'content_chunks', 'sources', 'timeline_entries', 'config'];
+    const tables = ['pages', 'content_chunks', 'sources', 'timeline_entries', 'config', 'links'];
     const original = await engine.executeRaw<{ relname: string; relrowsecurity: boolean }>(`SELECT relname, relrowsecurity FROM pg_class WHERE relname = ANY($1::text[])`, [tables]);
     const reader = new PostgresEngine();
     try {
       await engine.executeRaw('GRANT USAGE ON SCHEMA public TO query_contract_probe');
-      await engine.executeRaw(`GRANT SELECT ON ${tables.join(', ')} TO query_contract_probe`);
+      await engine.executeRaw(`GRANT SELECT ON ${tables.join(', ')}, page_links TO query_contract_probe`);
       for (const table of tables) {
         await engine.executeRaw(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY`);
         await engine.executeRaw(`CREATE POLICY query_contract_probe_allow ON ${table} FOR SELECT TO query_contract_probe USING (true)`);

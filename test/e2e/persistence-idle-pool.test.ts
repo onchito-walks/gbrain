@@ -215,11 +215,15 @@ describe.skipIf(!(pooled && pooledAdmin) || !existsSync('/proc/self/net/tcp'))('
     const target = new URL(pooled!);
     const port = Number(target.port || 5432);
     try {
-      await withConsumer(db.url, async () => {
+      // Exercise the pooler-only path regardless of this fixture's external
+      // port. Port6543 otherwise auto-derives a direct route; that distinct
+      // two-pool behavior is asserted by the #6317 tests above.
+      await withEnv({ GBRAIN_DISABLE_DIRECT_POOL: '1' }, () => withConsumer(db.url, async (engine) => {
+        expect(engine.connectionManager?.isDualPoolActive()).toBe(false);
         expect(await ownSockets(target.hostname, port)).toBeGreaterThanOrEqual(3);
         await Bun.sleep(IDLE_DRAIN_MS);
         expect(await ownSockets(target.hostname, port)).toBe(1);
-      });
+      }));
     } finally { await db.drop(); }
   }, 120_000);
 });

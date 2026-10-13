@@ -157,7 +157,7 @@ export function buildHardExcludeClause(slugColumn: string, prefixes: string[]): 
  * It never touches an atom body or its frozen provenance.
  *
  * @param slugColumn — qualified outer slug column (engine-supplied, trusted)
- * @returns raw SQL fragment with a leading space, e.g. `AND NOT (p.slug = ANY (...))`
+ * @returns raw SQL fragment correlating coverage to the outer page identity.
  *
  * B05 — verified legacy source-root aliases for the frozen `source_slug` of an
  * atom. The historical whole-vault `hermes-moncho/` → root rename left atoms
@@ -171,7 +171,11 @@ export function buildHardExcludeClause(slugColumn: string, prefixes: string[]): 
  * and the frozen field is never rewritten.
  */
 export function buildCoveredAtomExclusionClause(slugColumn: string): string {
-  const sourceSlug = `(a.frontmatter ->> 'source_slug')`;
+  // Every caller supplies its outer page alias. Correlate by the page's own
+  // identity, not a global set of covered slugs (which leaks across sources
+  // and forces a corpus scan before the HNSW planner can choose its index).
+  const page = slugColumn.slice(0, slugColumn.lastIndexOf('.'));
+  const sourceSlug = `(${page}.frontmatter ->> 'source_slug')`;
   // Exact current slug first, then one de-prefixed alias arm per verified rename.
   const srcSlugMatch = [
     `src.slug = ${sourceSlug}`,
@@ -181,23 +185,18 @@ export function buildCoveredAtomExclusionClause(slugColumn: string): string {
     ),
   ].join(' OR ');
 
-  return `AND NOT (${slugColumn} = ANY (
-    SELECT a.slug FROM pages a
-    WHERE a.type = 'atom'
-      AND a.deleted_at IS NULL
-      AND (
+  return ` AND (${page}.type IS DISTINCT FROM 'atom' OR NOT (
         EXISTS (SELECT 1 FROM pages src
                  WHERE (${srcSlugMatch})
                    AND src.deleted_at IS NULL
                    AND src.type <> 'atom'
-                   AND src.source_id = a.source_id)
+                   AND src.source_id = ${page}.source_id)
         OR EXISTS (SELECT 1 FROM page_links pl
                     INNER JOIN pages t ON t.id = pl.to_page_id
                       AND t.deleted_at IS NULL
                       AND t.type <> 'atom'
-                      AND t.source_id = a.source_id
-                   WHERE pl.from_page_id = a.id)
-      )
+                      AND t.source_id = ${page}.source_id
+                   WHERE pl.from_page_id = ${page}.id)
   ))`;
 }
 

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { loadConfigFileOnly } from '../config.ts';
+import { snapshotConfigReader } from '../config-snapshot.ts';
 import type { BrainEngine } from '../engine.ts';
 import { OperationError } from '../ops/contract.ts';
 import { loadActivePack, loadResolvedPackByName, type LoadActivePackInput } from './load-active.ts';
@@ -14,13 +15,17 @@ export async function readDbSchemaPack(
 }
 
 export async function engineSchemaInput(
-  engine: Pick<BrainEngine, 'getConfig'> | null | undefined,
+  engine: (Pick<BrainEngine, 'getConfig'> & Partial<Pick<BrainEngine, 'getAllConfig'>>) | null | undefined,
   options: EngineSchemaOptions,
 ): Promise<LoadActivePackInput> {
-  const dbConfig = await readDbSchemaPack(engine);
   const perSourceDb = new Map<string, string>();
+  // Use the existing one-pass snapshot seam: preparation's engine view can
+  // answer this without another query; a real engine pays one round trip.
+  // GetConfig-only/mid-migration consumers retain the existing fallback.
+  const reader = await snapshotConfigReader(engine);
+  const dbConfig = await readDbSchemaPack(reader);
   if (options.sourceId) {
-    const value = (await engine?.getConfig(`schema_pack.source.${options.sourceId}`))?.trim();
+    const value = (await reader?.getConfig(`schema_pack.source.${options.sourceId}`))?.trim();
     if (value) perSourceDb.set(options.sourceId, value);
   }
   return { ...options, cfg: loadConfigFileOnly(), dbConfig, perSourceDb };
