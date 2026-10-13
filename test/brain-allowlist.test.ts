@@ -366,13 +366,13 @@ describe('brain_put_page pins undeclared model-authored types (#4852)', () => {
     expect(page.frontmatter.legacy_type).toBeUndefined();
   });
 
-  test('declared alias is stored literally (alias_of stays a sync warning, not a rewrite)', async () => {
+  test('declared alias canonicalizes without a legacy_type stamp', async () => {
     const page = await putUnderPack(
       'wiki/personal/patterns/aliased',
       '---\ntype: insight\ntitle: Aliased\n---\n\nBody',
       PREFIXES,
     );
-    expect(page.type).toBe('insight');
+    expect(page.type).toBe('note');
     expect(page.frontmatter.legacy_type).toBeUndefined();
   });
 
@@ -386,12 +386,11 @@ describe('brain_put_page pins undeclared model-authored types (#4852)', () => {
     expect(page.frontmatter.legacy_type).toBeUndefined();
   });
 
-  test('same write WITHOUT a slug allow-list (legacy agents namespace) stores the literal type', async () => {
-    const page = await putUnderPack(
+  test('same write WITHOUT a server-bound slug allow-list retains B01 refusal', async () => {
+    await expect(putUnderPack(
       'wiki/agents/42/pattern-literal',
       '---\ntype: pattern\ntitle: Literal\n---\n\nBody',
-    );
-    expect(page.type).toBe('pattern');
-    expect(page.frontmatter.legacy_type).toBeUndefined();
+    )).rejects.toMatchObject({ code: 'invalid_params' });
+    expect(await engine.getPage('wiki/agents/42/pattern-literal', { sourceId: 'default' })).toBeNull();
   });
 });

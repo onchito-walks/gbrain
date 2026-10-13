@@ -3,6 +3,7 @@ import { serializeMarkdown, type ParseOpts } from '../markdown.ts';
 import { OperationError, type OperationContext } from '../ops/contract.ts';
 import { classifyStoredType, sanitizeTypeForDisplay } from '../schema-pack/type-usage.ts';
 import { loadActivePackForWriteVocabulary } from '../schema-pack/write-vocabulary.ts';
+import { normalizeSubagentPageInput } from './page-input.ts';
 
 /** B01: the public replacement and native owner share one explicit-type policy.
  * Unresolvable packs preserve the best-effort boundary. Invalid/oversized raw
@@ -34,5 +35,9 @@ export function canonicalPutPageContent(content: string, slug: string, pack: Par
 export async function putPageVocabularyContent(ctx: OperationContext, params: Record<string, unknown>, sourceId: string): Promise<unknown> {
   if (typeof params.content !== 'string' || typeof params.slug !== 'string') return params.content;
   const pack = await loadActivePackForWriteVocabulary({ engine: ctx.engine, remote: ctx.remote, sourceId });
-  return canonicalPutPageContent(params.content, params.slug.toLowerCase(), pack?.manifest);
+  // Only server-bound generated scope can normalize; caller params never
+  // manufacture this context. Use the actual write source's resolved pack.
+  const intent: Record<string, unknown> & { slug: string } = { ...params, slug: params.slug.toLowerCase() };
+  normalizeSubagentPageInput(ctx, intent, pack?.manifest);
+  return canonicalPutPageContent(intent.content as string, intent.slug, pack?.manifest);
 }

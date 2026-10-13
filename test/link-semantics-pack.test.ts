@@ -20,7 +20,7 @@ import { relationSemantics, setPackRelationSemantics, temporalLinkTypes } from '
 setDefaultTimeout(60_000);
 
 const base = { api_version: 'gbrain-schema-pack-v1', name: 'org-fixture', version: '1.0.0', extends: null, page_types: [], frontmatter_links: [] };
-const orgPack = { ...base, link_types: [{ name: 'reports_to', inverse: 'manages', temporal: 'state' }, { name: 'manages', inverse: 'reports_to', temporal: 'state' }, { name: 'promoted', temporal: 'event' }] };
+const orgPack = { ...base, page_types: [{ name: 'person', primitive: 'entity', path_prefixes: ['people/'] }], link_types: [{ name: 'reports_to', inverse: 'manages', temporal: 'state' }, { name: 'manages', inverse: 'reports_to', temporal: 'state' }, { name: 'promoted', temporal: 'event' }] };
 
 describe('manifest and lint', () => {
   test('temporal accepts state and event, rejects anything else', () => {

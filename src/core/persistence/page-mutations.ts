@@ -28,7 +28,7 @@ import { claimWorktree, getWorktreeBinding, managedPersistenceEnabled } from './
 import { clientRequestIdOf, parseMutationPrecondition } from './preconditions.ts';
 import { assertPurgeParams } from './purge-params.ts';
 import type { Principal, WriteRequest } from './model.ts';
-import { normalizeSubagentPageInput, type PageTypeWarning } from './page-input.ts';
+import { type PageTypeWarning } from './page-input.ts';
 import { putPageVocabularyContent } from './put-page-vocabulary.ts';
 import { assertPutPageNotSyncExcluded } from './put-page-exclude.ts';
 import { assertKnowledgePublicationAllowed } from '../shared-skills/knowledge-guard.ts';
@@ -308,7 +308,7 @@ export async function preparePageAdmission(ctx: OperationContext,
   if (input.operation === 'put_page' && input.managedFileImport !== true) {
     intent.content = await putPageVocabularyContent(ctx, { ...intent, slug }, sourceId);
   }
-  if (input.operation === 'put_page') await normalizeSubagentPageInput(ctx, intent);
+
   const typeWarning = null;
   if (input.operation === 'capture') {
     if (typeof p.content !== 'string' || !normalizeForHash(p.content) || detectBinaryNullByte(Buffer.from(p.content)) !== -1) {
