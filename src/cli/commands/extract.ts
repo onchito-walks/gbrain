@@ -8,5 +8,5 @@ import type { BrainEngine } from '../../core/engine.ts';
 
 export async function run(engine: BrainEngine, args: string[]): Promise<void> {
   const { runExtract } = await import('../../commands/extract.ts');
-  await runExtract(engine, args);
+  await runExtract(engine, args, { remote: false });
 }

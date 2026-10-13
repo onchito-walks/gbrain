@@ -51,6 +51,7 @@ import { collectWantedLinks, isWantedPagesEnabled } from '../core/wanted-links.t
 import { readLineGrammarSettings, statedRelationTypes } from '../core/line-grammar.ts';
 import { effectiveLinkExtractorWatermark, linkExtractorWatermarkFor } from '../core/link-extraction-watermark.ts';
 import { concurrentWriteSkipLine, replaceDerivedLinksBatchOrReplay, replaceDerivedLinksDeferringConflicts, settingsChangedSkipLine, type DerivedLinkBatchItem } from '../core/derived-links.ts';
+import { backfillDerivedLinksBatch } from '../core/legacy-link-backfill.ts';
 import { pageSnapshotKey } from '../core/page-snapshot-batch.ts';
 import type { PageSnapshot } from '../core/page-state/types.ts';
 export { reconcileSourceLinks, type SourceLinkReconciliationResult } from '../core/link-reconciliation.ts';
@@ -901,11 +902,11 @@ Status:
  * phases completed at one revision (zero-link pages included), in a finally, so a throwing phase still keeps what both finished.
  */
 async function extractFromDB(engine: BrainEngine, result: ExtractResult, subcommand: string, o: { dryRun: boolean; jsonMode: boolean; typeFilter?: string;
-  since?: string; includeFrontmatter: boolean; sourceIdFilter?: string; inferDates: boolean }): Promise<void> {
+  since?: string; includeFrontmatter: boolean; sourceIdFilter?: string; inferDates: boolean; migrationBackfill?: boolean }): Promise<void> {
   const completed = subcommand === 'all' && !o.dryRun ? { links: new Set<string>(), timeline: new Set<string>() } : null;
   try {
     if (subcommand === 'links' || subcommand === 'all') {
-      const r = await extractLinksFromDB(engine, o.dryRun, o.jsonMode, o.typeFilter, o.since, { includeFrontmatter: o.includeFrontmatter, sourceIdFilter: o.sourceIdFilter, completed: completed?.links });
+      const r = await extractLinksFromDB(engine, o.dryRun, o.jsonMode, o.typeFilter, o.since, { includeFrontmatter: o.includeFrontmatter, sourceIdFilter: o.sourceIdFilter, completed: completed?.links, migrationBackfill: o.migrationBackfill });
       result.links_created = r.created;
       result.pages_processed = r.pages;
       // #2589: "counted, never silent" reaches the --json summary too — additive fields, only present on the DB links path.
@@ -1041,6 +1042,11 @@ export async function runExtract(engine: BrainEngine, args: string[], authority?
   // v0_13_0 migration orchestrator runs this once under the hood; users
   // opt in for subsequent runs.
   const includeFrontmatter = args.includes('--include-frontmatter');
+  const migrationBackfill = args.includes('--migration-backfill');
+  if (migrationBackfill && (authority?.remote !== false
+    || source !== 'db' || subcommand !== 'links' || args.some(arg => ['--stale', '--by-mention', '--ner', '--rebuild'].includes(arg)))) {
+    throw new Error('--migration-backfill is reserved for trusted-local migration link backfills on the DB source.');
+  }
   // v0.41.18.0 Part B: --by-mention auto-link body-text entity mentions
   // via the gazetteer pass. Mode dispatch — when set, run ONLY the
   // mention pass (skip default link extract). DB-source only per D7;
@@ -1275,7 +1281,7 @@ export async function runExtract(engine: BrainEngine, args: string[], authority?
           if (!byMention) result.pages_processed += r.pages;
         }
       } else {
-        await extractFromDB(engine, result, subcommand, { dryRun, jsonMode, typeFilter, since, includeFrontmatter, sourceIdFilter, inferDates });
+        await extractFromDB(engine, result, subcommand, { dryRun, jsonMode, typeFilter, since, includeFrontmatter, sourceIdFilter, inferDates, migrationBackfill });
       }
     } else {
       // #1747: resolve the brain source id and thread it into the fs-walk
@@ -1834,7 +1840,7 @@ async function extractLinksFromDB(
   jsonMode: boolean,
   typeFilter: PageType | undefined,
   since: string | undefined,
-  opts?: { includeFrontmatter?: boolean; sourceIdFilter?: string; completed?: Set<string> },
+  opts?: { includeFrontmatter?: boolean; sourceIdFilter?: string; completed?: Set<string>; migrationBackfill?: boolean },
 ): Promise<{ created: number; pages: number; unresolved: UnresolvedFrontmatterRef[]; skippedMissingTarget: number; skippedCrossSource: number; skippedAttendanceIncomplete: number; skippedConcurrentWrite?: number }> {
   const includeFrontmatter = opts?.includeFrontmatter ?? false;
   const sourceIdFilter = opts?.sourceIdFilter;
@@ -1925,7 +1931,9 @@ async function extractLinksFromDB(
   const pendingWrites: Array<{ slug: string; source_id: string; item: DerivedLinkBatchItem }> = [];
   async function flushLinkWrites() {
     const writes = pendingWrites.splice(0);
-    const results = await replaceDerivedLinksBatchOrReplay(engine, writes.map(write => write.item), item => {
+    const results = opts?.migrationBackfill
+      ? await backfillDerivedLinksBatch(engine, writes.map(write => write.item))
+      : await replaceDerivedLinksBatchOrReplay(engine, writes.map(write => write.item), item => {
       if (jsonMode) process.stderr.write(JSON.stringify({ event: 'batch_error', size: item.links.length, code: 'graph_write_failed' }) + '\n');
     });
     writes.forEach(({ slug, source_id, item }, i) => {

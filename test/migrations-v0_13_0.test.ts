@@ -60,7 +60,7 @@ describe('v0.13.0 — Frontmatter relationship indexing migration', () => {
     expect(src).not.toContain("execSync('gbrain init --migrate-only'");
     // Backfill extract goes through the stderr-capturing wrapper (still bare
     // `gbrain` so the canonical shim on PATH wins).
-    expect(src).toContain("runGbrainSubprocess('gbrain extract links --source db --include-frontmatter'");
+    expect(src).toContain("runGbrainSubprocess('gbrain extract links --source db --include-frontmatter --migration-backfill'");
     // Stats readback still shells out (reads stdout), through the running
     // CLI rather than PATH (#5184).
     expect(src).toContain("execSync(gbrainChildCommand('gbrain call get_stats')");

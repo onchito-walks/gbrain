@@ -68,7 +68,7 @@ function phaseBBackfill(opts: OrchestratorOpts): OrchestratorPhaseResult {
     // `--include-frontmatter` is the v0.13 flag that enables the canonical
     // frontmatter link extractor. Default-OFF in the CLI for back-compat;
     // the migration explicitly opts in because this is the canonical backfill.
-    runGbrainSubprocess('gbrain extract links --source db --include-frontmatter', { timeoutMs: 1_800_000 });
+    runGbrainSubprocess('gbrain extract links --source db --include-frontmatter --migration-backfill', { timeoutMs: 1_800_000 });
     return { name: 'frontmatter_backfill', status: 'complete' };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
