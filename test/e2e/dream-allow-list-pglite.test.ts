@@ -132,10 +132,17 @@ describe('E2E allow-list — legacy namespace fallback', () => {
     });
     const tool = findPutPageTool(tools);
     await tool.execute(
-      { slug: 'wiki/agents/999/scratch-note', content: SAMPLE_BODY },
+      { slug: 'wiki/agents/999/scratch-note', content: SAMPLE_BODY.replace('type: default', 'type: note') },
       { engine, jobId: 7781, remote: true },
     );
     expect(await engine.getPage('wiki/agents/999/scratch-note')).not.toBeNull();
+  });
+
+  test('unscoped generated type is refused even inside the legacy namespace', async () => {
+    const tool = findPutPageTool(buildBrainTools({ subagentId: 999, engine, config }));
+    await expect(tool.execute({ slug: 'wiki/agents/999/unknown-type', content: SAMPLE_BODY },
+      { engine, jobId: 7782, remote: true })).rejects.toMatchObject({ code: 'invalid_params' });
+    expect(await engine.getPage('wiki/agents/999/unknown-type')).toBeNull();
   });
 });
 

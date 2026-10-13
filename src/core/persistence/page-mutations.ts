@@ -244,6 +244,11 @@ export async function preflightPutPageAdmission(ctx: OperationContext, params: R
       if (!(error instanceof OperationError) || error.code !== 'writer_registration_required') throw error;
     }
   }
+  const slug = typeof params.slug === 'string' ? params.slug.toLowerCase() : '';
+  // Scope refusal precedes producer normalization and vocabulary diagnostics.
+  // A poisoned generated write must not even normalize outside its namespace.
+  enforceClientSlugFence(ctx, slug, 'put_page');
+  enforceSubagentSlugFence(ctx, slug, 'put_page');
   await putPageVocabularyContent(ctx, params, sourceId);
   await assertPutPageNotSyncExcluded(ctx.engine, typeof params.slug === 'string' ? params.slug.toLowerCase() : '', ctx.logger);
 }

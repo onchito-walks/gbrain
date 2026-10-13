@@ -474,6 +474,7 @@
         "isThinkingModel",
         "isTokenLimitError",
         "openAIPromptCacheKey",
+        "opencodeGoSessionHeaders",
         "parseExpansionResponse",
         "perplexityCompatFetch",
         "probeChatModel",
@@ -879,6 +880,7 @@
         "rrfFusionWeighted",
         "runPostFusionStages",
         "shouldBoostCompiledTruth",
+        "stampAtomProvenance",
         "stampContentFlags",
         "stampUnverifiedExtractions",
         "textVectorArmNonEmpty"
