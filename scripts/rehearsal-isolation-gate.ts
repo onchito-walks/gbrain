@@ -27,6 +27,13 @@ import { existsSync, readFileSync, readdirSync, realpathSync, type Dirent } from
 import { createHash } from 'node:crypto';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
+// The ONE path-identity predicate lives in the core guard that
+// `apply-migrations` enforces (`src/core/rehearsal/isolation-guard.ts`). This
+// gate proves that enforcement, so it must not carry a second implementation
+// of the same rule: two predicates that can drift would let the gate report
+// 'isolated' for a run the enforcement would refuse, or the reverse.
+import { isInside, resolveForComparison } from '../src/core/rehearsal/isolation-guard.ts';
+
 export interface RehearsalSourceTarget {
   id: string;
   /** `sources.local_path` as the rehearsal will observe it (already remapped). */
@@ -98,7 +105,7 @@ export interface IsolationReport {
   directives: string[];
 }
 
-/** Strip a trailing separator; keep '/' itself. */
+/** Strip a trailing separator; keep '/' itself. Formatting only — the containment predicate is the core guard's. */
 function normalize(path: string): string {
   const abs = resolve(path);
   return abs.length > 1 && abs.endsWith(sep) ? abs.slice(0, -1) : abs;
@@ -109,34 +116,28 @@ function normalize(path: string): string {
  * rehearsal target usually does not exist yet (a fence file about to be
  * written), but its ancestor directory may already be a symlink into the live
  * vault — resolving only existing ancestors catches exactly that.
+ *
+ * The resolution itself is `resolveForComparison` from the core guard (the
+ * same call `apply-migrations` gates on); this wrapper only adds the
+ * `resolvedAny` flag this report distinguishes between "inside the copy" and
+ * "inside the copy, not yet created".
  */
 export function resolveExisting(path: string): { resolved: string; resolvedAny: boolean } {
   const abs = normalize(path);
+  const resolved = normalize(resolveForComparison(abs));
   let head = abs;
-  const tail: string[] = [];
   for (;;) {
-    if (existsSync(head)) {
-      let real = head;
-      try { real = realpathSync(head); } catch { /* unreadable: keep literal */ }
-      return { resolved: normalize(join(real, ...tail.reverse())), resolvedAny: true };
-    }
+    if (existsSync(head)) return { resolved, resolvedAny: true };
     const parent = dirname(head);
-    if (parent === head) return { resolved: abs, resolvedAny: false };
-    tail.push(head.slice(parent.length + (parent === sep ? 0 : 1)));
+    if (parent === head) return { resolved, resolvedAny: false };
     head = parent;
   }
 }
 
-function isUnder(child: string, parent: string): boolean {
-  const c = normalize(child);
-  const p = normalize(parent);
-  return c === p || c.startsWith(p.endsWith(sep) ? p : p + sep);
-}
-
-/** Literal or symlink-resolved containment — both spaces deny. */
+/** Literal or symlink-resolved containment — both spaces deny (core guard predicate). */
 function matchedLiveRoot(target: string, liveRoots: string[]): string | undefined {
   const resolved = resolveExisting(target).resolved;
-  return liveRoots.find(root => isUnder(target, root) || isUnder(resolved, root));
+  return liveRoots.find(root => isInside(target, root) || isInside(resolved, root));
 }
 
 export function classifyPath(
@@ -157,7 +158,7 @@ export function classifyPath(
         : `resolves to ${resolved} inside a live root (symlink or alias)`,
     };
   }
-  if (isUnder(resolved, disposableRoot) && isUnder(target, disposableRoot)) {
+  if (isInside(resolved, disposableRoot) && isInside(target, disposableRoot)) {
     return { target, resolved, verdict: 'allowed', reason: resolvedAny ? 'inside the disposable copy' : 'inside the disposable copy (not yet created)' };
   }
   return {
@@ -258,7 +259,7 @@ export function evaluateIsolation(targets: IsolationTargets, evidence: Capabilit
 export function sandboxDirectives(targets: IsolationTargets): string[] {
   const disposable = normalize(targets.disposableRoot);
   const writable = [...new Set([disposable, normalize(targets.home), targets.tmpDir ? normalize(targets.tmpDir) : disposable])]
-    .filter(p => isUnder(p, disposable));
+    .filter(p => isInside(p, disposable));
   const denied = [...new Set([...targets.liveRoots.map(normalize), ...targets.liveRoots.map(r => resolveExisting(r).resolved)])];
   return [
     'ProtectSystem=strict',
@@ -271,7 +272,7 @@ export function sandboxDirectives(targets: IsolationTargets): string[] {
 
 /** `sources.local_path` and friends, remapped from a live root into its copy. */
 export function remapPath(livePath: string, copyMap: Array<{ live: string; copy: string }>): string {
-  const entry = copyMap.find(({ live }) => isUnder(livePath, live));
+  const entry = copyMap.find(({ live }) => isInside(livePath, live));
   if (!entry) throw new Error(`cannot remap ${livePath}: not under any live root`);
   return normalize(join(normalize(entry.copy), relative(normalize(entry.live), normalize(livePath))));
 }
@@ -300,7 +301,7 @@ export function scanCopySymlinks(disposableRoot: string, maxEntries = 50_000): {
       if (entry.isSymbolicLink()) {
         let target: string;
         try { target = realpathSync(path); } catch { escaping.push(`${path} -> <unresolvable>`); continue; }
-        if (!isUnder(target, root)) escaping.push(`${path} -> ${target}`);
+        if (!isInside(target, root)) escaping.push(`${path} -> ${target}`);
       } else if (entry.isDirectory()) {
         stack.push(path);
       }
