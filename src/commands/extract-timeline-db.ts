@@ -12,6 +12,13 @@
  * projects with no stored row are inserted. A page with nothing to change
  * admits no request. Unmanaged brains keep the batched raw insert.
  *
+ * `--migration-backfill` (trusted-local, DB source) makes the pass ADDITIVE,
+ * the timeline twin of the legacy-link backfill: missing tuples are still
+ * inserted, but nothing is retracted. Retraction reconciles a page against its
+ * own history — right for a normal extract, wrong for a historical migration,
+ * which must not delete rows the chain never owned (the 165→239 chain dropped
+ * 203 `timeline_entries` rows this way).
+ *
  * A refused write is reported as what it is: nothing was written and the
  * timeline rows import already stored are untouched. Refusals are counted
  * apart from written rows and make the command exit non-zero.
@@ -63,6 +70,16 @@ export interface TimelineDbOptions {
   since?: string;
   sourceIdFilter?: string;
   inferDates?: boolean;
+  /**
+   * Historical-migration additive backfill (`--migration-backfill`, reserved
+   * for the trusted-local DB source): add the rows the page never got and
+   * NEVER retract a stored row because the current text no longer spells it
+   * out. Retraction is ordinary reconciliation against a page's own history;
+   * a migration is not allowed to destroy that history (#e.g. the 165→239
+   * chain dropped 203 `timeline_entries` rows whose bullet no longer appears
+   * in the live body but does in a stored `page_versions` row).
+   */
+  migrationBackfill?: boolean;
   /** Restrict the walk to these slugs (requires sourceIdFilter). */
   slugs?: readonly string[];
   /** S4 (P2.18): receives `extractCompletionKey` for each page whose timeline write landed (or had nothing to write). */
@@ -179,7 +196,10 @@ export async function extractTimelineFromDB(engine: BrainEngine, opts: TimelineD
     if (!page || isQuarantined(page.frontmatter)) continue;
     if (opts.typeFilter && page.type !== opts.typeFilter) continue;
     const fullContent = page.compiled_truth + '\n' + page.timeline;
-    if (!opts.dryRun) await retractRemovedTimelineEntries(engine, slug, source_id, fullContent);
+    // `--migration-backfill` is additive, exactly like the legacy-link
+    // backfill: retraction is ordinary reconciliation, and a migration must
+    // never destroy a row the page's own history produced.
+    if (!opts.dryRun && !opts.migrationBackfill) await retractRemovedTimelineEntries(engine, slug, source_id, fullContent);
     let entries = parseTimelineEntries(fullContent);
     // --infer-dates: pages with no in-body timeline line but a trustworthy
     // content date (frontmatter / filename) get one anchor entry at that date.
@@ -267,9 +287,10 @@ async function readTimelineBatch(engine: BrainEngine, refs: ReadonlyArray<{ slug
  * tuples (or an inferred anchor) to insert. `stored` is the caller's read of
  * the page's rows; without it the checks read them.
  */
-async function plannedTimeline(engine: BrainEngine, page: Page, slug: string, sourceId: string, inferDates: boolean, stored?: StoredTimelineRows[]) {
+async function plannedTimeline(engine: BrainEngine, page: Page, slug: string, sourceId: string, inferDates: boolean, stored?: StoredTimelineRows[],
+  opts: { retainRemoved?: boolean } = {}) {
   const fullContent = page.compiled_truth + '\n' + page.timeline;
-  const removed = await retractRemovedTimelineEntries(engine, slug, sourceId, fullContent, { dryRun: true,
+  const removed = opts.retainRemoved ? [] : await retractRemovedTimelineEntries(engine, slug, sourceId, fullContent, { dryRun: true,
     ...(stored ? { storedRows: stored.map(({ date_text: _text, ...row }) => row) } : {}) });
   let entries: Array<{ date: string; source?: string; summary: string; detail?: string }> = await unrecordedCanonicalTimeline(engine, page.id, page, slug,
     stored?.map(row => ({ date: row.date_text, source: row.source, summary: row.summary })));
@@ -282,9 +303,10 @@ async function plannedTimeline(engine: BrainEngine, page: Page, slug: string, so
   return { fullContent, removed: removed.length, entries };
 }
 
-/** Under the coordinator's page lock: retract removed rows, insert the planned tuples. */
-async function writePageTimeline(tx: BrainEngine, page: Page, slug: string, sourceId: string, inferDates: boolean): Promise<number> {
-  const plan = await plannedTimeline(tx, page, slug, sourceId, inferDates);
+/** Under the coordinator's page lock: retract removed rows (unless this is an additive backfill), insert the planned tuples. */
+async function writePageTimeline(tx: BrainEngine, page: Page, slug: string, sourceId: string, inferDates: boolean,
+  opts: { retainRemoved?: boolean } = {}): Promise<number> {
+  const plan = await plannedTimeline(tx, page, slug, sourceId, inferDates, undefined, opts);
   if (plan.removed) await retractRemovedTimelineEntries(tx, slug, sourceId, plan.fullContent);
   if (!plan.entries.length) return 0;
   return tx.addTimelineEntriesBatch(plan.entries.map(entry => ({ slug, date: entry.date, source: entry.source,
@@ -302,16 +324,23 @@ async function publishPageTimeline(engine: BrainEngine, authority: MaintenanceAu
   opts: TimelineDbOptions, read?: { snapshot: PageSnapshot | null; stored: StoredTimelineRows[] }): Promise<number | null | 'skipped' | 'pending'> {
   const snapshot = read ? read.snapshot : await engine.readPageSnapshot(slug, { sourceId });
   if (!snapshot || isQuarantined(snapshot.page.frontmatter) || (opts.typeFilter && snapshot.page.type !== opts.typeFilter)) return null;
-  const plan = await plannedTimeline(engine, snapshot.page, slug, sourceId, opts.inferDates === true, read?.stored);
+  const retainRemoved = opts.migrationBackfill === true;
+  const plan = await plannedTimeline(engine, snapshot.page, slug, sourceId, opts.inferDates === true, read?.stored, { retainRemoved });
   if (!plan.removed && !plan.entries.length) return 0;
   for (let attempt = 0; ; attempt++) {
-    const h = digest(['extract-timeline-db-v1', sourceId, slug, snapshot.revision, attempt]);
+    // The additive backfill is a different intent from ordinary
+    // reconciliation: a distinct request id keeps a backfill from replaying a
+    // reconcile request (or the reverse) for the same revision.
+    const h = digest(retainRemoved
+      ? ['extract-timeline-db-v1', 'migration-backfill', sourceId, slug, snapshot.revision, attempt]
+      : ['extract-timeline-db-v1', sourceId, slug, snapshot.revision, attempt]);
     const requestId = `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-a${h.slice(17, 20)}-${h.slice(20, 32)}`;
     const prior = await getWriteRequest(engine, authority.writer.principal, requestId);
     if (prior && isTerminal(prior) && prior.state !== 'committed') continue;
     try {
       const receipt = await submitDatabaseMaintenanceIntent(engine, authority, slug,
-        { kind: TIMELINE_EXTRACT_INTENT, expected_revision: snapshot.revision, infer_dates: opts.inferDates === true }, requestId);
+        { kind: TIMELINE_EXTRACT_INTENT, expected_revision: snapshot.revision, infer_dates: opts.inferDates === true,
+          ...(retainRemoved ? { migration_backfill: true } : {}) }, requestId);
       return Number(receipt.added ?? 0);
     } catch (error) {
       if (error instanceof OperationError && ['revision_conflict', 'page_not_found', 'page_identity_changed'].includes(error.code)) return 'skipped';
@@ -346,11 +375,14 @@ export async function prepareTimelineExtract(engine: BrainEngine, row: WriteRequ
   if (!snapshot || snapshot.page.id !== Number(row.page_id)) throw timelinePageChanged(row, 'The page was deleted or replaced before its timeline was extracted.');
   await authorizeWrite(engine, row.authority, 'submit_job', row.slug);
   const inferDates = (row.intent as { infer_dates?: unknown } | null)?.infer_dates === true;
+  // `migration_backfill` marks the additive historical backfill: the intent
+  // adds the rows the page never got and retracts nothing.
+  const retainRemoved = (row.intent as { migration_backfill?: unknown } | null)?.migration_backfill === true;
   return { observedRevision: snapshot.revision, noop: true,
     validate: async tx => { await authorizeWrite(tx, row.authority, 'submit_job', row.slug); },
     apply: async tx => {
       const current = await tx.readPageSnapshot(row.slug, { sourceId: row.source_id });
       if (!current) throw timelinePageChanged(row, 'The page disappeared before its timeline was extracted.');
-      return { status: 'completed', added: await writePageTimeline(tx, current.page, row.slug, row.source_id, inferDates) };
+      return { status: 'completed', added: await writePageTimeline(tx, current.page, row.slug, row.source_id, inferDates, { retainRemoved }) };
     } };
 }

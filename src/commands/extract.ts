@@ -1043,9 +1043,12 @@ export async function runExtract(engine: BrainEngine, args: string[], authority?
   // opt in for subsequent runs.
   const includeFrontmatter = args.includes('--include-frontmatter');
   const migrationBackfill = args.includes('--migration-backfill');
+  // Historical migrations backfill ADDITIVELY (links and timeline alike): they
+  // fill in what the brain never got and never reconcile away what it already
+  // stores. The flag stays reserved for that trusted-local, DB-source use.
   if (migrationBackfill && (authority?.remote !== false
-    || source !== 'db' || subcommand !== 'links' || args.some(arg => ['--stale', '--by-mention', '--ner', '--rebuild'].includes(arg)))) {
-    throw new Error('--migration-backfill is reserved for trusted-local migration link backfills on the DB source.');
+    || source !== 'db' || !['links', 'timeline'].includes(subcommand) || args.some(arg => ['--stale', '--by-mention', '--ner', '--rebuild'].includes(arg)))) {
+    throw new Error('--migration-backfill is reserved for trusted-local migration link and timeline backfills on the DB source.');
   }
   // v0.41.18.0 Part B: --by-mention auto-link body-text entity mentions
   // via the gazetteer pass. Mode dispatch — when set, run ONLY the

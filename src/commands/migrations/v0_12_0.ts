@@ -14,11 +14,13 @@
  *   B. Config   — verify auto_link is not explicitly disabled (read
  *                 in-process, file/env plane then database). If it's
  *                 set to false, leave it alone (user intent) but warn.
- *   C. Backfill — gbrain extract links --source db (idempotent; the
- *                 UNIQUE constraint on (from, to, link_type) guarantees
- *                 re-runs are no-op).
- *   D. Timeline — gbrain extract timeline --source db (idempotent via
- *                 the (page_id, date, summary) UNIQUE index).
+ *   C. Backfill — gbrain extract links --source db --migration-backfill
+ *                 (idempotent; the UNIQUE constraint on (from, to,
+ *                 link_type) guarantees re-runs are no-op).
+ *   D. Timeline — gbrain extract timeline --source db --migration-backfill
+ *                 (idempotent via the (page_id, date, md5(summary), source)
+ *                 UNIQUE index; additive, so it never retracts a stored row
+ *                 whose bullet the live body no longer spells out).
  *   E. Verify   — gbrain stats; confirm link_count and
  *                 timeline_entry_count match expectations OR explain
  *                 why they're zero (empty brain, no entity refs in
@@ -126,7 +128,12 @@ function phaseCBackfillLinks(opts: OrchestratorOpts): OrchestratorPhaseResult {
 function phaseDBackfillTimeline(opts: OrchestratorOpts): OrchestratorPhaseResult {
   if (opts.dryRun) return { name: 'backfill_timeline', status: 'skipped', detail: 'dry-run' };
   try {
-    runGbrainSubprocess('gbrain extract timeline --source db' + childGlobalFlags(), { timeoutMs: 600_000 });
+    // `--migration-backfill` keeps this backfill ADDITIVE, the timeline twin of
+    // phase C's link flag (extract-timeline-db.ts): it inserts the timeline
+    // tuples the pages never got and retracts nothing. Without it, ordinary
+    // reconciliation deletes every stored row the live body no longer spells
+    // out but a stored page version does — 203 rows on a real brain, silently.
+    runGbrainSubprocess('gbrain extract timeline --source db --migration-backfill' + childGlobalFlags(), { timeoutMs: 600_000 });
     return { name: 'backfill_timeline', status: 'complete' };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
