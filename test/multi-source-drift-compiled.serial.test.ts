@@ -32,7 +32,7 @@ describe.skipIf(!binary)('compiled multi_source_drift doctor', () => {
       try {
         const [stdout, stderr, exit] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
         expect(exit).not.toBe(137);
-        let report: { checks: {name: string; status: string; message: string}[] };
+        let report: { checks: {name: string; status: string; message: string; details?: Record<string, unknown>}[] };
         try { report = JSON.parse(stdout); } catch { throw new Error(`Compiled doctor invalid JSON (exit=${exit}): ${stderr}\n${stdout}`); }
         const check = report.checks.find(c => c.name === 'multi_source_drift');
         expect(check).toBeDefined(); return check!;
@@ -48,7 +48,11 @@ describe.skipIf(!binary)('compiled multi_source_drift doctor', () => {
       engine = new PGLiteEngine(); await engine.connect(config); expect(await state()).toEqual(cleanBefore);
       await engine.executeRaw("UPDATE sources SET local_path=$1 WHERE id='readwise'", [join(root, 'missing-source')]);
       const missingBefore = await state(); await engine.disconnect();
-      const unknown = await cli(); expect(unknown.status).toBe('warn'); expect(unknown.message).toContain('unknown');
+      const unknown = await cli();
+      expect(unknown.status).toBe('warn');
+      expect(unknown.message).toContain('Not verified for 1 source(s)');
+      expect(unknown.message).toContain('readwise (root unreadable)');
+      expect(unknown.details).toMatchObject({ code: 'not_verified', verified: false, verification_complete: false });
       engine = new PGLiteEngine(); await engine.connect(config); expect(await state()).toEqual(missingBefore);
     } finally { await engine.disconnect(); rmSync(root, { recursive: true, force: true }); }
   }, 180_000);
