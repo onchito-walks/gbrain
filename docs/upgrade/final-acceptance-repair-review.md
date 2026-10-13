@@ -88,7 +88,10 @@ reviewed against source/inventory. Only these semantic changes are allowed:
   includeQuarantined (B07). No former export/signature/member removed.
 - SQL text: coverage predicate only, now page-identity-correlated as above;
   bound parameters, source/private/projection filters, ordering and pagination
-  remain. SQL digest changes follow that exact semantic delta.
+  remain. SQL digest changes follow that exact semantic delta. links.json and
+  its _driver trace additionally replace exactly two single-key config reads
+  (one bound string) with the existing whole-table snapshot (zero parameters);
+  all link-write statements, guard predicates and transaction ordering remain.
 - Doctor fresh/degraded: exactly fresh, quote_present_in_live_page, quote_probe
   atom diagnostics (B09). Content/hot-check fixtures additionally report
   multi_source_drift NOT VERIFIED instead of falsely green where fixture source
@@ -114,6 +117,18 @@ The worker scope has MemoryMax4GiB, observed from cgroup. Full typecheck's expli
 Independent bounded systemd supervision (MemoryMax8GiB, CPUQuota200%, RuntimeMax1200s)
 completed native typecheck rc0. No test/guard ceiling changed. Long acceptance must
 use the same supervised/resource-accounted arrangement rather than worker nesting.
+
+The generated operation manifest was refreshed before final CLI help capture;
+its compact strings are now also pinned by help-and-errors. Doctor goldens run
+only after retrieval changes are committed: the dirty-source warning encountered
+mid-repair is a real diagnostic and was NOT blessed into fixtures. Final clean
+doctor fresh/content/hot-check captures pass without further golden mutation.
+
+An additional dream namespace negative exposed error precedence: preflight now
+enforces the already-existing client/subagent fences before any producer
+transformation. The legacy in-namespace positive uses declared note (its purpose
+is namespace admission); a separate in-namespace unknown-type negative pins B01.
+Scoped unknown-generated positives and outside-scope negatives remain unchanged.
 
 Pooled, explicit-direct and derived-direct endpoint probes all identified the same
 disposable cluster7695912997412859942 before targeted E2E writes; live5432 was never
