@@ -1,25 +1,27 @@
 import type { OperationContext } from '../ops/contract.ts';
-import { MAX_FILE_SIZE } from '../import-file.ts';
+import { screenImportContent } from '../import-screen.ts';
 import { parseMarkdown, serializeMarkdown } from '../markdown.ts';
+import type { SchemaPackManifest } from '../schema-pack/manifest-v1.ts';
 import { loadActivePackForWriteVocabulary, undeclaredPageTypeMessage, undeclaredPageTypeSuggestion } from '../schema-pack/write-vocabulary.ts';
 import { classifyStoredType, safeCliToken, sanitizeTypeForDisplay } from '../schema-pack/type-usage.ts';
 
 /** Normalize model-authored types once at admission, after an existing UUID has replayed. */
-export async function normalizeSubagentPageInput(ctx: OperationContext, intent: Record<string, unknown>): Promise<void> {
+export function normalizeSubagentPageInput(ctx: OperationContext, intent: Record<string, unknown>, pack: SchemaPackManifest | undefined): void {
   if (ctx.viaSubagent !== true || !ctx.allowedSlugPrefixes?.length
     || typeof intent.content !== 'string' || typeof intent.slug !== 'string') return;
-  // A rewrite must not shrink an oversized raw request below the import guard.
-  if (Buffer.byteLength(intent.content, 'utf8') > MAX_FILE_SIZE) return;
-  let parsed: ReturnType<typeof parseMarkdown>;
-  try { parsed = parseMarkdown(intent.content, `${intent.slug}.md`); }
-  catch { return; } // The importer owns the sanitized parse-error contract.
-  if (parsed.typeExplicit !== true) return;
-  const pack = await loadActivePackForWriteVocabulary(ctx);
-  if (!pack || classifyStoredType(parsed.type, pack.manifest).kind !== 'undeclared') return;
+  if (!pack) return;
+  // Screen ORIGINAL bytes, including size, YAML and slug identity. A producer
+  // transformation must never repair a refused input into an acceptable one.
+  const screen = screenImportContent({ content: intent.content, path: `${intent.slug}.md`, expectedSlug: intent.slug, activePack: pack });
+  if (screen.status !== 'importable') return;
+  const parsed = screen.parsed;
+  if (parsed?.typeExplicit !== true) return;
+  if (classifyStoredType(parsed.type, pack).kind !== 'undeclared'
+    || !pack.page_types.some(type => type.name === 'note')) return;
   intent.content = serializeMarkdown({ ...parsed.frontmatter, legacy_type: parsed.type },
     parsed.compiled_truth, parsed.timeline, { type: 'note', title: parsed.title, tags: parsed.tags });
   ctx.logger.warn(`undeclared type '${sanitizeTypeForDisplay(parsed.type)}' normalized to 'note' `
-    + `(legacy_type kept; pack ${pack.manifest.name})`);
+    + `(legacy_type kept; pack ${pack.name})`);
 }
 
 export interface PageTypeWarning {

@@ -119,15 +119,20 @@ are unaffected).
 ## Undeclared page types
 
 A page type is **undeclared** when the active pack neither declares it as a
-page type nor lists it as an alias. gbrain stores such a type as written and
-reports it everywhere it measures conformance, all with the same
-classification as `schema lint --with-db`'s `stored_type_undeclared`:
+page type nor lists it as an alias. Existing imported pages may carry such
+types; conformance reports use the same classification as
+`schema lint --with-db`'s `stored_type_undeclared`:
 
-- `put_page` (MCP, `gbrain put`, `gbrain call put_page`) commits the page and
-  returns `type_warning` with `code: page_type_undeclared`, the cause, the fix
-  and this anchor. It warns rather than rejects; `capture` still rejects an
-  undeclared explicit type, and dream subagent writes still normalize it to
-  `note` with `legacy_type`.
+- `put_page` (MCP, `gbrain put`, `gbrain call put_page`) refuses an explicit
+  undeclared type before publication or embedding. Known aliases canonicalize
+  to their declared type. `capture` also rejects an undeclared explicit type.
+  Trusted generated subagent writes with a server-bound explicit slug scope
+  first normalize an unknown type to a declared `note`, preserving the original
+  type as `legacy_type`. Original-byte screening precedes normalization; the
+  normalized intent is frozen in the same durable request for replay. Unscoped
+  agents and client-supplied scopes do not gain this producer compatibility.
+  A resolved pack with no page types still refuses explicit types; an
+  unresolved pack retains the separately defined best-effort boundary.
 - `gbrain lint <dir>` flags it as `type-undeclared` on the `type:` line.
 - `gbrain schema review-orphans` / MCP `schema_review_orphans` list untyped
   AND undeclared-type pages (`reason`, `undeclared_types`, a true

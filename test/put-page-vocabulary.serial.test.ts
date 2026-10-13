@@ -32,6 +32,15 @@ beforeAll(async () => withEnv(env, async () => {
   writeFileSync(join(packRoot, 'pack.json'), JSON.stringify({ api_version: 'gbrain-schema-pack-v1',
     name: 'admission-test', version: '1.0.0', extends: 'gbrain-base-v2',
     page_types: [{ name: 'initiative', primitive: 'entity', path_prefixes: ['initiatives/'], aliases: ['project-card'] }] }));
+  for (const [name, page_types] of [
+    ['relation-only-test', []],
+    ['no-note-test', [{ name: 'initiative', primitive: 'entity', path_prefixes: ['initiatives/'] }]],
+  ] as const) {
+    const dir = join(home, '.gbrain', 'schema-packs', name);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'pack.json'), JSON.stringify({ api_version: 'gbrain-schema-pack-v1',
+      name, version: '1.0.0', extends: null, page_types, link_types: [], frontmatter_links: [] }));
+  }
   engine = new PGLiteEngine();
   await engine.connect({}); await engine.initSchema();
   await engine.executeRaw('INSERT INTO sources(id,name,local_path) VALUES($1,$1,$2)', [sourceId, root]);
@@ -110,5 +119,49 @@ test('unresolvable source pack retains best-effort verbatim writes', async () =>
   try {
     expect((await write('notes/unresolved', content('legacy-custom'))).state).toBe('committed');
     expect((await engine.readPageSnapshot('notes/unresolved', { sourceId }))!.page.type).toBe('legacy-custom');
+  } finally { await engine.setConfig(`schema_pack.source.${sourceId}`, 'admission-test'); }
+});
+
+test('client-supplied subagent/scope fields cannot manufacture generated-write authority', async () => {
+  const before = await state();
+  await expect(write('notes/forged-scope', content('pattern'), {
+    viaSubagent: true, allowedSlugPrefixes: ['notes/*'], subagentId: 42,
+  }, ctx(true))).rejects.toMatchObject({ code: 'invalid_params' });
+  expect(await state()).toEqual(before);
+});
+
+test('resolved empty vocabulary and missing declared note refuse without effects, including generated scope', async () => {
+  for (const pack of ['relation-only-test', 'no-note-test']) {
+    await engine.setConfig(`schema_pack.source.${sourceId}`, pack);
+    try {
+      for (const generated of [false, true]) {
+        const context = { ...ctx(), ...(generated ? { viaSubagent: true, subagentId: 42, allowedSlugPrefixes: ['notes/*'] } : {}) };
+        const before = await state();
+        await expect(write(`notes/no-note-${pack}-${generated}`, content('pattern'), {}, context))
+          .rejects.toMatchObject({ code: 'invalid_params' });
+        expect(await state()).toEqual(before);
+      }
+    } finally { await engine.setConfig(`schema_pack.source.${sourceId}`, 'admission-test'); }
+  }
+});
+
+test('generated normalization binds the actual source pack and preserves fields/body/timeline in frozen replay', async () => {
+  const slug = 'notes/scoped-source';
+  const request_id = randomUUID();
+  const context = { ...ctx(), viaSubagent: true, subagentId: 42, allowedSlugPrefixes: ['notes/*'] };
+  const text = '---\ntype: pattern\ntitle: Scoped source\ncustom_field: retained\n---\n\nOriginal prose.\n\n## Timeline\n\n- **2026-01-01** | note — Original observation\n';
+  const first = await write(slug, text, { request_id }, context);
+  expect(first.state).toBe('committed');
+  const snapshot = (await engine.readPageSnapshot(slug, { sourceId }))!;
+  expect(snapshot.page.type).toBe('note');
+  expect(snapshot.page.frontmatter).toMatchObject({ legacy_type: 'pattern', custom_field: 'retained' });
+  expect(snapshot.page.compiled_truth).toBe('Original prose.');
+  expect(snapshot.page.timeline).toContain('Original observation');
+  expect(readFileSync(join(root, `${slug}.md`), 'utf8')).toContain('legacy_type: pattern');
+  await engine.setConfig(`schema_pack.source.${sourceId}`, 'no-note-test');
+  try {
+    const before = await state();
+    expect((await write(slug, text, { request_id }, context)).revision).toBe(first.revision);
+    expect(await state()).toEqual(before);
   } finally { await engine.setConfig(`schema_pack.source.${sourceId}`, 'admission-test'); }
 });

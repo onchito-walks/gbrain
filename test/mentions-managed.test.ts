@@ -10,6 +10,10 @@
  */
 import { expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { gbrainPath } from '../src/core/config.ts';
+import { loadActivePackForWriteVocabulary } from '../src/core/schema-pack/write-vocabulary.ts';
 import type { OperationContext } from '../src/core/ops/contract.ts';
 import { submitPageMutation } from '../src/core/persistence/page-mutations.ts';
 import { disposePersistenceConsumer } from '../src/core/persistence/service.ts';
@@ -23,9 +27,21 @@ const put = (ctx: OperationContext, slug: string, type: string, title: string, b
   params: { slug, request_id: randomUUID(), content: `---\ntype: ${type}\ntitle: "${title}"\n---\n\n${body}\n` } });
 
 test('managed brain: import writes derived aliases; sync-style extraction writes no mention rows; extract --stale links them', async () => {
+  // This suite tests mention ownership, not admission of arbitrary page types.
   await managedBrain(async ({ engine, ctx }) => {
-    await engine.setConfig('schema_pack', 'gbrain-base-v2');
+    const root = gbrainPath('schema-packs', 'mention-fixture');
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, 'pack.json'), JSON.stringify({ api_version: 'gbrain-schema-pack-v1',
+      name: 'mention-fixture', version: '1.0.0', extends: 'gbrain-base-v2',
+      page_types: [{ name: 'ticket', primitive: 'temporal', path_prefixes: ['tickets/'] }],
+      link_types: [], frontmatter_links: [] }));
+
+    await engine.setConfig('schema_pack', 'mention-fixture');
+    const pack = await loadActivePackForWriteVocabulary(ctx);
+    expect(pack?.manifest.page_types.find(type => type.name === 'account')?.primitive).toBe('entity');
+    expect(pack?.manifest.page_types.some(type => type.name === 'ticket')).toBe(true);
     await put(ctx, 'crm/123', 'crm', 'CRM record: Quormiro Capital', 'Account code: QUCO');
+    expect((await engine.getPage('crm/123', { sourceId: 'default' }))?.type).toBe('account');
     await put(ctx, 'tickets/t1', 'ticket', 'Ticket 1', 'Customer: QUCO\nStatus: Open');
     await disposePersistenceConsumer(engine);
     expect(await derivedAliases(engine, 'crm/123')).toEqual(['declared:quco (cs)', 'subject:quormiro capital']);
