@@ -56,12 +56,13 @@ still bypasses coverage. A same-slug other-source regression now proves isolatio
 Native planner/statistics/recall tests then pass unchanged. This is a product fix,
 not a golden-only acceptance of the regression.
 
-engineSchemaInput uses the existing snapshotConfigReader seam, not new caching:
-real engines pay one pass instead of global/source per-key reads; preparation's
-existing engine view answers from its frozen snapshot. GetConfig-only and failed
-snapshot fallbacks remain. Actual wire budget returns to 27 admission /24 prepare,
-103 critical-path statements with every ceiling unchanged. A first raw-SQL batching
-attempt bypassed preparation's snapshot and failed its25 budget; it was rejected.
+engineSchemaInput retains the upstream getConfig-only interface and per-key reads
+for the global schema_pack and selected source's schema_pack.source.<sourceId>.
+The snapshotConfigReader route was reverted: strict callers must retain exact
+config-read error identity and the pinned fail-closed negative control. The retained
+request-scoped pack resolution avoids repeating these reads during preparation.
+Measured wire counts are 29 admission /24 prepare /105 critical-path statements;
+the separate statement-budget gate owns the explicit budget reconciliation.
 
 Operator quarantine's test previously compared ALL database rows and required
 unrelated rows' generations to advance. Restrict the advancing-generation/hash
@@ -89,8 +90,9 @@ reviewed against source/inventory. Only these semantic changes are allowed:
 - SQL text: coverage predicate only, now page-identity-correlated as above;
   bound parameters, source/private/projection filters, ordering and pagination
   remain. SQL digest changes follow that exact semantic delta. links.json and
-  its _driver trace additionally replace exactly two single-key config reads
-  (one bound string) with the existing whole-table snapshot (zero parameters);
+  its _driver trace restore exactly two retained single-key config reads
+  (SELECT value FROM config WHERE key = $1, one bound string, paramCount 1)
+  instead of the reverted whole-table snapshot (zero parameters);
   all link-write statements, guard predicates and transaction ordering remain.
 - Doctor fresh/degraded: exactly fresh, quote_present_in_live_page, quote_probe
   atom diagnostics (B09). Content/hot-check fixtures additionally report
