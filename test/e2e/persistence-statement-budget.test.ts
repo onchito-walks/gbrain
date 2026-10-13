@@ -40,9 +40,17 @@ const CRITICAL: Phase[] = ['admission', 'claim', 'prepare', 'recovery_record', '
  * code before #6007 measured 29, 5, 21, 9, 61, 10: 135, and 10). The claim
  * counts only the transaction that claimed this write; another tick's empty
  * claim attempt is a consumer scan.
+ * Reviewed calibration: three fixed-revision runs each measured admission
+ * 29/29/30 and critical path 105/105/106. Admission 30 = upstream 27 + two
+ * retained vocabulary preflight config reads (global and per-source keys) +
+ * one observed legitimate 5000 ms write-switch snapshot refresh. Keep per-key
+ * reads for exact error identity, the minimal getConfig interface, and its
+ * fail-closed control. The per-phase ceiling rises from 28 to the observed
+ * maximum 30; the aggregate ceiling tightens from 118 to maximum 106 + 2.
+ * All other budgets, assertions, phase accounting, fixtures and TTL stay fixed.
  */
 const BUDGET: Record<string, number> = {
-  admission: 28, claim: 6, prepare: 25, recovery_record: 7, publication: 50, completion: 7, critical_path: 118, receipt: 9,
+  admission: 30, claim: 6, prepare: 25, recovery_record: 7, publication: 50, completion: 7, critical_path: 108, receipt: 9,
 };
 
 const SCAN = [
