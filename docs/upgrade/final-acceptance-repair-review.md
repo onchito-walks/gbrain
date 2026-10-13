@@ -141,3 +141,24 @@ Full coherent exact-revision matrix, protected compile/caller controls, fresh fu
 schema165->239 rehearsal including native v0.53.0 ownership/policy/member steps,
 row-identity/text preservation and recovery are still required. The three exact
 facts exceptions stay ACCEPTED-NOT-REPAIRED; no live notes or facts were modified.
+
+## Protected compiled-caller expectations
+
+Executing the actual both-autoload-off candidate exposed two obsolete compiled
+dotenv assertions (refusal/warning presupposed Bun had auto-loaded the hostile
+file). With BOTH required compile protections it is inert before application
+preflight: exact exit0, one version line, zero dotenv warnings, and NO attacker
+marker. Dev-runtime refusal/warning cases and exported/home-owned controls remain
+unchanged. Default package build/build:all recipes now carry both protections,
+so future native builds cannot accidentally revert to the weaker compile context.
+No guard removed or limit raised. The compiled drift missing-root control now
+asserts exact not-verified/root-unreadable text PLUS structured not_verified,
+verified=false and verification_complete=false instead of merely the word unknown;
+all reopened page/source non-mutation comparisons remain.
+
+Native schema-order guard initially skipped because origin/master is absent in
+the preserved repo. Use its supported GBRAIN_MIGRATION_BASE_REF pinned to the
+actual official upgrade base0460af288227a193c2031eca2e6a64f808cbd8bd (also the
+existing acceptance harness's retained-overlay baseline), not a fabricated ref,
+HEAD self-comparison or moving newer release. The guard genuinely runs and passes;
+no missing-ref skip is counted as acceptance.

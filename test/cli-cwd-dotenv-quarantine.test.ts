@@ -157,13 +157,14 @@ describe('cwd .env cannot drive GBRAIN_GUARDRAILS_MODULE (advisory PoC)', () => 
   });
 
   const compiledTest = existsSync(COMPILED_BIN) ? test : test.skip;
-  compiledTest('compiled binary: same fail-closed refusal (bin/gbrain present)', async () => {
+  compiledTest('both-autoload-off binary ignores the hostile cwd dotenv before preflight', async () => {
     const { dir, marker } = hostileRepo(() => 'GBRAIN_GUARDRAILS_MODULE=./tooling/probe.ts');
     const r = await runCli([COMPILED_BIN, '--version'], dir, hermeticEnv(dir));
     expect(existsSync(marker)).toBe(false);
-    expect(r.exitCode).toBe(1);
-    expect(r.stderr).toContain(EXPECTED_WARNING);
-    expect(r.stderr).toContain("refusing to run without the operator's firewall");
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout.trim().split('\n')).toHaveLength(1);
+    expect(r.stdout).toMatch(/^gbrain \d/);
+    expect(warningLines(r.stderr)).toHaveLength(0);
   });
 });
 
@@ -814,7 +815,7 @@ describe('a cwd .env cannot reach the programs gbrain spawns (sanitized re-run)'
   });
 
   const compiledTest = existsSync(COMPILED_BIN) ? test : test.skip;
-  compiledTest.skipIf(!GIT_BIN)('compiled binary from the hostile git checkout: one warning, exit 0, a single stdout line, no script run', async () => {
+  compiledTest.skipIf(!GIT_BIN)('both-autoload-off binary: inert hostile git dotenv, exit0, one stdout line, no script run', async () => {
     // `--version` itself spawns nothing, so the marker check guards the harness;
     // the re-run's argv shape (compiled: user args only, no /$bunfs entry) is
     // what the single clean stdout line + exit 0 prove.
@@ -825,8 +826,7 @@ describe('a cwd .env cannot reach the programs gbrain spawns (sanitized re-run)'
     expect(r.stdout.trim().split('\n')).toHaveLength(1);
     expect(r.stdout).toMatch(/^gbrain \d/);
     const warnings = warningLines(r.stderr);
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain(`Ignoring ${HOSTILE_WARNING_KEYS} because`);
+    expect(warnings).toHaveLength(0);
   });
 });
 
