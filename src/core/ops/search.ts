@@ -582,15 +582,10 @@ function normalizeExcludeSlugPrefixesParam(ctx: OperationContext, tool: 'search'
 }
 
 const EXCLUDE_SLUG_PREFIXES_PARAM_DESCRIPTION =
-  'Hide pages whose slug starts with any of these prefixes (e.g. ["atoms/"]). Additive over the ' +
-  'default hard-excludes, applied at SQL level on every retrieval leg. Independent of `types`. ' +
-  'CLI: --exclude-slug-prefixes atoms/,test/. Omit for exact current behavior.';
+  'Exclude slug prefixes, plus hard-excludes.';
 
 const INCLUDE_COVERED_ATOMS_PARAM_DESCRIPTION =
-  'Default covered-atom retrieval policy. Absent/false: an `atom` page is hidden when its content ' +
-  'is already reachable through a live non-atom page of the same source (its frontmatter ' +
-  '`source_slug` resolves to one, or the atom links out to one). Uncovered atoms are always kept. ' +
-  'true returns every atom page.';
+  'true includes source-covered atoms; default keeps uncovered only.';
 
 /** The caller's two retrieval-exclusion knobs, normalized once per call. */
 interface RetrievalExclusionParams {
