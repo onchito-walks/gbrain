@@ -2153,7 +2153,7 @@
             "via": "unsafe"
           },
           {
-            "paramCount": 0,
+            "paramCount": 1,
             "via": "tagged"
           },
           {
@@ -2289,7 +2289,7 @@
             "via": "unsafe"
           },
           {
-            "paramCount": 0,
+            "paramCount": 1,
             "via": "tagged"
           },
           {
