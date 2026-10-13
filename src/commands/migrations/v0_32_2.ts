@@ -10,18 +10,32 @@
  * Phases:
  *   A. Schema       — assert migration v51 has run.
  *   B. Fence facts  — backfill DB facts → entity-page fences (dry-run
- *                     by default; explicit --write required).
+ *                     by default; explicit --write required). Covers both
+ *                     unfenced shapes: rows with no position yet, and rows
+ *                     whose position the markdown no longer carries (the
+ *                     page body was replaced or reverted after the stamp).
+ *                     The second shape is re-published under its own
+ *                     position, so the markdown becomes the system of
+ *                     record again without losing or renumbering a row.
  *   C. Verify       — re-parse each fence-owned page and compare its fence
  *                     row numbers with the DB rows for that page; a
  *                     duplicate active fence row may be absent from the
  *                     index (extract_facts indexes it once). Partial on
- *                     mismatch. Conversation-miner (`cli:`) facts are not
+ *                     mismatch. Conversation-miner (`cli:`) rows are not
  *                     fence-owned (extract-conversation-facts writes the
- *                     chat log as source of truth) and are excluded.
+ *                     chat log as source of truth) and are excluded from
+ *                     BOTH sides: the database side always filtered the
+ *                     prefix, so a fence row the database attributes to a
+ *                     `cli:` row, or that carries a `cli:` source label, is
+ *                     skipped the same way — like is compared with like
+ *                     instead of reporting a page whose file and database
+ *                     agree.
  *   D. Record       — runner-owned ledger write (apply-migrations.ts).
  *
- * Idempotency: phase B only touches rows with row_num IS NULL. Re-runs
- * after a partial completion pick up where the previous run stopped.
+ * Idempotency: phase B is additive — it only appends rows the page's fence
+ * does not carry, and a row it already published reads back identical, so it
+ * is skipped. Re-runs after a partial completion pick up where the previous
+ * run stopped.
  * Phase B is the shared core pass `src/core/facts/unfenced-facts.ts`, which
  * the extract_facts cycle phase also runs: managed brains publish each page
  * through the coordinator (`managed_maintenance_adopt_fact_fence`) and
@@ -45,7 +59,7 @@ import type {
 import type { BrainEngine } from '../../core/engine.ts';
 import { loadConfig, toEngineConfig } from '../../core/config.ts';
 import { createEngine } from '../../core/engine-factory.ts';
-import { parseFactsFence } from '../../core/facts-fence.ts';
+import { parseFactsFence, type ParsedFact } from '../../core/facts-fence.ts';
 import { duplicateActiveFenceRows } from '../../core/facts/extract-from-fence.ts';
 import { resolvePageWriteTarget } from '../../core/write-through.ts';
 import { serializePageToMarkdown } from '../../core/markdown.ts';
@@ -147,7 +161,11 @@ async function phaseBFenceFacts(
   }
 
   try {
-    const plan = await planUnfencedFacts(engine);
+    // `adoptStamped`: the backfill also publishes rows that already hold a
+    // fence position the markdown lost, so this migration leaves every active
+    // database fact present in the fence instead of dangling until the
+    // reconcile walk retires it.
+    const plan = await planUnfencedFacts(engine, { adoptStamped: true });
     const { outcome } = plan;
 
     if (opts.dryRun) {
@@ -191,6 +209,8 @@ function fenceFactsResult(outcome: UnfencedFactsOutcome): OrchestratorPhaseResul
     `pages=${outcome.pages_touched} skipped_no_entity=${outcome.skipped_no_entity} ` +
     `skipped_no_local_path=${outcome.skipped_no_local_path} skipped_no_page=${outcome.skipped_no_page}` +
     (outcome.skipped_archived > 0 ? ` skipped_archived=${outcome.skipped_archived}` : '') +
+    (outcome.adopted_in_place ? ` adopted_in_place=${outcome.adopted_in_place}` : '') +
+    (outcome.renumbered ? ` renumbered=${outcome.renumbered}` : '') +
     (outcome.failed_pages.length > 0 ? ` failed=${outcome.failed_pages.length}` : '');
   if (outcome.failed_pages.length > 0) {
     // The same `FACTS_FENCE_FAILED: <slug> (<reason>)` token the extract_facts
@@ -220,6 +240,21 @@ function listDriftRows(rows: number[]): string {
   return rows.length > DRIFT_ROWS_SHOWN ? `${shown}, +${rows.length - DRIFT_ROWS_SHOWN} more` : shown;
 }
 
+/** The `cli:` source prefix of the conversation miner (`extract-conversation-facts`). */
+const CONVERSATION_MINER_PREFIX = 'cli:';
+
+/**
+ * A fence row that belongs to the conversation-miner domain: the database
+ * attributes its position to a `cli:` row, or the cell carries the `cli:`
+ * label the renderer projected from that row. The database side of the
+ * comparison filters the same prefix, so skipping these on the file side
+ * compares like with like — without it every page whose fence legitimately
+ * carries conversation facts is reported as drifted.
+ */
+function isConversationMinerFenceRow(fact: ParsedFact, cliRowNums: ReadonlySet<number>): boolean {
+  return cliRowNums.has(fact.rowNum) || (fact.source ?? '').startsWith(CONVERSATION_MINER_PREFIX);
+}
+
 async function phaseCVerify(
   engine: BrainEngine | null,
   opts: OrchestratorOpts,
@@ -240,12 +275,15 @@ async function phaseCVerify(
     // Conversation-miner rows stamp row_num without a ## Facts fence
     // (chat-log shape is the source of truth). Same cli: exclusion as
     // extract_facts reconciliation. Counting them here fails every brain
-    // that ran extract-conversation-facts.
-    const groups = await engine.executeRaw<{ source_id: string; source_markdown_slug: string; row_nums: number[] }>(
-      `SELECT source_id, source_markdown_slug, array_agg(row_num ORDER BY row_num) AS row_nums
+    // that ran extract-conversation-facts. Both arrays come from the same
+    // read so the file side can skip exactly the positions the database
+    // attributes to that domain (see isConversationMinerFenceRow).
+    const groups = await engine.executeRaw<{ source_id: string; source_markdown_slug: string; row_nums: number[] | null; cli_row_nums: number[] | null }>(
+      `SELECT source_id, source_markdown_slug,
+              array_agg(row_num ORDER BY row_num) FILTER (WHERE COALESCE(source, '') NOT LIKE 'cli:%') AS row_nums,
+              array_agg(row_num ORDER BY row_num) FILTER (WHERE COALESCE(source, '') LIKE 'cli:%') AS cli_row_nums
          FROM facts
         WHERE row_num IS NOT NULL
-          AND COALESCE(source, '') NOT LIKE 'cli:%'
         GROUP BY source_id, source_markdown_slug`,
     );
 
@@ -257,6 +295,11 @@ async function phaseCVerify(
     const managed = await managedPersistenceEnabled(engine);
 
     for (const g of groups) {
+      const indexed = new Set((g.row_nums ?? []).map(Number));
+      // A page with no non-conversation-miner fenced row is not fence-owned
+      // and is not compared (unchanged: the filter used to run in SQL).
+      if (indexed.size === 0) continue;
+      const cliRowNums = new Set((g.cli_row_nums ?? []).map(Number));
       let body: string;
       if (managed) {
         const snapshot = await engine.readPageSnapshot(g.source_markdown_slug, { sourceId: g.source_id });
@@ -276,8 +319,7 @@ async function phaseCVerify(
         body = readFileSync(target.filePath, 'utf-8');
       }
       const parsed = parseFactsFence(body);
-      const indexed = new Set(g.row_nums.map(Number));
-      const fenced = new Set(parsed.facts.map(f => f.rowNum));
+      const fenced = new Set(parsed.facts.filter(f => !isConversationMinerFenceRow(f, cliRowNums)).map(f => f.rowNum));
       // #5814: a duplicate active row may be absent from the index.
       // extract_facts indexes it once (#1781) while the managed publication
       // projection indexes every fence row, so both states are in sync.
