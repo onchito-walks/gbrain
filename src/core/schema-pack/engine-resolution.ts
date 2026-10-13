@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { loadConfigFileOnly } from '../config.ts';
-import { snapshotConfigReader } from '../config-snapshot.ts';
+import { snapshotConfigReader, type ConfigReader } from '../config-snapshot.ts';
 import type { BrainEngine } from '../engine.ts';
 import { OperationError } from '../ops/contract.ts';
 import { loadActivePack, loadResolvedPackByName, type LoadActivePackInput } from './load-active.ts';
@@ -9,7 +9,7 @@ import { invalidatePackCache, type ResolvedPack } from './registry.ts';
 export type EngineSchemaOptions = Omit<LoadActivePackInput, 'cfg' | 'dbConfig' | 'perSourceDb'>;
 
 export async function readDbSchemaPack(
-  engine: Pick<BrainEngine, 'getConfig'> | null | undefined,
+  engine: ConfigReader | null | undefined,
 ): Promise<string | undefined> {
   return (await engine?.getConfig('schema_pack'))?.trim() || undefined;
 }
