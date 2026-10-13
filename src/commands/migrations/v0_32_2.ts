@@ -29,7 +29,14 @@
  *                     `cli:` row, or that carries a `cli:` source label, is
  *                     skipped the same way — like is compared with like
  *                     instead of reporting a page whose file and database
- *                     agree.
+ *                     agree. Drift that matches a NAMED, evidenced,
+ *                     field-for-field exception in `./v0_32_2-drift-exceptions.ts`
+ *                     (accepted pre-existing production data conditions) is
+ *                     tolerated — but never suppressed: the phase prints every
+ *                     tolerated exception by name and carries it in its detail,
+ *                     and any observation not named there still fails exactly
+ *                     as before. The tolerance path only re-classifies an
+ *                     observation; it writes nothing.
  *   D. Record       — runner-owned ledger write (apply-migrations.ts).
  *
  * Idempotency: phase B is additive — it only appends rows the page's fence
@@ -66,6 +73,13 @@ import { serializePageToMarkdown } from '../../core/markdown.ts';
 import { managedPersistenceEnabled } from '../../core/persistence/ownership.ts';
 import { OperationError } from '../../core/ops/contract.ts';
 import { fenceableRowCount, fenceUnfencedFacts, planUnfencedFacts, type UnfencedFactsOutcome } from '../../core/facts/unfenced-facts.ts';
+import {
+  describeToleratedDrift,
+  formatToleratedDriftReport,
+  matchFenceDriftException,
+  type FenceDriftException,
+  type FenceDriftObservation,
+} from './v0_32_2-drift-exceptions.ts';
 
 let testEngineOverride: BrainEngine | null = null;
 export function __setTestEngineOverride(engine: BrainEngine | null): void {
@@ -288,11 +302,30 @@ async function phaseCVerify(
     );
 
     const mismatches: string[] = [];
+    // Named, evidenced, field-for-field exceptions (accepted pre-existing data
+    // conditions). Tolerated observations are reported by name below — never
+    // dropped, never suppressed, and nothing is written on this path.
+    const tolerated: FenceDriftException[] = [];
     let pagesChecked = 0;
     // Managed brains publish the fence through the coordinator, which writes
     // the canonical file in the same publication; the database copy is the
     // one every managed page has, database-only pages included.
     const managed = await managedPersistenceEnabled(engine);
+
+    /**
+     * Route one observation: an exact match on the named exception list is
+     * tolerated and reported; everything else is drift and fails the phase.
+     * The list is consulted, never applied by category — see
+     * `./v0_32_2-drift-exceptions.ts` for the matching rules.
+     */
+    const classify = (observed: FenceDriftObservation, mismatch: string): void => {
+      const exception = matchFenceDriftException(observed);
+      if (exception) {
+        if (!tolerated.includes(exception)) tolerated.push(exception);
+        return;
+      }
+      mismatches.push(mismatch);
+    };
 
     for (const g of groups) {
       const indexed = new Set((g.row_nums ?? []).map(Number));
@@ -300,11 +333,15 @@ async function phaseCVerify(
       // and is not compared (unchanged: the filter used to run in SQL).
       if (indexed.size === 0) continue;
       const cliRowNums = new Set((g.cli_row_nums ?? []).map(Number));
+      const dbRows = [...indexed].sort((a, b) => a - b);
       let body: string;
       if (managed) {
         const snapshot = await engine.readPageSnapshot(g.source_markdown_slug, { sourceId: g.source_id });
         if (!snapshot) {
-          mismatches.push(`${g.source_markdown_slug} (page missing)`);
+          classify(
+            { kind: 'page_missing', sourceId: g.source_id, slug: g.source_markdown_slug, surface: 'page', rows: dbRows },
+            `${g.source_markdown_slug} (page missing)`,
+          );
           continue;
         }
         body = serializePageToMarkdown(snapshot.page, snapshot.tags);
@@ -313,7 +350,10 @@ async function phaseCVerify(
         if (!localPath) continue;
         const target = await resolvePageWriteTarget(engine, g.source_markdown_slug, g.source_id);
         if (!target.ok || !existsSync(target.filePath)) {
-          mismatches.push(`${g.source_markdown_slug} (file missing)`);
+          classify(
+            { kind: 'page_missing', sourceId: g.source_id, slug: g.source_markdown_slug, surface: 'file', rows: dbRows },
+            `${g.source_markdown_slug} (file missing)`,
+          );
           continue;
         }
         body = readFileSync(target.filePath, 'utf-8');
@@ -331,19 +371,40 @@ async function phaseCVerify(
           notIndexed.length > 0 ? `not indexed: ${listDriftRows(notIndexed)}` : '',
           notInFence.length > 0 ? `not in fence: ${listDriftRows(notInFence)}` : '',
         ].filter(Boolean).join('; ');
-        mismatches.push(`${g.source_markdown_slug} (fence=${parsed.facts.length}, db=${indexed.size}; ${missing})`);
+        classify(
+          {
+            kind: 'fence_divergence', sourceId: g.source_id, slug: g.source_markdown_slug,
+            surface: managed ? 'page' : 'file',
+            fence: parsed.facts.length, db: indexed.size, notIndexed, notInFence,
+          },
+          `${g.source_markdown_slug} (fence=${parsed.facts.length}, db=${indexed.size}; ${missing})`,
+        );
       }
       pagesChecked += 1;
     }
 
+    // An accepted condition is still an observed one: say so by name, on every
+    // run that sees it, whether or not the phase ends complete.
+    if (tolerated.length > 0) console.log(formatToleratedDriftReport(tolerated));
+
     if (mismatches.length > 0) {
+      const toleratedNote = tolerated.length > 0
+        ? `; tolerated ${tolerated.length} named pre-existing exception(s): ${tolerated.map(e => e.slug).join(', ')}`
+        : '';
       return {
         name: 'verify',
         status: 'failed',
-        detail: `${mismatches.length} pages drifted: ${mismatches.slice(0, 3).join(' | ')}${mismatches.length > 3 ? '...' : ''}`,
+        detail: `${mismatches.length} pages drifted: ${mismatches.slice(0, 3).join(' | ')}${mismatches.length > 3 ? '...' : ''}${toleratedNote}`,
       };
     }
-    return { name: 'verify', status: 'complete', detail: `pages_checked=${pagesChecked}` };
+    // The detail stays exactly `pages_checked=N` when nothing was tolerated,
+    // so an unchanged run reads unchanged; tolerated exceptions are named in
+    // full, never summarized away.
+    const toleratedNote = tolerated.length > 0
+      ? `; tolerated ${tolerated.length} named pre-existing-drift exception(s): ${tolerated
+          .map(e => `${e.slug} (${describeToleratedDrift(e)})`).join(' | ')}`
+      : '';
+    return { name: 'verify', status: 'complete', detail: `pages_checked=${pagesChecked}${toleratedNote}` };
   } catch (e) {
     return { name: 'verify', status: 'failed', detail: e instanceof Error ? e.message : String(e) };
   }
