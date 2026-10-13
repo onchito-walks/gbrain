@@ -98,8 +98,12 @@ for (const backend of testBackends()) {
 
       const rerun = await __testing.phaseBFenceFacts(engine, OPTS);
       expect(rerun).toMatchObject({ status: 'complete' });
-      expect(rerun.detail).toContain('scanned=0 fenced=0 pages=0');
+      // adoptStamped scans the three non-cli rows even when their fences agree;
+      // agreement must cause no publication, renumbering, or row mutation.
+      expect(rerun.detail).toBe('scanned=3 fenced=0 pages=0 skipped_no_entity=0 skipped_no_local_path=0 skipped_no_page=0');
       expect(await factRows(engine, [...adopted, seed.extractorFactId])).toEqual(after);
+      expect(readFileSync(join(root, `${LEGACY_FILE_SLUG}.md`), 'utf8')).toBe(file);
+      expect(await engine.readPageSnapshot(LEGACY_DB_ONLY_SLUG, { sourceId: 'default' })).toEqual(dbOnly);
     }, { databaseUrl, setup: async ({ engine, root }) => {
       seed = await seedLegacyManagedContent(engine, root);
       // A take graded only in the database, as a pre-activation grader left it.
@@ -171,10 +175,20 @@ for (const backend of testBackends()) {
       const refused = await __testing.phaseBFenceFacts(engine, OPTS);
       expect(refused.status).toBe('failed');
       expect(refused.detail).toContain('uncoordinated local edit');
+      const dbOnlyAfterRefusal = await factRows(engine, seed.dbOnlyFactIds);
+      expect(dbOnlyAfterRefusal.map(r => [Number(r.id), r.row_num, r.expired_at])).toEqual([
+        [seed.dbOnlyFactIds[0], 1, null],
+      ]);
       writeFileSync(path, file);
       const retried = await __testing.phaseBFenceFacts(engine, OPTS);
       expect(retried).toMatchObject({ status: 'complete' });
-      expect(retried.detail).toContain('scanned=2 fenced=2 pages=1');
+      // The already-adopted DB-only row is scanned too, but remains untouched.
+      expect(retried.detail).toBe('scanned=3 fenced=2 pages=1 skipped_no_entity=0 skipped_no_local_path=0 skipped_no_page=0');
+      expect(await factRows(engine, seed.dbOnlyFactIds)).toEqual(dbOnlyAfterRefusal);
+      expect((await factRows(engine, seed.legacyFactIds)).map(r => [Number(r.id), r.row_num, r.expired_at])).toEqual([
+        [seed.legacyFactIds[0], 2, null], [seed.legacyFactIds[1], 3, null],
+      ]);
+      expect(await __testing.phaseCVerify(engine, OPTS)).toMatchObject({ status: 'complete', detail: 'pages_checked=2' });
     }, { databaseUrl, setup: async ({ engine, root }) => { seed = await seedLegacyManagedContent(engine, root); } });
   }, 120_000);
 

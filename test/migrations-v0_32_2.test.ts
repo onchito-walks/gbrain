@@ -358,16 +358,30 @@ describe('phaseBFenceFacts — missing pages and occupied fence rows', () => {
     );
     await seedLegacyFact({ entity_slug: slug, fact: 'Append before stranded' });
     await seedLegacyFact({ entity_slug: slug, fact: 'Stranded fact' });
-    expect((await __testing.phaseBFenceFacts(engine, OPTS)).status).toBe('complete');
+    const before = await engine.executeRaw('SELECT id, fact, expired_at FROM facts ORDER BY id');
+    const result = await __testing.phaseBFenceFacts(engine, OPTS);
+    expect(result.status).toBe('complete');
+    expect(result.detail).toContain('scanned=3 fenced=3 pages=1');
+    expect(result.detail).toContain('renumbered=1');
     const facts = parseFactsFence(readFileSync(path, 'utf8')).facts;
+    // adoptStamped publishes the colliding DB-owned claim at 2 first, then
+    // appends at 3; reusing the stranded fence row must not drop either claim.
     expect(facts.map(f => [f.claim, f.rowNum])).toEqual([
-      ['Stranded fact', 3], ['Append before stranded', 2],
+      ['Stranded fact', 4], ['Already indexed', 2], ['Append before stranded', 3],
     ]);
     expect(await engine.executeRaw(`SELECT fact, row_num FROM facts ORDER BY row_num`)).toEqual([
-      { fact: 'Already indexed', row_num: 1 },
-      { fact: 'Append before stranded', row_num: 2 },
-      { fact: 'Stranded fact', row_num: 3 },
+      { fact: 'Already indexed', row_num: 2 },
+      { fact: 'Append before stranded', row_num: 3 },
+      { fact: 'Stranded fact', row_num: 4 },
     ]);
+    expect(await engine.executeRaw('SELECT id, fact, expired_at FROM facts ORDER BY id')).toEqual(before);
+    expect((await __testing.phaseCVerify(engine, OPTS)).status).toBe('complete');
+    const adopted = await engine.executeRaw('SELECT id, fact, row_num, expired_at FROM facts ORDER BY id');
+    const file = readFileSync(path, 'utf8');
+    const rerun = await __testing.phaseBFenceFacts(engine, OPTS);
+    expect(rerun.detail).toBe('scanned=3 fenced=0 pages=0 skipped_no_entity=0 skipped_no_local_path=0 skipped_no_page=0');
+    expect(readFileSync(path, 'utf8')).toBe(file);
+    expect(await engine.executeRaw('SELECT id, fact, row_num, expired_at FROM facts ORDER BY id')).toEqual(adopted);
   });
 
   test('never lets two legacy rows claim the same stranded fence row', async () => {
