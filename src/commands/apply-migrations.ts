@@ -764,40 +764,9 @@ async function runLockedMigrations(
     }
   }
 
-  // Rehearsal isolation guard. When GBRAIN_REHEARSAL_ROOTS is set, every
-  // writer target this brain can reach (source roots, sync/corpus config,
-  // shared-skill migration roots, $HOME/$TMPDIR) must resolve — after
-  // following symlinks — inside one of the allowlisted disposable roots.
-  // A disposable database on its own does not isolate filesystem writes:
-  // without this check a rehearsal whose DB still points at the live vault
-  // writes real notes. Fail closed, before any orchestrator runs.
-  const rehearsalRoots = parseRehearsalRoots(process.env);
-  if (rehearsalRoots && toRun.length > 0) {
-    const guardCfg = loadConfig();
-    if (guardCfg) {
-      const { engine: guardEngine } = await connectAtSchemaVersion(guardCfg);
-      try {
-        const isolation = checkTargets(await collectWriterTargets(guardEngine), rehearsalRoots);
-        doc.rehearsal_isolation = {
-          enabled: true,
-          roots: isolation.roots,
-          checked: isolation.checked,
-          violations: isolation.violations,
-        };
-        if (!isolation.ok) {
-          fail('refused', opError(
-            'config_error',
-            isolationViolationMessage(isolation),
-            'Remap every listed target onto a disposable copy, then re-run.',
-            { reason: 'rehearsal_isolation' },
-          ));
-          return 2;
-        }
-      } finally {
-        await guardEngine.disconnect();
-      }
-    }
-  }
+  // Rehearsal isolation guard — see enforceRehearsalIsolation (fails closed).
+  const isolationRefusal = await enforceRehearsalIsolation(report, toRun);
+  if (isolationRefusal !== null) return isolationRefusal;
 
   // Run each orchestrator in registry order. An orchestrator failure aborts
   // the rest of the chain; fixing the failure and re-running picks up where
@@ -995,6 +964,46 @@ function requireDbError(dbProbe: DbProbeOutcome): OperationError {
   return opError('database_error', `${formatDbProbeLine(dbProbe)}; --require-db stops the run before any orchestrator runs.`,
     'Fix the database connection (run `gbrain db-repair` to diagnose it), then run apply-migrations again.',
     { fix: { argv: ['gbrain', 'db-repair', '--json'], consent: [], actor: 'agent', requires_exclusive: false, why: 'Diagnoses the database access failure and names the repair.' } });
+}
+
+/**
+ * Rehearsal isolation guard. When GBRAIN_REHEARSAL_ROOTS is set, every writer
+ * target this brain can reach (source roots, sync/corpus config, shared-skill
+ * migration roots, $HOME/$TMPDIR) must resolve — after following symlinks —
+ * inside one of the allowlisted disposable roots. A disposable database on its
+ * own does not isolate filesystem writes: without this check a rehearsal whose
+ * DB still points at the live vault writes real notes. Fail closed, before any
+ * orchestrator runs.
+ *
+ * Returns the exit status the caller must return when the guard refuses, or
+ * null when it passes or does not apply.
+ */
+async function enforceRehearsalIsolation(report: RunReport, toRun: readonly Migration[]): Promise<number | null> {
+  const rehearsalRoots = parseRehearsalRoots(process.env);
+  if (!rehearsalRoots || toRun.length === 0) return null;
+  const guardCfg = loadConfig();
+  if (!guardCfg) return null;
+  const { engine: guardEngine } = await connectAtSchemaVersion(guardCfg);
+  try {
+    const isolation = checkTargets(await collectWriterTargets(guardEngine), rehearsalRoots);
+    report.doc.rehearsal_isolation = {
+      enabled: true,
+      roots: isolation.roots,
+      checked: isolation.checked,
+      violations: isolation.violations,
+    };
+    if (isolation.ok) return null;
+    report.doc.status = 'refused';
+    report.failure = opError(
+      'config_error',
+      isolationViolationMessage(isolation),
+      'Remap every listed target onto a disposable copy, then re-run.',
+      { reason: 'rehearsal_isolation' },
+    );
+    return 2;
+  } finally {
+    await guardEngine.disconnect();
+  }
 }
 
 /**
