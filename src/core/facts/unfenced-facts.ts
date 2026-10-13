@@ -1,7 +1,20 @@
 /**
- * Fence unfenced fact rows (#5299): append every active fact row with
- * `row_num IS NULL` to its entity page's `## Facts` fence and stamp the row
- * with its fence row number, so the fence reconciler owns it.
+ * Fence unfenced fact rows (#5299): append every active fact row the page's
+ * fence does not carry to that entity page's `## Facts` fence, so the fence
+ * reconciler owns it. Two row shapes are unfenced:
+ *   - `row_num IS NULL` — a row no fence ever took; it is appended under a
+ *     new row number above every occupied one and stamped with it.
+ *   - `row_num` set, but the page's fence does not carry it — the fence owns
+ *     the position while the markdown lost the row (a page body replaced or
+ *     reverted after the stamp, a fence section dropped by a hand edit). This
+ *     shape is OPT-IN (`adoptStamped`), because the v0.32.2 backfill is where
+ *     "publish the database facts into the fence" belongs: the `extract_facts`
+ *     reconcile runs its own walk over fence-owned rows the page no longer
+ *     lists and decides there whether such a row is retired. When adopted, the
+ *     row is appended under its OWN number, so fence identity is preserved; a
+ *     number another fence row already occupies takes the next free position
+ *     instead, and the row is re-stamped to it. Nothing is deleted and no
+ *     claim text is rewritten beyond the codec's own normalization.
  *
  * Shared by the v0.32.2 migration's Phase B and the `extract_facts` cycle
  * phase. The inline writer's DB-only fallback keeps producing such rows (a
@@ -86,6 +99,8 @@ export interface UnfencedFactRow {
   claim_value: number | null;
   claim_unit: string | null;
   claim_period: string | null;
+  /** The fence position the row already holds, or null when it holds none. */
+  row_num: number | null;
   page_exists: boolean;
 }
 
@@ -105,6 +120,10 @@ export interface UnfencedFactsOutcome {
   missing_files: string[];
   /** Legacy rows this run left as they are because the fence codec would change them or the page already carries the claim (#6278). */
   unadoptable_rows: UnadoptableFactRecord[];
+  /** Rows that already held a fence position the markdown had lost, re-published under that same position. */
+  adopted_in_place?: number;
+  /** Adopted rows whose own position was occupied in the fence and took the next free one instead. */
+  renumbered?: number;
 }
 
 /**
@@ -205,21 +224,32 @@ export function fenceableRowCount(plan: UnfencedFactsPlan): number {
 }
 
 /** Read the unfenced active rows of one source (or every source) and group the fenceable ones per page. */
-export async function planUnfencedFacts(engine: BrainEngine, opts: { sourceId?: string } = {}): Promise<UnfencedFactsPlan> {
+export async function planUnfencedFacts(engine: BrainEngine, opts: { sourceId?: string; adoptStamped?: boolean } = {}): Promise<UnfencedFactsPlan> {
   const managed = await managedPersistenceEnabled(engine);
   const sources = await engine.executeRaw<{ id: string; local_path: string | null; archived?: boolean }>(
     'SELECT id, local_path, archived FROM sources',
   );
   const localPathById = new Map(sources.map(s => [s.id, s.local_path] as const));
   const archived = new Set(sources.filter(s => s.archived).map(s => s.id));
+  // Both unfenced shapes: no position yet, or (opt-in, `adoptStamped`) a
+  // position the markdown lost. The v0.32.2 backfill wants the second shape —
+  // its whole job is publishing database facts into fences — while the
+  // extract_facts reconcile keeps its own walk over fence-owned rows the page
+  // no longer lists (that walk decides whether such a row is retired).
+  // Conversation-miner (`cli:`) rows are never adopted in the second shape:
+  // the extract-conversation-facts chat log is their source of truth and the
+  // verify phase excludes the same prefix. A `cli:` row with no position is
+  // still selected (the first shape) exactly as before.
+  const stampedClause = opts.adoptStamped ? "OR COALESCE(source, '') NOT LIKE 'cli:%'" : '';
   const rows = await engine.executeRaw<UnfencedFactRow>(
     `SELECT id, source_id, entity_slug, fact, kind, visibility, notability,
             context, valid_from, valid_until, source, confidence,
-            claim_metric, claim_value, claim_unit, claim_period,
+            claim_metric, claim_value, claim_unit, claim_period, row_num,
             EXISTS (SELECT 1 FROM pages p WHERE p.source_id = f.source_id
               AND p.slug = f.entity_slug AND p.deleted_at IS NULL) AS page_exists
        FROM facts f
-      WHERE row_num IS NULL AND expired_at IS NULL AND dimension IS NULL
+      WHERE expired_at IS NULL AND dimension IS NULL
+        AND (row_num IS NULL ${stampedClause})
         ${opts.sourceId !== undefined ? 'AND source_id = $1' : ''}
       ORDER BY source_id, entity_slug, id`,
     opts.sourceId !== undefined ? [opts.sourceId] : [],
@@ -227,6 +257,7 @@ export async function planUnfencedFacts(engine: BrainEngine, opts: { sourceId?: 
   const outcome: UnfencedFactsOutcome = {
     scanned: rows.length, fenced: 0, skipped_no_entity: 0, skipped_no_local_path: 0, skipped_no_page: 0,
     skipped_archived: 0, pages_touched: 0, failed_pages: [], fenced_slugs: [], missing_files: [], unadoptable_rows: [],
+    adopted_in_place: 0, renumbered: 0,
   };
   const groups = new Map<string, UnfencedFactRow[]>();
   for (const row of rows) {
@@ -265,19 +296,48 @@ export async function planUnfencedFacts(engine: BrainEngine, opts: { sourceId?: 
  * a second row whose normalized claim and source the page already carries,
  * are returned in `rejected` and left alone.
  */
+export interface FenceAssignment {
+  id: string;
+  row_num: number;
+  fact: string;
+  /**
+   * The position the row held before this plan (null when it held none).
+   * The stamp re-checks it, so a row re-numbered by another writer between
+   * planning and publication is left alone instead of being overwritten.
+   */
+  prev_row_num: number | null;
+  /** True when the row already held `row_num` and the markdown had lost it. */
+  adopted_in_place: boolean;
+}
+
+/**
+ * Append a page's adoptable unfenced rows to its facts fence. Row numbering
+ * starts above every occupied `row_num` on the page, conversation-extractor
+ * rows included, so no fence row can take an extractor row's position. A row
+ * that already holds a fence position the markdown lost keeps that position
+ * (identity preserved) unless the fence occupies it, in which case it takes
+ * the next free number and is re-stamped — a row is never dropped. A fence
+ * row left by a partial earlier run with the same claim and source and no
+ * database owner is reused instead of appended again. Each assignment
+ * carries the parsed claim the fence projects, to be written back into
+ * `facts.fact` with the row number. Rows the codec would change further, and
+ * a second row whose normalized claim and source the page already carries,
+ * are returned in `rejected` and left alone.
+ */
 export async function planFence(engine: BrainEngine, sourceId: string, entitySlug: string, body: string, group: UnfencedFactRow[]):
-  Promise<{ body: string; assignments: Array<{ id: string; row_num: number; fact: string }>; rejected: UnadoptableFactRecord[] } | { warnings: string[] }> {
+  Promise<{ body: string; assignments: FenceAssignment[]; rejected: UnadoptableFactRecord[] } | { warnings: string[] }> {
   const existingFence = parseFactsFence(body);
   if (existingFence.warnings.length > 0) return { warnings: existingFence.warnings };
-  const occupiedRows = await engine.executeRaw<{ row_num: number; fact: string; source: string | null }>(
-    `SELECT row_num, fact, source FROM facts
+  const occupiedRows = await engine.executeRaw<{ id: string; row_num: number; fact: string; source: string | null }>(
+    `SELECT id, row_num, fact, source FROM facts
       WHERE source_id = $1 AND source_markdown_slug = $2 AND row_num IS NOT NULL`,
     [sourceId, entitySlug],
   );
   const occupied = new Map(occupiedRows.map(row => [Number(row.row_num), row]));
+  const fenceRowAt = new Map(existingFence.facts.map(f => [f.rowNum, f] as const));
   let nextRowNum = Math.max(0, ...occupied.keys(), ...existingFence.facts.map(f => f.rowNum)) + 1;
   const claimed = new Set<number>();
-  const assignments: Array<{ id: string; row_num: number; fact: string }> = [];
+  const assignments: FenceAssignment[] = [];
   const rejected: UnadoptableFactRecord[] = [];
   // The reconciler indexes active rows with one claim and source once (#1781)
   // and retires the later copy, so a claim the page already carries with the
@@ -290,8 +350,30 @@ export async function planFence(engine: BrainEngine, sourceId: string, entitySlu
     const owner = occupied.get(f.rowNum);
     return f.active && owner !== undefined && owner.fact === f.claim && (owner.source ?? '') === (f.source ?? '');
   }).map(f => dupKey(f.claim, f.source, f.visibility)));
+  const heldRowNum = (row: UnfencedFactRow): number | null =>
+    row.row_num === null || row.row_num === undefined ? null : Number(row.row_num);
+  const appendRow = (row: UnfencedFactRow, rowNum: number, claim: string, held: number | null, inPlace: boolean): void => {
+    const fenceRow = fenceRowOf(row, rowNum, claim);
+    existingFence.facts.push(fenceRow);
+    fenceRowAt.set(rowNum, fenceRow);
+    claimed.add(rowNum);
+    assignments.push({ id: row.id, row_num: rowNum, fact: claim, prev_row_num: held, adopted_in_place: inPlace });
+  };
   for (const row of group) {
+    const held = heldRowNum(row);
     const oracle = adoptableClaim(row);
+    // The row already owns its position and the markdown carries it back
+    // (the codec's own projection of the claim, so whitespace is not drift):
+    // there is nothing to publish for it, and the position is spoken for.
+    if (held !== null && !('rejected' in oracle)) {
+      const at = fenceRowAt.get(held);
+      const owner = occupied.get(held);
+      if (at && owner && String(owner.id) === String(row.id)
+        && at.claim === oracle.claim && (at.source ?? '') === (row.source ?? '')) {
+        claimed.add(held);
+        continue;
+      }
+    }
     if ('rejected' in oracle) {
       rejected.push({ source_id: sourceId, slug: entitySlug, fact_id: Number(row.id), reason: 'fence_unrenderable', class: oracle.rejected });
       continue;
@@ -309,15 +391,24 @@ export async function planFence(engine: BrainEngine, sourceId: string, entitySlu
         (!owner || owner.fact !== f.claim || (owner.source ?? '') !== (f.source ?? ''));
     });
     if (existing) {
-      if (occupied.has(existing.rowNum)) existing.rowNum = nextRowNum++;
-      assignments.push({ id: row.id, row_num: existing.rowNum, fact: oracle.claim });
+      if (occupied.has(existing.rowNum)) {
+        fenceRowAt.delete(existing.rowNum);
+        existing.rowNum = nextRowNum++;
+      }
+      fenceRowAt.set(existing.rowNum, existing);
       claimed.add(existing.rowNum);
+      assignments.push({ id: row.id, row_num: existing.rowNum, fact: oracle.claim, prev_row_num: held, adopted_in_place: false });
       continue;
     }
-    const rowNum = nextRowNum++;
-    existingFence.facts.push(fenceRowOf(row, rowNum, oracle.claim));
-    assignments.push({ id: row.id, row_num: rowNum, fact: oracle.claim });
-    claimed.add(rowNum);
+    if (held !== null) {
+      // The markdown lost a row that already holds a position: publish it back
+      // under that same position, unless the fence occupies the number — then
+      // the row moves to the next free one and is re-stamped. Never dropped.
+      const taken = claimed.has(held) || fenceRowAt.has(held);
+      appendRow(row, taken ? nextRowNum++ : held, oracle.claim, held, !taken);
+      continue;
+    }
+    appendRow(row, nextRowNum++, oracle.claim, null, false);
   }
   return { body: replaceOrInsertFactsFence(body, renderFactsTable(existingFence.facts)), assignments, rejected };
 }
@@ -361,6 +452,15 @@ async function fenceManaged(engine: BrainEngine, plan: UnfencedFactsPlan): Promi
       }
       recordUnadoptable(outcome, entitySlug, fence.rejected);
       if (fence.assignments.length === 0) continue;
+      // The managed adoption intent's eligibility check refuses a fact that
+      // already holds a row_num, so a position the markdown lost cannot be
+      // republished through it. Name the page instead of publishing a partial
+      // fence; the rows stay exactly as they are.
+      const inPlace = fence.assignments.filter(a => a.prev_row_num !== null);
+      if (inPlace.length > 0) {
+        outcome.failed_pages.push(`${entitySlug} (managed_adopt_in_place_unsupported: ${inPlace.length} row(s))`);
+        continue;
+      }
       const target = await resolvePageWriteTarget(engine, entitySlug, sourceId);
       await submitFactFenceAdoption(engine, authority, entitySlug, {
         content: fence.body, expectedRevision: snapshot.revision,
@@ -415,17 +515,21 @@ async function fenceFilePage(engine: BrainEngine, sourceId: string, entitySlug: 
       }
       // The parsed claim is what the fence projects; the row keeps its id,
       // vectors and provenance (the reconcile would retire a row whose text
-      // differs from its fence row).
+      // differs from its fence row). The stamp re-checks the position the row
+      // held, so a row another writer re-numbered since planning is left alone.
       for (const a of fence.assignments) {
         await tx.executeRaw(
           `UPDATE facts SET row_num = $1, source_markdown_slug = $2, fact = $5
-            WHERE id = $3 AND source_id = $4 AND row_num IS NULL`,
-          [a.row_num, entitySlug, a.id, sourceId, a.fact],
+            WHERE id = $3 AND source_id = $4
+              AND (row_num IS NULL OR row_num = $6)`,
+          [a.row_num, entitySlug, a.id, sourceId, a.fact, a.prev_row_num],
         );
       }
     });
     if (durable) await commitFactFenceFile(writeRoot, filePath, entitySlug, sourceId, prewrite);
     outcome.fenced += fence.assignments.length;
+    outcome.adopted_in_place = (outcome.adopted_in_place ?? 0) + fence.assignments.filter(a => a.adopted_in_place).length;
+    outcome.renumbered = (outcome.renumbered ?? 0) + fence.assignments.filter(a => a.prev_row_num !== null && !a.adopted_in_place).length;
     outcome.pages_touched += 1;
     outcome.fenced_slugs.push(entitySlug);
   }, { timeoutMs: 5_000, ...(lockRoot ? { lockRoot } : {}) });
