@@ -23,6 +23,7 @@ import { redactConnectionInfo } from '../core/audit/redact-connection-info.ts';
 import { suggestNearest } from '../core/levenshtein.ts';
 import { isConsentRefusal, printConsentRefusal } from '../core/consent.ts';
 import { exclusiveFix, liveServeOwner } from '../core/exclusive-fix.ts';
+import { RemoteMcpError } from '../core/remote-mcp-error.ts';
 
 export interface CliErrorWriteOpts {
   /** Raw argv (defaults to process.argv.slice(2)); decides `--json`. */
@@ -166,7 +167,9 @@ export function writeFatalCliError(e: unknown, opts: { argv?: readonly string[];
     });
     return writeCliError(err, command, { argv, legacy: { error: 'pglite_busy', retryable: true, reason: busy.reason, next_action: next } });
   }
-  if (!jsonRequested(argv)) {
+  // A refused remote HTTP transport is not a PostgreSQL failure. Preserve
+  // its typed unavailable/auth/tool recovery instead of offering db-repair.
+  if (!jsonRequested(argv) && !(e instanceof RemoteMcpError)) {
     try {
       const d = classifyPgAccessError(e, { url: opts.dbUrl ?? null, brainId: opts.brainId });
       if (d.reason !== 'unknown') {

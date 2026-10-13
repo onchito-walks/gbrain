@@ -116,6 +116,23 @@ describe('A16b thin-client refusal matrix', () => {
     expectGolden('cli/thin-client-routing', routing, normalizerFor(ROUTING_ROWS));
   });
 
+  test('remote discovery failures retain unavailable recovery, never PostgreSQL remediation', () => {
+    for (const row of [...cases, ...routing]) {
+      const stderr = String(row.stderr);
+      expect(stderr).not.toContain('GBRAIN_DB_ACCESS');
+      expect(stderr).not.toContain('gbrain db-repair');
+      if (stderr.includes('OAuth discovery failed:')) {
+        expect(stderr).toContain('Error [unavailable]');
+        if (stderr.includes('Request:')) {
+          expect(stderr).toContain('Retry the same operation and arguments with request_id');
+          expect(stderr).toContain('do not generate a replacement ID');
+        } else {
+          expect(stderr).toContain('gbrain remote doctor');
+        }
+      }
+    }
+  });
+
   test('the normalizer is stable over the rows with timestamps and request ids', async () => {
     await expectNormalizerStable(() => run(VOLATILE_ROWS), normalizerFor(VOLATILE_ROWS));
   }, 120_000);
