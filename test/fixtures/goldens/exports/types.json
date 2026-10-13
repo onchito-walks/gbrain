@@ -1380,6 +1380,7 @@
           "floorRatio?: number | undefined",
           "graph_signals?: boolean | undefined",
           "hnswIterativeScan?: \"relaxed_order\" | \"strict_order\" | \"off\" | undefined",
+          "includeCoveredAtoms?: boolean | undefined",
           "include_slug_prefixes?: string[] | undefined",
           "intentWeighting?: boolean | undefined",
           "language?: string | undefined",
@@ -1423,6 +1424,7 @@
         "members": [
           "alias_hit?: boolean | undefined",
           "alias_resolved_boost?: number | undefined",
+          "atom_disposition?: AtomDisposition | undefined",
           "backlink_boost?: number | undefined",
           "backlink_count?: number | undefined",
           "base_score?: number | undefined",
@@ -1467,6 +1469,7 @@
           "page_id: number",
           "page_slug?: string | undefined",
           "provenance?: \"generated\" | undefined",
+          "provenance_status?: AtomProvenanceStatus | undefined",
           "recency_boost?: number | undefined",
           "relational?: RelationalEvidence | undefined",
           "relational_hop?: number | undefined",
@@ -2282,6 +2285,13 @@
         "name": "openAIPromptCacheKey",
         "signature": [
           "(args: { system?: string; toolNames?: string[]; }) => string | undefined"
+        ]
+      },
+      {
+        "kind": "function",
+        "name": "opencodeGoSessionHeaders",
+        "signature": [
+          "(recipe: Recipe, cfg: AIGatewayConfig) => Record<string, string> | undefined"
         ]
       },
       {
@@ -7375,6 +7385,8 @@
           "floorRatio?: number | undefined",
           "graph_signals?: boolean | undefined",
           "hnswIterativeScan?: \"relaxed_order\" | \"strict_order\" | \"off\" | undefined",
+          "includeCoveredAtoms?: boolean | undefined",
+          "includeQuarantined?: boolean | undefined",
           "include_slug_prefixes?: string[] | undefined",
           "intentWeighting?: boolean | undefined",
           "keywordArmConfidenceFloor?: number | null | undefined",
@@ -7696,6 +7708,13 @@
         "name": "shouldBoostCompiledTruth",
         "signature": [
           "(detail: string | null | undefined) => boolean"
+        ]
+      },
+      {
+        "kind": "function",
+        "name": "stampAtomProvenance",
+        "signature": [
+          "(engine: BrainEngine, results: SearchResult[]) => Promise<void>"
         ]
       },
       {
@@ -8894,6 +8913,7 @@
           "floorRatio?: number | undefined",
           "graph_signals?: boolean | undefined",
           "hnswIterativeScan?: \"relaxed_order\" | \"strict_order\" | \"off\" | undefined",
+          "includeCoveredAtoms?: boolean | undefined",
           "include_slug_prefixes?: string[] | undefined",
           "intentWeighting?: boolean | undefined",
           "language?: string | undefined",
@@ -8937,6 +8957,7 @@
         "members": [
           "alias_hit?: boolean | undefined",
           "alias_resolved_boost?: number | undefined",
+          "atom_disposition?: AtomDisposition | undefined",
           "backlink_boost?: number | undefined",
           "backlink_count?: number | undefined",
           "base_score?: number | undefined",
@@ -8981,6 +9002,7 @@
           "page_id: number",
           "page_slug?: string | undefined",
           "provenance?: \"generated\" | undefined",
+          "provenance_status?: AtomProvenanceStatus | undefined",
           "recency_boost?: number | undefined",
           "relational?: RelationalEvidence | undefined",
           "relational_hop?: number | undefined",

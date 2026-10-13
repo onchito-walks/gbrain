@@ -319,6 +319,9 @@
           "details": {
             "drift_pct": 0,
             "drifted": 0,
+            "fresh": 0,
+            "quote_present_in_live_page": 0,
+            "quote_probe": "none",
             "slug_unbound": 0,
             "source_changed": 0,
             "source_gone": 0,

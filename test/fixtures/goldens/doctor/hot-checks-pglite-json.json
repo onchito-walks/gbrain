@@ -15,7 +15,7 @@
         ],
         "category_scores": {
           "brain": 45,
-          "meta": 100,
+          "meta": 95,
           "ops": 100,
           "skill": 95
         },
@@ -323,6 +323,9 @@
             "details": {
               "drift_pct": 0,
               "drifted": 0,
+              "fresh": 0,
+              "quote_present_in_live_page": 0,
+              "quote_probe": "none",
               "slug_unbound": 0,
               "source_changed": 0,
               "source_gone": 0,
@@ -365,16 +368,33 @@
           {
             "category": "meta",
             "details": {
+              "candidates_checked": 25,
+              "checked_sources": [],
+              "code": "not_verified",
+              "coverage_issues": [
+                {
+                  "reason": "identity",
+                  "source_id": "plain"
+                },
+                {
+                  "reason": "identity",
+                  "source_id": "notes"
+                }
+              ],
               "docs": "docs/guides/troubleshooting.md#not-verified-doctor-checks",
               "git_root_skipped": [],
               "limit": 10000,
               "timeout_ms": "<volatile>",
               "unreadable_sources": [],
+              "verification_complete": false,
+              "verification_scope": "markdown",
+              "verified": false,
               "walk_truncated": false
             },
-            "message": "No cross-source slug drift detected.",
+            "fix_unavailable_reason": "unstructured",
+            "message": "Multi-source drift verification incomplete; health is unknown for: plain (identity), notes (identity).",
             "name": "multi_source_drift",
-            "status": "ok"
+            "status": "warn"
           },
           {
             "category": "brain",
@@ -2834,7 +2854,7 @@
         ],
         "db_url_source": null,
         "engine": "pglite",
-        "health_score": 40,
+        "health_score": 35,
         "schema_version": 2,
         "status": "unhealthy",
         "top_issues": [
@@ -3016,6 +3036,12 @@
             "tier": "symptom"
           },
           {
+            "fix": "Multi-source drift verification incomplete; health is unknown for: plain (identity), notes (identity).",
+            "name": "multi_source_drift",
+            "status": "warn",
+            "tier": "symptom"
+          },
+          {
             "fix": "64 new built-in skill(s) available that this workspace hasn't installed: academic-verify, archive-crawler, article-enrichment, ask-user, blog-ingest, book-mirror, brain-ingest-gate, brain-link-discipline, … +56 more. Add them with `gbrain skillpack sync`.",
             "name": "skill_currency",
             "status": "warn",
@@ -3081,7 +3107,7 @@
         ],
         "category_scores": {
           "brain": 45,
-          "meta": 100,
+          "meta": 95,
           "ops": 100,
           "skill": 95
         },
@@ -3389,6 +3415,9 @@
             "details": {
               "drift_pct": 0,
               "drifted": 0,
+              "fresh": 0,
+              "quote_present_in_live_page": 0,
+              "quote_probe": "none",
               "slug_unbound": 0,
               "source_changed": 0,
               "source_gone": 0,
@@ -3431,16 +3460,33 @@
           {
             "category": "meta",
             "details": {
+              "candidates_checked": 27,
+              "checked_sources": [],
+              "code": "not_verified",
+              "coverage_issues": [
+                {
+                  "reason": "identity",
+                  "source_id": "plain"
+                },
+                {
+                  "reason": "identity",
+                  "source_id": "notes"
+                }
+              ],
               "docs": "docs/guides/troubleshooting.md#not-verified-doctor-checks",
               "git_root_skipped": [],
               "limit": 10000,
               "timeout_ms": "<volatile>",
               "unreadable_sources": [],
+              "verification_complete": false,
+              "verification_scope": "markdown",
+              "verified": false,
               "walk_truncated": false
             },
-            "message": "No cross-source slug drift detected.",
+            "fix_unavailable_reason": "unstructured",
+            "message": "Multi-source drift verification incomplete; health is unknown for: plain (identity), notes (identity).",
             "name": "multi_source_drift",
-            "status": "ok"
+            "status": "warn"
           },
           {
             "category": "brain",
@@ -5900,7 +5946,7 @@
         ],
         "db_url_source": null,
         "engine": "pglite",
-        "health_score": 40,
+        "health_score": 35,
         "schema_version": 2,
         "status": "unhealthy",
         "top_issues": [
@@ -6078,6 +6124,12 @@
             },
             "fix": "8 file(s) in Git sources are held and not imported; the rest of each sync continues. notes: 8 held (0 page(s) keep an older revision, 8 file(s) have no page), first: fences/llm.md [invalid_fence/no_header], fences/manual.md [invalid_fence/takes_kind_unsupported], fm/dash-line.md [invalid_frontmatter/needs_interpretation], fm/duplicate-key.md [invalid_frontmatter/needs_interpretation], fm/indented-close.md [invalid_frontmatter/yaml_parse]. A page whose newer file is held is read-only for put_page until the file is repaired, so do not retry a refused write. Inspect with gbrain sources status notes; then notes: preview the frontmatter and other fixes with gbrain repair frontmatter --source notes (writes nothing until a hash-bound apply); nothing repairs the fence and slug-conflict holds by itself (no maintenance run is active), so preview the content repairs with gbrain repair content --source notes (read-only, no model call: it lists each held file with its planned repair or the exact edit, kind by kind, and prints the apply command with --expect <hash>[,<hash>]), then run the apply command it prints.",
             "name": "git_held_files",
+            "status": "warn",
+            "tier": "symptom"
+          },
+          {
+            "fix": "Multi-source drift verification incomplete; health is unknown for: plain (identity), notes (identity).",
+            "name": "multi_source_drift",
             "status": "warn",
             "tier": "symptom"
           },

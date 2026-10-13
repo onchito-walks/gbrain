@@ -20,7 +20,7 @@
       "  [WARN] frontmatter_integrity → gbrain repair frontmatter --source notes --brain host",
       "  [WARN] frontmatter_repairable → gbrain repair frontmatter --source notes --brain host",
       "  [WARN] link_resolution_opportunity → 6 of 8 bare wikilinks (75%) would resolve to 2 distinct page(s) under global_basename mode. Enable with: gbrain config set link_resolution.global_basename true",
-      "  +1 more — see full list below",
+      "  +2 more — see full list below",
       "  [OK] resolver_health: 1 skills, all reachable",
       "  [INFO] retrieval_reflex_health: pglite — serve IPC socket not present; enabled but NO resolve path exists right now: the IPC socket is only bound by a running `gbrain serve` (stdio or --http) — until one is up, hooks/reflex degrade to no_serve on this brain (host capability may still supply pointers; policy skill carries otherwise) — policy skill not installed; run `gbrain integrations install retrieval-reflex --target <host-repo>`",
       "  [OK] volunteer_channels: no push-context activity in 7 days — if a hook adapter is installed, confirm its registration landed and the harness session was RESTARTED (hooks snapshot at session start); a serve older than this build logs NOTHING for the hook lane — restart serve on the new build to activate the feedback loop",
@@ -47,7 +47,7 @@
       "  [OK] conversation_parser_probe_health: disabled (opt-in; default-on only for search.mode=tokenmax). Enable with: `gbrain config set autopilot.conversation_parser_probe.enabled true`",
       "  [OK] home_dir_in_worktree: gbrain home is outside any enclosing git worktree.",
       "  [OK] default_source_local_path: default source local_path is set: <home>/.gbrain/content/<uuid>/default",
-      "  [OK] multi_source_drift: No cross-source slug drift detected.",
+      "  [WARN] multi_source_drift: Multi-source drift verification incomplete; health is unknown for: notes (identity).",
       "  [OK] embedding_key_source: No embedding key is set here (VOYAGE_API_KEY or voyage_api_key). No environment variable overrides a different config-plane provider key. This check sees only the environment `gbrain doctor` runs in; a daemon (gbrain serve, autopilot) has its own, and reports a mismatch in its log with a startup warning or embedding_auth_failed.",
       "  [INFO] harness_wiring: No agent harness was detected. Wire one when the user picks an agent app.",
       "  [OK] agent_contract: No agent dead ends in the last 7 days (0 non-success event(s) logged).",
@@ -209,9 +209,9 @@
       "Brain checks:  60/100  (category penalty)",
       "Skill checks:  95/100",
       "Ops checks:    100/100",
-      "Meta checks:   100/100",
+      "Meta checks:   95/100",
       "Weighted brain score: [WARN] Brain score 36/100 (embed 0/35, links 5/25, timeline density (entity and event pages) 15/15, orphans 6/15, dead-links 10/10)",
-      "Overall health score: 55/100. Failed checks found."
+      "Overall health score: 50/100. Failed checks found."
     ]
   },
   "normalizer": "doctor-json-v1"
