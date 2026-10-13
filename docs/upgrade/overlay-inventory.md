@@ -39,6 +39,7 @@ Keep upstream's implementation where it already supplies the policy; carry only 
 The installed JSON registry is a previous staging plan, not authoritative evidence of equivalence. Corrections established here: GO header injection is an actual source patch introduced by f2676d1fe, not merely service configuration; prefix support is upstream-equivalent, while skip-only cases 8/9 do not prove it; native explicit-budget unpriced-route refusal already exists, but its default-budget behavior differs; quarantine list/clear/scan is not the guarded operator set/rollback lane. Preserve upstream managed writers and privacy/read eligibility when adapting old patches.
 
 ## Behavior classification table
+<!-- repo-paths: historical -->
 
 Changed files for each behavior are the exact union of introducing commits (includes their support/tests); the full per-commit split follows. Regression paths are inspected source tests, NOT new successful runs. See detailed notes for insufficient helper-only or missing coverage.
 
@@ -183,6 +184,7 @@ Verification tooling only: observeRss injection and observeResidentMemory keep u
 Carry loadAtomDispositions/stampAtomDispositions/loadAtomDispositionForPage across keyword/search/hybrid/cache hit and get_page after visibility resolution. Require same-source atom id/slug/frozen hash+slug/exact UTF-8 body SHA256 identity; malformed/stale/conflicting records warn untrusted; drop inaccessible/private references. Always historical=true/certified=false. Official retrieval/get-page have no companion atom_disposition enrichment; absence corroborated by inspection of those read paths, not missing filename alone.
 
 ## Complete commit-range coverage ledger
+<!-- repo-paths: historical -->
 
 This separates runtime behavior from docs, tests, generated support and behavior-preserving refactors. A support/refactor row is not a new runtime patch; its classification is the named behavioral dependency, not a fabricated fourth runtime class. Every SHA in the real range is accounted for exactly once here. Commands: `git show -s --format=%s SHA` and `git diff-tree --no-commit-id --name-only -r SHA`; observed subjects/files are quoted verbatim in each row.
 
@@ -3080,7 +3082,7 @@ Command: `git show e90ad6eddce9414d262e11bbc01ce63cf6235de8:test/autopilot-globa
 346: test('runs global phases (no source_id) and stamps autopilot.last_global_at on success', async () => {
 ```
 
-### test/brain-allowlist.serial.test.ts
+### test/brain-allowlist.serial.test.ts <!-- repo-paths: historical -->
 
 Command: `git show e90ad6eddce9414d262e11bbc01ce63cf6235de8:test/brain-allowlist.serial.test.ts`
 
@@ -3177,7 +3179,7 @@ Command: `git show e90ad6eddce9414d262e11bbc01ce63cf6235de8:test/doctor-atom-pro
 337: it('names the slug-unbound bucket in the warn message without letting it drive the WARN or the denominator (#4806)', async () => {
 ```
 
-### test/doctor-drift-coverage-note.test.ts
+### test/doctor-drift-coverage-note.test.ts <!-- repo-paths: historical -->
 
 Command: `git show e90ad6eddce9414d262e11bbc01ce63cf6235de8:test/doctor-drift-coverage-note.test.ts`
 
@@ -3207,6 +3209,7 @@ Command: `git show 0460af288227a193c2031eca2e6a64f808cbd8bd:test/doctor-not-veri
 ```
 
 ### test/e2e/dream-allow-list-pglite.test.ts
+<!-- repo-paths: historical -->
 
 Command: `git show e90ad6eddce9414d262e11bbc01ce63cf6235de8:test/e2e/dream-allow-list-pglite.test.ts`
 
@@ -3267,7 +3270,7 @@ Command: `git show e90ad6eddce9414d262e11bbc01ce63cf6235de8:test/extract-atoms-e
 214: test('with a $0 pricing override for the embed model the cap stays on and the run still extracts', async () => {
 ```
 
-### test/extract-atoms-hardening.test.ts
+### test/extract-atoms-hardening.test.ts <!-- repo-paths: historical -->
 
 Command: `git show e90ad6eddce9414d262e11bbc01ce63cf6235de8:test/extract-atoms-hardening.test.ts`
 
@@ -3316,7 +3319,7 @@ Command: `git show e90ad6eddce9414d262e11bbc01ce63cf6235de8:test/extract-by-ment
 206: test('removeLinksByPagesAndSource: empty page list is a no-op', async () => {
 ```
 
-### test/forward-port-semantics.test.ts
+### test/forward-port-semantics.test.ts <!-- repo-paths: historical -->
 
 Command: `git show e90ad6eddce9414d262e11bbc01ce63cf6235de8:test/forward-port-semantics.test.ts`
 
@@ -3343,7 +3346,7 @@ Command: `git show e90ad6eddce9414d262e11bbc01ce63cf6235de8:test/forward-port-se
 155: test('knobsHash folds includeCoveredAtoms opt-out into the hash (ica bit)', () => {
 ```
 
-### test/import-file-slug.test.ts
+### test/import-file-slug.test.ts <!-- repo-paths: historical -->
 
 Command: `git show e90ad6eddce9414d262e11bbc01ce63cf6235de8:test/import-file-slug.test.ts`
 

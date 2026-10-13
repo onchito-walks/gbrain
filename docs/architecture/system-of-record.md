@@ -294,11 +294,12 @@ or a physical projection that leaves attribution untouched):
 <!-- write-attribution-covered:end -->
 
 Unattributed (on unmanaged brains these would write with `NULL` attribution).
-The list is empty: `gbrain extract` timeline walks, enrichment and meeting
-timeline extraction run as tiered derivers since #5575 (I2). A new writer
-that cannot be attributed yet is declared here:
+`gbrain extract` timeline walks, enrichment and meeting timeline extraction
+run as tiered derivers since #5575 (I2). Writers not yet attributed are
+declared explicitly here:
 
 <!-- write-attribution-unattributed:start -->
+- `src/core/operator-quarantine.ts` (2): operator incident marker apply/rollback are direct metadata UPDATEs that refuse a managed brain before the transaction and carry no write principal; unattributed until routed through a maintenance transaction.
 <!-- write-attribution-unattributed:end -->
 
 ## The privacy boundary

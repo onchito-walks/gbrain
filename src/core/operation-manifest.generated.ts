@@ -844,7 +844,7 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
     "name": "search",
     "idempotent": true,
     "outputRedaction": "retrieval",
-    "description": "Cheap hybrid search, no LLM expansion, top 20: exact tokens, names, field values. NOT proof of coverage; match: \"keyword\" pages every keyword match and takes OR across quoted names or codes (\"A\" OR \"B\" OR …): one call lists every page matching any. Name lists: entity names. Concepts/landscape: `query`; lists: list_pages; personal: get_recent_salience. return_unit: sections or conversations. fields: \"full\" adds diagnostics.",
+    "description": "Hybrid search, no LLM expansion, top 20. NOT proof of coverage; keyword pages matches (quoted OR names). Concepts: `query`; list_pages. return_unit: sections/conversations. fields: \"full\".",
     "params": {
       "query": {
         "type": "string",
@@ -891,11 +891,11 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
         "items": {
           "type": "string"
         },
-        "description": "Hide pages whose slug starts with any of these prefixes (e.g. [\"atoms/\"]). Additive over the default hard-excludes, applied at SQL level on every retrieval leg. Independent of `types`. CLI: --exclude-slug-prefixes atoms/,test/. Omit for exact current behavior."
+        "description": "Exclude slug prefixes, plus hard-excludes."
       },
       "include_covered_atoms": {
         "type": "boolean",
-        "description": "Default covered-atom retrieval policy. Absent/false: an `atom` page is hidden when its content is already reachable through a live non-atom page of the same source (its frontmatter `source_slug` resolves to one, or the atom links out to one). Uncovered atoms are always kept. true returns every atom page."
+        "description": "true includes source-covered atoms; default keeps uncovered only."
       },
       "snippet_chars": {
         "type": "number",
@@ -974,7 +974,7 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
     "name": "query",
     "idempotent": true,
     "outputRedaction": "retrieval",
-    "description": "Hybrid search plus multi-query expansion for concept/landscape questions (expansion recovers synonyms). Still top-K; return_unit: sections or conversations. Lists: list_pages. Exact tokens: `search` is cheaper (no LLM call). Personal: get_recent_salience, find_anomalies; transcripts: `gbrain transcripts recent`. Do NOT assume 'crazy' means impressive (often difficult or emotionally charged). Needs an embedding key (else keyword-only); expansion needs a chat key. Fact rows: use follow_up. fields: \"full\" adds diagnostics.",
+    "description": "Concept search + synonym expansion. Still top-K; lists: list_pages. Exact: `search` is cheaper (no LLM call). Embedding key else keywords; chat key for expansion. return_unit: sections/conversations. Fact rows: follow_up. fields: \"full\" adds diagnostics.",
     "params": {
       "query": {
         "type": "string",
@@ -1009,11 +1009,11 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
         "items": {
           "type": "string"
         },
-        "description": "Hide pages whose slug starts with any of these prefixes (e.g. [\"atoms/\"]). Additive over the default hard-excludes, applied at SQL level on every retrieval leg. Independent of `types`. CLI: --exclude-slug-prefixes atoms/,test/. Omit for exact current behavior."
+        "description": "Exclude slug prefixes, plus hard-excludes."
       },
       "include_covered_atoms": {
         "type": "boolean",
-        "description": "Default covered-atom retrieval policy. Absent/false: an `atom` page is hidden when its content is already reachable through a live non-atom page of the same source (its frontmatter `source_slug` resolves to one, or the atom links out to one). Uncovered atoms are always kept. true returns every atom page."
+        "description": "true includes source-covered atoms; default keeps uncovered only."
       },
       "snippet_chars": {
         "type": "number",
