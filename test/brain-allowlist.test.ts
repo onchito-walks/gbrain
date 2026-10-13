@@ -8,7 +8,7 @@
  *   - denied ops (file_upload etc.) do NOT appear in the registry
  */
 
-import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeAll, afterAll, beforeEach, spyOn } from 'bun:test';
 import * as fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -392,5 +392,28 @@ describe('brain_put_page pins undeclared model-authored types (#4852)', () => {
       '---\ntype: pattern\ntitle: Literal\n---\n\nBody',
     )).rejects.toMatchObject({ code: 'invalid_params' });
     expect(await engine.getPage('wiki/agents/42/pattern-literal', { sourceId: 'default' })).toBeNull();
+  });
+
+  test('scope refusal precedes producer normalization for a write outside its allow-list', async () => {
+    const writes: string[] = [];
+    const spy = spyOn(process.stderr, 'write').mockImplementation((chunk: unknown) => { writes.push(String(chunk)); return true; });
+    try {
+      await withEnv({ GBRAIN_SCHEMA_PACK: 'gbrain-base-v2' }, async () => {
+        const tools = buildBrainTools({ subagentId: 42, engine, config, allowedSlugPrefixes: PREFIXES });
+        const tool = tools.find(t => t.name === 'brain_put_page')!;
+        const error = await tool.execute(
+          { slug: 'wiki/personal/reflections/outside-the-list', content: '---\ntype: pattern\ntitle: Outside\n---\n\nBody' },
+          { engine, jobId: 1, remote: true }).then(() => null, error => error);
+        // Authorization, not vocabulary: an out-of-scope generated write is refused by the scope
+        // fence before the pack is consulted (so it is never normalized and never told the pack's
+        // declared types).
+        expect(error).toBeInstanceOf(OperationError);
+        expect(error.code).toBe('permission_denied');
+        expect(error.message).toContain('trusted-workspace allow-list');
+        expect(error.message).not.toContain('declared');
+      });
+    } finally { spy.mockRestore(); }
+    expect(writes.filter(chunk => chunk.includes("normalized to 'note'"))).toEqual([]);
+    expect(await engine.getPage('wiki/personal/reflections/outside-the-list', { sourceId: 'default' })).toBeNull();
   });
 });

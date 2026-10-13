@@ -310,9 +310,6 @@ export async function preparePageAdmission(ctx: OperationContext,
   if (input.operation === 'put_page' && input.managedFileImport !== true && p.kind === undefined && typeof p.content === 'string') {
     intent.timeline_section = isTimelineSection(input.timelineSection) ? input.timelineSection : timelineSectionOf(p.content, slug);
   }
-  if (input.operation === 'put_page' && input.managedFileImport !== true) {
-    intent.content = await putPageVocabularyContent(ctx, { ...intent, slug }, sourceId);
-  }
 
   const typeWarning = null;
   if (input.operation === 'capture') {
@@ -344,6 +341,14 @@ export async function preparePageAdmission(ctx: OperationContext,
   await validateMutationSlug(ctx, input.operation, slug, sourceId);
   enforceClientSlugFence(ctx, slug, input.operation);
   enforceSubagentSlugFence(ctx, slug, input.operation);
+  // Scope refusal precedes producer normalization and the vocabulary diagnostic
+  // (B01/B02). put_page's preflight already ordered it that way, but put_pages
+  // reaches preparation directly, so the ordering must hold here too: otherwise a
+  // generated write outside its allow-list is normalized — or told the pack's
+  // declared types — before its missing authority is refused.
+  if (input.operation === 'put_page' && input.managedFileImport !== true) {
+    intent.content = await putPageVocabularyContent(ctx, { ...intent, slug }, sourceId);
+  }
   // Preserve same-source diagnostics for new timeline writes without making
   // terminal replay depend on a page that may have since been purged.
   if (input.operation === 'add_timeline_entry') await requireWritablePage({ ...ctx, sourceId }, slug, input.operation, 'page');
