@@ -57,6 +57,6 @@ echo "[run-slow-tests] running ${#slow_files[@]} slow files (CI runs these as pa
 # tests are explicit by-name — generous per-test budget is correct.
 receipt_begin primary all "" "" "" "${slow_files[@]}"
 rc=0
-bun test --timeout=120000 ${RECEIPT_ARGS[@]+"${RECEIPT_ARGS[@]}"} "${slow_files[@]}" || rc=$?
+test_producer_run slow-all bun test --timeout=120000 ${RECEIPT_ARGS[@]+"${RECEIPT_ARGS[@]}"} "${slow_files[@]}" || rc=$?
 receipt_end "$rc"
 exit "$rc"

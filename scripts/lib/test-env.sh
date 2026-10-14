@@ -143,6 +143,16 @@ receipts_init() {
   unset GBRAIN_TEST_RECEIPT_DIR GBRAIN_TEST_RECEIPT_LANE
   RECEIPT_ID=""
   RECEIPT_ARGS=()
+  # Capture before the E2E scrub; nested tests must not inherit controls.
+  TEST_PRODUCER_PARENT="${GBRAIN_TEST_PRODUCER_PARENT:-}"
+  TEST_CONTROL_DIR="${GBRAIN_TEST_CONTROL_DIR:-}"
+  unset GBRAIN_TEST_PRODUCER_PARENT GBRAIN_TEST_CONTROL_DIR
+  if [ -n "$TEST_PRODUCER_PARENT" ] || [ -n "$TEST_CONTROL_DIR" ]; then
+    [ -n "$TEST_PRODUCER_PARENT" ] && [ -n "$TEST_CONTROL_DIR" ] || {
+      echo '[producer] both explicit parent and control directory required' >&2
+      return 1
+    }
+  fi
   [ -n "$TEST_RECEIPT_DIR" ] || return 0
   case "$TEST_RECEIPT_DIR" in /*) ;; *) TEST_RECEIPT_DIR="$PWD/$TEST_RECEIPT_DIR" ;; esac
   mkdir -p "$TEST_RECEIPT_DIR" || {
@@ -153,6 +163,19 @@ receipts_init() {
 }
 
 # receipt_begin <kind> <tag> <shard> <of> <arm> [file...]
+# Fresh registered TMPDIR before Bun; preserve the outer guard's process group.
+# No polling-based reclaim: unknown consumers and shared caches retain bytes.
+test_producer_run() {
+  local label="$1"
+  shift
+  if [ -n "${TEST_PRODUCER_PARENT:-}" ]; then
+    python3 scripts/lib/test-producer.py --parent "$TEST_PRODUCER_PARENT" \
+      --control "$TEST_CONTROL_DIR" --label "$label" -- "$@"
+  else
+    "$@"
+  fi
+}
+
 # Sets RECEIPT_ID and RECEIPT_ARGS (the bun reporter flags; empty when
 # receipts are off). <tag> must be unique per invocation within the lane.
 receipt_begin() {
