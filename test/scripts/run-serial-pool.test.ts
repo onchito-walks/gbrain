@@ -41,7 +41,7 @@ function stageSandbox(): string {
   const tools = [
     'bash', 'sh', 'env', 'dirname', 'basename', 'mktemp', 'date', 'sleep',
     'cat', 'tail', 'head', 'rm', 'mkdir', 'grep', 'sed', 'awk', 'wc', 'tr',
-    'find', 'sort', 'bun', 'timeout', 'gtimeout', 'pgrep',
+    'find', 'sort', 'comm', 'bun', 'timeout', 'gtimeout', 'pgrep',
   ];
   for (const tool of tools) {
     const p = Bun.which(tool);
