@@ -582,7 +582,7 @@ function normalizeExcludeSlugPrefixesParam(ctx: OperationContext, tool: 'search'
 }
 
 const EXCLUDE_SLUG_PREFIXES_PARAM_DESCRIPTION =
-  'Exclude slug prefixes, plus hard-excludes.';
+  'Exclude slug prefixes, plus hard-excludes. CLI: --exclude-slug-prefixes atoms/,test/.';
 
 const INCLUDE_COVERED_ATOMS_PARAM_DESCRIPTION =
   'true includes source-covered atoms; default keeps uncovered only.';
