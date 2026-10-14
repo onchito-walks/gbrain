@@ -844,7 +844,7 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
     "name": "search",
     "idempotent": true,
     "outputRedaction": "retrieval",
-    "description": "Hybrid search, no LLM expansion, top 20. NOT proof of coverage; keyword pages matches (quoted OR names). Concepts: `query`; list_pages. return_unit: sections/conversations. fields: \"full\".",
+    "description": "Cheap hybrid search, no LLM expansion, top 20. NOT proof of coverage; concept/landscape: `query`; exhaustive lists: list_pages. match: \"keyword\" pages every keyword match and takes OR across quoted names or codes (\"A\" OR \"B\" OR …): one call lists every page matching any. Name lists: entity names. Personal/emotional: get_recent_salience or find_anomalies. return_unit: sections/conversations. fields: \"full\".",
     "params": {
       "query": {
         "type": "string",
@@ -974,7 +974,7 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
     "name": "query",
     "idempotent": true,
     "outputRedaction": "retrieval",
-    "description": "Concept search + synonym expansion. Still top-K; lists: list_pages. Exact: `search` is cheaper (no LLM call). Embedding key else keywords; chat key for expansion. return_unit: sections/conversations. Fact rows: follow_up. fields: \"full\" adds diagnostics.",
+    "description": "Concept/landscape search: expansion recovers synonyms. Still top-K; exhaustive lists: list_pages. Exact: `search` is cheaper (no LLM call). Needs an embedding key for vectors; otherwise keyword-only. Needs a chat key for expansion. Personal/emotional: get_recent_salience or find_anomalies; owner CLI: `gbrain transcripts recent`. Do NOT assume crazy means impressive: it may mean difficult or emotionally charged. return_unit: sections/conversations. Fact rows: follow_up. fields: \"full\" adds diagnostics.",
     "params": {
       "query": {
         "type": "string",
