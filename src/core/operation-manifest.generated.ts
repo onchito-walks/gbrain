@@ -891,7 +891,7 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
         "items": {
           "type": "string"
         },
-        "description": "Exclude slug prefixes, plus hard-excludes."
+        "description": "Exclude slug prefixes, plus hard-excludes. CLI: --exclude-slug-prefixes atoms/,test/."
       },
       "include_covered_atoms": {
         "type": "boolean",
@@ -1009,7 +1009,7 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
         "items": {
           "type": "string"
         },
-        "description": "Exclude slug prefixes, plus hard-excludes."
+        "description": "Exclude slug prefixes, plus hard-excludes. CLI: --exclude-slug-prefixes atoms/,test/."
       },
       "include_covered_atoms": {
         "type": "boolean",

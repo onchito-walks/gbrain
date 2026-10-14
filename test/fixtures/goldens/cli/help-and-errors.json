@@ -685,7 +685,7 @@
       "stdout": [
         "Usage: gbrain query <query> [options]",
         "",
-        "Concept search + synonym expansion. Still top-K; lists: list_pages. Exact: `search` is cheaper (no LLM call). Embedding key else keywords; chat key for expansion. return_unit: sections/conversations. Fact rows: follow_up. fields: \"full\" adds diagnostics.",
+        "Concept/landscape search: expansion recovers synonyms. Still top-K; exhaustive lists: list_pages. Exact: `search` is cheaper (no LLM call). Needs an embedding key for vectors; otherwise keyword-only. Needs a chat key for expansion. Personal/emotional: get_recent_salience or find_anomalies; owner CLI: `gbrain transcripts recent`. Do NOT assume crazy means impressive: it may mean difficult or emotionally charged. return_unit: sections/conversations. Fact rows: follow_up. fields: \"full\" adds diagnostics.",
         "",
         "Options:",
         "  <query>                    Question or topic (required unless image).",
@@ -694,7 +694,7 @@
         "  --limit                    Default 10/25/50 by search mode.",
         "  --offset                   Rows to skip.",
         "  --types                    Page types, e.g. ['person'].",
-        "  --exclude-slug-prefixes    Exclude slug prefixes, plus hard-excludes.",
+        "  --exclude-slug-prefixes    Exclude slug prefixes, plus hard-excludes. CLI: --exclude-slug-prefixes atoms/,test/.",
         "  --include-covered-atoms    true includes source-covered atoms; default keeps uncovered only.",
         "  --snippet-chars            Chars per row (0 = full).",
         "  --return-unit              Default auto: whole conversations.",
