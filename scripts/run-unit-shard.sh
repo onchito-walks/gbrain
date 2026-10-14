@@ -117,8 +117,10 @@ echo "[unit-shard ${RUNNER_SHARD:-(unsharded)}] running ${#files[@]} files (time
 # worker count and attempt every selected file after ordinary failures.
 GROUP_SIZE=1
 GROUPS_TOTAL=$(( (${#files[@]} + GROUP_SIZE - 1) / GROUP_SIZE ))
-GROUP_LOG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gbrain-unit-groups.XXXXXX")
-trap 'rm -rf "$GROUP_LOG_DIR"' EXIT
+GROUP_LOG_DIR=$(mktemp -d "${TEST_CONTROL_DIR:-${TMPDIR:-/tmp}}/gbrain-unit-groups.XXXXXX")
+if [ -z "${TEST_PRODUCER_PARENT:-}" ]; then
+  trap 'rm -rf "$GROUP_LOG_DIR"' EXIT
+fi
 TEST_ARGS=(test)
 [ -z "$MAX_CONC" ] || TEST_ARGS+=("--max-concurrency=$MAX_CONC")
 TEST_ARGS+=("--timeout=$TEST_TIMEOUT_MS")
@@ -135,7 +137,7 @@ for ((offset=0, group=1; offset<${#files[@]}; offset+=GROUP_SIZE, group++)); do
   echo "__gbrain_unit_group_start__ group=$group/$GROUPS_TOTAL files=${#group_files[@]}"
   receipt_begin primary "$RECEIPT_TAG-g$group" "$RECEIPT_SHARD" "$RECEIPT_OF" "" "${group_files[@]}"
   set +e
-  bun "${TEST_ARGS[@]}" ${RECEIPT_ARGS[@]+"${RECEIPT_ARGS[@]}"} "${group_files[@]}" 2>&1 | tee "$log"
+  test_producer_run "unit-$RECEIPT_TAG-g$group" bun "${TEST_ARGS[@]}" ${RECEIPT_ARGS[@]+"${RECEIPT_ARGS[@]}"} "${group_files[@]}" 2>&1 | tee "$log"
   statuses=("${PIPESTATUS[@]}")
   set -e
   bun_rc=${statuses[0]}

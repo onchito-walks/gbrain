@@ -247,7 +247,7 @@ TIMEOUT_BIN=""
 command -v timeout >/dev/null 2>&1 && TIMEOUT_BIN="timeout"
 [ -z "$TIMEOUT_BIN" ] && command -v gtimeout >/dev/null 2>&1 && TIMEOUT_BIN="gtimeout"
 
-LOG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gbrain-serial.XXXXXX")
+LOG_DIR=$(mktemp -d "${TEST_CONTROL_DIR:-${TMPDIR:-/tmp}}/gbrain-serial.XXXXXX")
 RUN_SHA=$(git rev-parse HEAD 2>/dev/null || echo "${GITHUB_SHA:-unknown}")
 if [ "${#ordered_files[@]}" -gt 0 ]; then
   printf '%s\n' "${ordered_files[@]}" > "$LOG_DIR/selected.txt"
@@ -329,7 +329,7 @@ finish() {
   local code="$?"
   trap - EXIT
   write_timings "$code"
-  rm -rf "$LOG_DIR"
+  [ -n "${TEST_PRODUCER_PARENT:-}" ] || rm -rf "$LOG_DIR"
 }
 trap 'handle_interrupt 130' INT
 trap 'handle_interrupt 143' TERM
@@ -366,10 +366,10 @@ run_one_file() {
   fi
   receipt_begin "$kind" "$RECEIPT_TAG-$(basename "$log" .log)" "$RECEIPT_SHARD" "$RECEIPT_OF" "" "$f"
   if [ "$wrap" = "wrap" ] && [ -n "$TIMEOUT_BIN" ]; then
-    "$TIMEOUT_BIN" -k 15 "$PER_FILE_TIMEOUT" \
+    test_producer_run "serial-$RECEIPT_TAG-$(basename "$log" .log)-$kind" "$TIMEOUT_BIN" -k 15 "$PER_FILE_TIMEOUT" \
       bun test --max-concurrency=1 --timeout=120000 ${cov_args[@]+"${cov_args[@]}"} ${RECEIPT_ARGS[@]+"${RECEIPT_ARGS[@]}"} "$f" > "$log" 2>&1 || rc=$?
   else
-    bun test --max-concurrency=1 --timeout=120000 ${cov_args[@]+"${cov_args[@]}"} ${RECEIPT_ARGS[@]+"${RECEIPT_ARGS[@]}"} "$f" > "$log" 2>&1 || rc=$?
+    test_producer_run "serial-$RECEIPT_TAG-$(basename "$log" .log)-$kind" bun test --max-concurrency=1 --timeout=120000 ${cov_args[@]+"${cov_args[@]}"} ${RECEIPT_ARGS[@]+"${RECEIPT_ARGS[@]}"} "$f" > "$log" 2>&1 || rc=$?
   fi
   receipt_end "$rc"
   echo "$rc" > "$exitf"

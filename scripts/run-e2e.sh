@@ -96,8 +96,10 @@ fi
 
 # Portable mktemp: explicit XXXXXX is required by GNU mktemp on Linux CI.
 # `-t prefix` works on BSD but errors on GNU when the template lacks Xs.
-E2E_TMP_HOME=$(mktemp -d "${TMPDIR:-/tmp}/gbrain-e2e.XXXXXX")
-trap 'rm -rf "$E2E_TMP_HOME"' EXIT
+E2E_TMP_HOME=$(mktemp -d "${TEST_CONTROL_DIR:-${TMPDIR:-/tmp}}/gbrain-e2e.XXXXXX")
+if [ -z "${TEST_PRODUCER_PARENT:-}" ]; then
+  trap 'rm -rf "$E2E_TMP_HOME"' EXIT
+fi
 
 # The foreground file runs as an owned child so signals interrupt wait promptly.
 # Snapshot descendants before signalling: reparented children cannot be found later.
@@ -375,6 +377,13 @@ remove_file_home() {
   if [ -d /proc/self ]; then
     leaked=$(grep -lzxF "HOME=$home" /proc/[0-9]*/environ 2>/dev/null | sed 's|^/proc/||; s|/environ$||' || true)
   fi
+  if [ -n "${TEST_PRODUCER_PARENT:-}" ]; then
+    echo "[producer] retained HOME=$home (consumer relinquishment unproven)"
+    # Preserve the leak failure signal, without killing consumers or deleting
+    # their bytes merely to produce a clean result.
+    [ -z "$leaked" ] || return 1
+    return 0
+  fi
   for pid in $leaked; do
     [ "$pid" = "$$" ] && continue
     cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | cut -c1-200 || true)
@@ -469,7 +478,7 @@ for f in "${files[@]}"; do
     p=0
     rm -f "$E2E_TMP_HOME/current.junit.xml"
     receipt_begin primary "$RECEIPT_TAG-f$file_idx-$pass_label" "$RECEIPT_SHARD" "$RECEIPT_OF" "$arm" "${f#./}"
-    env "$@" HOME="$FILE_HOME" GBRAIN_HOME="$FILE_HOME" $TIMEOUT_CMD bun test --timeout=60000 --reporter=junit --reporter-outfile="$E2E_TMP_HOME/current.junit.xml" ${COVERAGE_ARGS[@]+"${COVERAGE_ARGS[@]}"} "$f" > "$E2E_TMP_HOME/current.log" 2>&1 &
+    test_producer_run "e2e-$RECEIPT_TAG-f$file_idx-$pass_label" env "$@" HOME="$FILE_HOME" GBRAIN_HOME="$FILE_HOME" $TIMEOUT_CMD bun test --timeout=60000 --reporter=junit --reporter-outfile="$E2E_TMP_HOME/current.junit.xml" ${COVERAGE_ARGS[@]+"${COVERAGE_ARGS[@]}"} "$f" > "$E2E_TMP_HOME/current.log" 2>&1 &
     ACTIVE_E2E_PID=$!
     wait "$ACTIVE_E2E_PID" || rc=$?
     ACTIVE_E2E_PID=""
@@ -478,6 +487,12 @@ for f in "${files[@]}"; do
     fi
     receipt_end "$rc"
     output=$(cat "$E2E_TMP_HOME/current.log")
+    if [ -n "${TEST_PRODUCER_PARENT:-}" ]; then
+      cp "$E2E_TMP_HOME/current.log" "$E2E_TMP_HOME/f$file_idx-$pass_label.log"
+      if [ -f "$E2E_TMP_HOME/current.junit.xml" ]; then
+        cp "$E2E_TMP_HOME/current.junit.xml" "$E2E_TMP_HOME/f$file_idx-$pass_label.junit.xml"
+      fi
+    fi
     if ! cleanup_note=$(remove_file_home "$FILE_HOME"); then
       output="$output
 $cleanup_note"
