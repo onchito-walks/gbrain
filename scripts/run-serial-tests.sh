@@ -260,12 +260,9 @@ if [ -n "${COVERAGE_DIR:-}" ]; then
 fi
 
 now_ms() {
-  local stamp
-  stamp=$(date +%s%3N)
-  case "$stamp" in
-    *[!0-9]*|'') bun -e 'console.log(Date.now())' ;;
-    *) printf '%s\n' "$stamp" ;;
-  esac
+  # A single OS monotonic clock across processes; never mix date's realtime
+  # samples with a Bun fallback (wall-clock adjustments can make them regress).
+  bun -e 'console.log(String(process.hrtime.bigint() / 1000000n))'
 }
 
 # Every attempt has its own files; concurrent workers never append shared JSON.
@@ -283,7 +280,7 @@ write_timings() {
       const key = name.slice(0, -5), file = read(name), rawExit = read(key + ".exit");
       const exitCode = rawExit === "" ? null : Number(rawExit);
       const rawMs = read(key + ".duration-ms"), start = Number(read(key + ".start-ms"));
-      const durationMs = rawMs ? Number(rawMs) : start ? Math.max(0, Date.now() - start) : null;
+      const durationMs = rawMs ? Number(rawMs) : start ? Math.max(1, Number(process.hrtime.bigint() / 1000000n) - start) : null;
       const status = exitCode === 0 ? "pass" : exitCode === null ? "cancelled"
         : exitCode === 124 || (exitCode === 137 && durationMs >= Number(timeout) * 1000) ? "timeout"
         : exitCode === 137 || exitCode === 143 ? "external-kill" : "fail";
@@ -350,7 +347,7 @@ run_one_file() {
   # $1 file, $2 log path, $3 exit-sentinel path, $4 wrap ("wrap"|"nowrap"),
   # $5 receipt kind (primary|rescue; default primary)
   local f="$1" log="$2" exitf="$3" wrap="$4" kind="${5:-primary}" rc=0
-  local key="${log%.log}" started finished
+  local key="${log%.log}" started finished elapsed
   printf '%s\n' "$f" > "$key.file"
   started=$(now_ms)
   printf '%s\n' "$started" > "$key.start-ms"
@@ -374,8 +371,11 @@ run_one_file() {
   receipt_end "$rc"
   echo "$rc" > "$exitf"
   finished=$(now_ms)
-  echo "$((finished - started))" > "$key.duration-ms"
-  echo "$(((finished - started) / 1000))" > "$key.dur"
+  elapsed=$((finished - started))
+  # Retain a positive sentinel even on a zero-resolution or regressing sample.
+  [ "$elapsed" -gt 0 ] || elapsed=1
+  echo "$elapsed" > "$key.duration-ms"
+  echo "$((elapsed / 1000))" > "$key.dur"
 }
 
 start_epoch=$(date +%s)
