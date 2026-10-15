@@ -523,6 +523,60 @@ describe('operator quarantine-set — projection visibility (apply + rollback)',
 });
 
 describe('operator quarantine-set — concurrency + persistence guards', () => {
+  test('metadata-only inventory classification preserves exact body, hash, chunks, aliases and other frontmatter through apply/rollback', async () => {
+    const records = await seedFive();
+    const fm = { visibility: 'private', tags: ['keep'], custom: { nested: ['unchanged', 17] } };
+    await engine.executeRaw(`UPDATE pages SET frontmatter=$1::text::jsonb WHERE id=$2`, [JSON.stringify(fm), records[0]!.id]);
+    // A frontmatter update may change the hash; capture the actual immutable manifest afterwards.
+    records[0]!.content_hash = (await engine.executeRaw<{ content_hash: string }>(
+      `SELECT content_hash FROM pages WHERE id=$1`, [records[0]!.id]))[0]!.content_hash;
+    await sealAll(records);
+    const preserved = async () => ({
+      pages: await engine.executeRaw(`SELECT id, source_id, slug, source_path, content_hash, compiled_truth,
+        frontmatter - 'quarantine' AS frontmatter FROM pages ORDER BY id`),
+      chunks: await engine.executeRaw(`SELECT * FROM content_chunks ORDER BY id`),
+      aliases: await engine.executeRaw(`SELECT * FROM page_aliases ORDER BY source_id, alias_norm, slug`),
+    });
+    const before = await preserved();
+    const { sha256 } = parseOperatorManifest(manifestText(records));
+    const { snapshot } = await applyOperatorQuarantine(engine, records, {
+      sourceId: 'default', reason: 'wrong-root-sync', incident: 'metadata-only', manifestSha256: sha256,
+    });
+    expect(await preserved()).toEqual(before);
+    await rollbackOperatorQuarantine(engine, snapshot);
+    expect(await preserved()).toEqual(before);
+  });
+
+  test('rollback refuses a foreign incident or manifest marker and preserves the marker', async () => {
+    const records = await seedFive();
+    const { sha256 } = parseOperatorManifest(manifestText(records));
+    const { snapshot } = await applyOperatorQuarantine(engine, records, {
+      sourceId: 'default', reason: 'wrong-root-sync', incident: 'metadata-only', manifestSha256: sha256,
+    });
+    const before = await engine.executeRaw(`SELECT * FROM pages ORDER BY id`);
+    for (const changed of [{ incident: 'foreign' }, { manifest_sha256: 'f'.repeat(64) }]) {
+      await expect(rollbackOperatorQuarantine(engine, { ...snapshot, ...changed })).rejects.toThrow(/operator marker/);
+      expect(await engine.executeRaw(`SELECT * FROM pages ORDER BY id`)).toEqual(before);
+    }
+  });
+
+  test('unknown persistence mode refuses apply and rollback without any page mutation', async () => {
+    const records = await seedFive();
+    const { sha256 } = parseOperatorManifest(manifestText(records));
+    const { snapshot } = await applyOperatorQuarantine(engine, records, {
+      sourceId: 'default', reason: 'wrong-root-sync', incident: 'metadata-only', manifestSha256: sha256,
+    });
+    await engine.executeRaw(`DELETE FROM persistence_brain`);
+    const before = await engine.executeRaw(`SELECT * FROM pages ORDER BY id`);
+    await expect(applyOperatorQuarantine(engine, records, {
+      sourceId: 'default', reason: 'wrong-root-sync', incident: 'metadata-only', manifestSha256: sha256,
+    })).rejects.toThrow();
+    await expect(rollbackOperatorQuarantine(engine, snapshot)).rejects.toThrow();
+    expect(await engine.executeRaw(`SELECT * FROM pages ORDER BY id`)).toEqual(before);
+    // Restore the fixture control row for the next test, not a production repair.
+    await engine.executeRaw(`INSERT INTO persistence_brain(singleton, enabled) VALUES (1, false)`);
+  });
+
   test('apply refuses a row that drifts between plan and apply, atomically (no marker written)', async () => {
     const records = await seedFive();
     const { records: parsed, sha256 } = parseOperatorManifest(manifestText(records));

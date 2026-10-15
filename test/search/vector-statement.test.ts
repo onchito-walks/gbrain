@@ -29,6 +29,56 @@ function scoredCte(sql: string): string {
   return sql.slice(sql.indexOf('scored AS ('), sql.indexOf('best_per_page AS ('));
 }
 
+/** Extract ONLY the eligible-page ANY(ARRAY(...)) subquery, balancing nested SQL.
+ * Quoted parentheses (including escaped quotes), identifiers and comments do
+ * not close it. A missing/unbalanced anchor is a broken probe, never empty SQL.
+ */
+function eligiblePagesSubquery(sql: string): string {
+  const anchor = 'cc.page_id = ANY(ARRAY(';
+  const start = sql.indexOf(anchor);
+  if (start < 0) throw new Error('missing eligible-page ANY(ARRAY anchor');
+  const body = start + anchor.length;
+  let depth = 1;
+  for (let i = body; i < sql.length; i++) {
+    const c = sql[i]!;
+    if (c === "'" || c === '"') {
+      const quote = c;
+      let closed = false;
+      while (++i < sql.length) {
+        if (sql[i] === quote) {
+          if (sql[i + 1] === quote) { i++; continue; }
+          closed = true;
+          break;
+        }
+      }
+      if (!closed) throw new Error('unclosed SQL quote');
+    } else if (c === '$' && /^\$(?:[A-Za-z_][A-Za-z_0-9]*)?\$/.test(sql.slice(i))) {
+      const tag = sql.slice(i).match(/^\$(?:[A-Za-z_][A-Za-z_0-9]*)?\$/)![0];
+      const end = sql.indexOf(tag, i + tag.length);
+      if (end < 0) throw new Error('unclosed SQL dollar quote');
+      i = end + tag.length - 1;
+    } else if (sql.startsWith('--', i)) {
+      const end = sql.indexOf('\n', i + 2);
+      if (end < 0) throw new Error('unclosed eligible-page subquery');
+      i = end;
+    } else if (sql.startsWith('/*', i)) {
+      let comments = 1;
+      i += 2;
+      for (; i < sql.length && comments; i++) {
+        if (sql.startsWith('/*', i)) { comments++; i++; }
+        else if (sql.startsWith('*/', i)) { comments--; i++; }
+      }
+      if (comments) throw new Error('unclosed SQL comment');
+      i--;
+    } else if (c === '(') depth++;
+    else if (c === ')' && --depth === 0) {
+      if (sql[i + 1] !== ')') throw new Error('unclosed ANY wrapper');
+      return sql.slice(body, i);
+    }
+  }
+  throw new Error('unclosed eligible-page subquery');
+}
+
 describe('vector statement freshness placement (#5824)', () => {
   test('an indexed embedding column keeps only the model check in the candidate CTE', () => {
     const stmt = build();
@@ -204,7 +254,7 @@ describe('source scope strategy: walk overfetch, walk skip and scope scan', () =
     const stmt = build({ sourceIds: ['a'], exclude_slugs: ['x'], language: 'typescript', detail: 'low', excludePrivate: true, type: 'note' }, 'postgres', 0.01, 500);
     const scan = stmt.scopeScanSql!;
     const cte = scan.slice(scan.indexOf('WITH scope_scan AS MATERIALIZED ('), scan.indexOf('hnsw_candidates AS ('));
-    const pagesSubquery = cte.slice(cte.indexOf('ANY(ARRAY('), cte.indexOf('))'));
+    const pagesSubquery = eligiblePagesSubquery(cte);
     expect(cte).toContain('SELECT cc.id\n        FROM content_chunks cc\n        WHERE cc.page_id = ANY(ARRAY(');
     for (const filter of ['AND p.type = $2', 'AND p.slug != ALL($3::text[])', 'AND p.source_id = ANY($5::text[])', `COALESCE(p.frontmatter->>'visibility'`, "AND NOT (p.slug LIKE 'test/%'"]) {
       expect(pagesSubquery).toContain(filter);
@@ -223,6 +273,43 @@ describe('source scope strategy: walk overfetch, walk skip and scope scan', () =
     const lite = build({ sourceIds: ['a'], excludePrivate: true }, 'pglite', 0.01, 500).scopeScanSql!;
     expect(lite.replace(' p.updated_at,', '').replace(/CASE WHEN bpp\.updated_at < \([\s\S]*?\) THEN true ELSE false END AS stale/, 'false AS stale'))
       .toBe(build({ sourceIds: ['a'], excludePrivate: true }, 'postgres', 0.01, 500).scopeScanSql!);
+  });
+
+  test('eligible-page extraction balances nested, quoted and commented parentheses without leaking outer predicates', () => {
+    const body = `SELECT p.id FROM pages p
+      WHERE COALESCE((SELECT max(length(')')) FROM pages), 0) > 0
+      AND p.slug <> 'quoted '' )) text' AND p."quoted))" IS NULL
+      AND p.title <> $tag$ )) ' ($tag$
+      /* )) /* nested ) */ ) */ -- ))
+      AND p.source_id = $5`;
+    const sql = `cc.page_id = ANY(ARRAY(${body})) AND cc.model = $6`;
+    expect(eligiblePagesSubquery(sql)).toBe(body);
+    expect(eligiblePagesSubquery(sql)).not.toContain('cc.model');
+    // The former first-'))' shortcut truncates even this syntactically balanced input.
+    expect(sql.slice(sql.indexOf('ANY(ARRAY('), sql.indexOf('))'))).not.toContain('AND p.source_id = $5');
+    for (const broken of ['SELECT p.id FROM pages p', 'cc.page_id = ANY(ARRAY(SELECT p.id',
+      "cc.page_id = ANY(ARRAY(SELECT '))", 'cc.page_id = ANY(ARRAY(SELECT $q$))',
+      'cc.page_id = ANY(ARRAY(SELECT 1 /* ))', 'cc.page_id = ANY(ARRAY(SELECT 1)']) {
+      expect(() => eligiblePagesSubquery(broken)).toThrow();
+    }
+  });
+
+  test('eligible-page assertions reject every missing filter even when moved outside the page scope', () => {
+    const stmt = build({ sourceIds: ['a'], exclude_slugs: ['x'], language: 'typescript', detail: 'low', excludePrivate: true, type: 'note' }, 'postgres', 0.01, 500);
+    const scan = stmt.scopeScanSql!;
+    const cte = scan.slice(scan.indexOf('WITH scope_scan AS MATERIALIZED ('), scan.indexOf('hnsw_candidates AS ('));
+    const body = eligiblePagesSubquery(cte);
+    const filters = ['AND p.type = $2', 'AND p.slug != ALL($3::text[])', 'AND p.source_id = ANY($5::text[])',
+      `COALESCE(p.frontmatter->>'visibility'`, "AND NOT (p.slug LIKE 'test/%'"];
+    for (const filter of filters) {
+      expect(body).toContain(filter);
+      // Mutated strings are structural negative controls, not executed SQL.
+      const missing = cte.replace(filter, 'REMOVED_PREDICATE');
+      const moved = missing + '\n' + filter;
+      for (const invalid of [missing, moved]) {
+        expect(() => expect(eligiblePagesSubquery(invalid)).toContain(filter)).toThrow();
+      }
+    }
   });
 
   test('scope share sums the planner frequencies of the scoped sources', () => {
