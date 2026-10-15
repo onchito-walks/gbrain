@@ -974,7 +974,7 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
     "name": "query",
     "idempotent": true,
     "outputRedaction": "retrieval",
-    "description": "Concept/landscape: expansion recovers synonyms. Still top-K; all: list_pages. Exact: `search` is cheaper (no LLM call). Vectors: embedding key (else keywords); expansion: chat key. Personal/emotional: get_recent_salience/find_anomalies; owner CLI: `gbrain transcripts recent`. Do NOT assume crazy=impressive; it may be difficult or emotionally charged. return_unit: sections/conversations. Facts: follow_up; fields: \"full\" diagnostics.",
+    "description": "Concept/landscape: expansion recovers synonyms. Still top-K; all: list_pages. `search` is cheaper (no LLM call). Needs an embedding key: vectors; else keyword-only; expansion: chat key. Personal/emotional: get_recent_salience/find_anomalies; owner CLI: `gbrain transcripts recent`. Do NOT assume crazy=impressive; it may be difficult or emotionally charged. return_unit: sections/conversations. Facts: follow_up; fields: \"full\" diagnostics.",
     "params": {
       "query": {
         "type": "string",

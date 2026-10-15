@@ -14,7 +14,7 @@
  * run-unit-parallel.test.ts).
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { execFileSync } from 'child_process';
 import { existsSync, readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, copyFileSync, chmodSync, symlinkSync } from 'fs';
 import { tmpdir } from 'os';
@@ -77,7 +77,7 @@ describe('failing', () => { it('POOL_SENTINEL_ASSERTION breaks', () => { expect(
 const HANGING = `import { it } from 'bun:test';
 it('hangs forever', async () => { await new Promise(() => {}); });`;
 
-beforeAll(() => {
+beforeEach(() => {
   ROOT = stageSandbox();
   ENV = {
     PATH: join(ROOT, 'bin'),
@@ -89,11 +89,26 @@ beforeAll(() => {
   };
 });
 
-afterAll(() => {
+afterEach(() => {
   rmSync(ROOT, { recursive: true, force: true });
 });
 
 describe('pooled serial runner', () => {
+  it('uses monotonic durations even when wall-clock samples regress', () => {
+    const date = join(ROOT, 'bin/date');
+    rmSync(date);
+    writeFileSync(date, '#!/bin/bash\nif [ "$1" = "+%s%3N" ]; then\n  n=2000000; [ ! -f "' + ROOT + '/date-seen" ] || n=1000000\n  touch="' + ROOT + '/date-seen"; printf 1 > "$touch"; printf "%s\\n" "$n"\nelse\n  printf "1000\\n"\nfi\n');
+    chmodSync(date, 0o755);
+    writeFileSync(join(ROOT, 'test/clock.serial.test.ts'), PASSING);
+    const r = runScript();
+    expect(r.code, r.out).toBe(0);
+    const timing = JSON.parse(readFileSync(join(ROOT, '.context/serial-timings.json'), 'utf8'));
+    expect(timing.files).toHaveLength(1);
+    expect(timing.files[0].durationMs).toBeGreaterThan(0);
+    // Realtime is used for the human headline only, never per-file timing.
+    expect(existsSync(join(ROOT, 'date-seen'))).toBe(false);
+  });
+
   it('runs pooled files and passes with one-line summaries', () => {
     writeFileSync(join(ROOT, 'test', 'a-ok.serial.test.ts'), PASSING);
     writeFileSync(join(ROOT, 'test', 'b-ok.serial.test.ts'), PASSING);
