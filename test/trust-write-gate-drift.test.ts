@@ -38,6 +38,7 @@ const EXEMPT: Record<string, string> = {
   'src/core/facts/unfenced-facts.ts': 'repairs fence positions of existing rows',
   'src/core/facts/withdrawal.ts': 'withdrawal ledger and expiry (lifecycle)',
   'src/core/ops/extraction.ts': 'owner review of already-extracted rows (extraction_review)',
+  'src/core/operator-quarantine.ts': 'metadata/lifecycle only: apply/rollback change only the quarantine frontmatter marker under exact id/source/slug/content_hash/source_path predicates, then restore projection jobs/revisions; no new page body, fact, take claim or chunk text. Managed/unknown persistence refuses before writing; trusted-local CLI reason allowlist/--yes and provenance-bound rollback remain required (operator-quarantine-set.serial.test.ts)',
   'src/core/page-state/materialize.ts': 'writes stored timeline rows back into the page body; no new text',
   'src/core/page-state/rename-alias.ts': 'slug alias (placement only)',
   'src/core/page-state/versions.ts': 'page_versions snapshots copy the live row',

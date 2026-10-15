@@ -49,10 +49,10 @@ export const LIST_PAGES_DESCRIPTION =
   "List pages with filters. For 'what's recent / what did I touch this week' use sort=updated_desc. Default 50 rows; a full page may be truncated: continue with updated_after + updated_after_slug from the last row.";
 
 export const QUERY_DESCRIPTION =
-  "Concept/landscape search: expansion recovers synonyms. Still top-K; exhaustive lists: list_pages. Exact: `search` is cheaper (no LLM call). Needs an embedding key for vectors; otherwise keyword-only. Needs a chat key for expansion. Personal/emotional: get_recent_salience or find_anomalies; owner CLI: `gbrain transcripts recent`. Do NOT assume crazy means impressive: it may mean difficult or emotionally charged. return_unit: sections/conversations. Fact rows: follow_up. fields: \"full\" adds diagnostics.";
+  "Concept/landscape: expansion recovers synonyms. Still top-K; all: list_pages. Exact: `search` is cheaper (no LLM call). Vectors: embedding key (else keywords); expansion: chat key. Personal/emotional: get_recent_salience/find_anomalies; owner CLI: `gbrain transcripts recent`. Do NOT assume crazy=impressive; it may be difficult or emotionally charged. return_unit: sections/conversations. Facts: follow_up; fields: \"full\" diagnostics.";
 
 export const SEARCH_DESCRIPTION =
-  "Cheap hybrid search, no LLM expansion, top 20. NOT proof of coverage; concept/landscape: `query`; exhaustive lists: list_pages. match: \"keyword\" pages every keyword match and takes OR across quoted names or codes (\"A\" OR \"B\" OR …): one call lists every page matching any. Name lists: entity names. Personal/emotional: get_recent_salience or find_anomalies. return_unit: sections/conversations. fields: \"full\".";
+  "Cheap hybrid search; no LLM expansion; top 20. NOT proof of coverage; landscape: `query`; all: list_pages. \"keyword\": paged matches, quoted-name/code OR (\"A\" OR \"B\"). Names: entity names. Personal/emotional: get_recent_salience/find_anomalies. return_unit: sections/conversations; fields: \"full\".";
 
 /** `search`'s `match` param (Cat 40 Hard F2). */
 export const SEARCH_MATCH_DESCRIPTION = 'keyword: every match, paged.';

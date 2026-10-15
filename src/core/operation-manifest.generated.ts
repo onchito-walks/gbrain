@@ -844,12 +844,12 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
     "name": "search",
     "idempotent": true,
     "outputRedaction": "retrieval",
-    "description": "Cheap hybrid search, no LLM expansion, top 20. NOT proof of coverage; concept/landscape: `query`; exhaustive lists: list_pages. match: \"keyword\" pages every keyword match and takes OR across quoted names or codes (\"A\" OR \"B\" OR …): one call lists every page matching any. Name lists: entity names. Personal/emotional: get_recent_salience or find_anomalies. return_unit: sections/conversations. fields: \"full\".",
+    "description": "Cheap hybrid search; no LLM expansion; top 20. NOT proof of coverage; landscape: `query`; all: list_pages. \"keyword\": paged matches, quoted-name/code OR (\"A\" OR \"B\"). Names: entity names. Personal/emotional: get_recent_salience/find_anomalies. return_unit: sections/conversations; fields: \"full\".",
     "params": {
       "query": {
         "type": "string",
         "required": true,
-        "description": "Exact tokens or names, e.g. 'acme-example series A'."
+        "description": "Exact tokens/names."
       },
       "limit": {
         "type": "number",
@@ -857,7 +857,7 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
       },
       "offset": {
         "type": "number",
-        "description": "Rows to skip."
+        "description": "Skip rows."
       },
       "match": {
         "type": "string",
@@ -873,33 +873,33 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
       },
       "mode": {
         "type": "string",
-        "description": "Local callers only."
+        "description": "Local only."
       },
       "source_id": {
         "type": "string",
-        "description": "One source, or '__all__'."
+        "description": "Source or __all__."
       },
       "types": {
         "type": "array",
         "items": {
           "type": "string"
         },
-        "description": "Page types, e.g. ['person']."
+        "description": "Page types."
       },
       "exclude_slug_prefixes": {
         "type": "array",
         "items": {
           "type": "string"
         },
-        "description": "Exclude slug prefixes, plus hard-excludes. CLI: --exclude-slug-prefixes atoms/,test/."
+        "description": "Slug-prefix + hard-excludes."
       },
       "include_covered_atoms": {
         "type": "boolean",
-        "description": "true includes source-covered atoms; default keeps uncovered only."
+        "description": "Default: uncovered atoms only; true: all atoms."
       },
       "snippet_chars": {
         "type": "number",
-        "description": "Chars per row (0 = full)."
+        "description": "Chars/row; 0=full."
       },
       "return_unit": {
         "type": "string",
@@ -927,7 +927,7 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
           "on",
           "strong"
         ],
-        "description": "Boost emotional pages."
+        "description": "Emotional boost."
       },
       "recency": {
         "type": "string",
@@ -936,7 +936,7 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
           "on",
           "strong"
         ],
-        "description": "Boost recent pages."
+        "description": "Recency boost."
       },
       "fields": {
         "type": "string",
@@ -944,7 +944,7 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
           "lean",
           "full"
         ],
-        "description": "lean (remote default) or full."
+        "description": "lean (remote default)/full."
       },
       "min_trust": {
         "type": "string",
@@ -956,7 +956,7 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
           "unknown",
           "external_untrusted"
         ],
-        "description": "Lowest trust tier to return (the connection floor still applies).",
+        "description": "Trust floor; connection floor applies.",
         "fullSurfaceOnly": true
       }
     },
@@ -974,12 +974,12 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
     "name": "query",
     "idempotent": true,
     "outputRedaction": "retrieval",
-    "description": "Concept/landscape search: expansion recovers synonyms. Still top-K; exhaustive lists: list_pages. Exact: `search` is cheaper (no LLM call). Needs an embedding key for vectors; otherwise keyword-only. Needs a chat key for expansion. Personal/emotional: get_recent_salience or find_anomalies; owner CLI: `gbrain transcripts recent`. Do NOT assume crazy means impressive: it may mean difficult or emotionally charged. return_unit: sections/conversations. Fact rows: follow_up. fields: \"full\" adds diagnostics.",
+    "description": "Concept/landscape: expansion recovers synonyms. Still top-K; all: list_pages. Exact: `search` is cheaper (no LLM call). Vectors: embedding key (else keywords); expansion: chat key. Personal/emotional: get_recent_salience/find_anomalies; owner CLI: `gbrain transcripts recent`. Do NOT assume crazy=impressive; it may be difficult or emotionally charged. return_unit: sections/conversations. Facts: follow_up; fields: \"full\" diagnostics.",
     "params": {
       "query": {
         "type": "string",
         "required": false,
-        "description": "Question or topic (required unless image)."
+        "description": "Topic; required unless image."
       },
       "image": {
         "type": "string",
@@ -987,7 +987,7 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
       },
       "image_mime": {
         "type": "string",
-        "description": "MIME type of image."
+        "description": "Image MIME."
       },
       "limit": {
         "type": "number",
@@ -995,29 +995,29 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
       },
       "offset": {
         "type": "number",
-        "description": "Rows to skip."
+        "description": "Skip rows."
       },
       "types": {
         "type": "array",
         "items": {
           "type": "string"
         },
-        "description": "Page types, e.g. ['person']."
+        "description": "Page types."
       },
       "exclude_slug_prefixes": {
         "type": "array",
         "items": {
           "type": "string"
         },
-        "description": "Exclude slug prefixes, plus hard-excludes. CLI: --exclude-slug-prefixes atoms/,test/."
+        "description": "Slug-prefix + hard-excludes."
       },
       "include_covered_atoms": {
         "type": "boolean",
-        "description": "true includes source-covered atoms; default keeps uncovered only."
+        "description": "Default: uncovered atoms only; true: all atoms."
       },
       "snippet_chars": {
         "type": "number",
-        "description": "Chars per row (0 = full)."
+        "description": "Chars/row; 0=full."
       },
       "return_unit": {
         "type": "string",
@@ -1040,11 +1040,11 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
       },
       "expand": {
         "type": "boolean",
-        "description": "Default true; false skips the LLM expansion."
+        "description": "LLM expansion; default true."
       },
       "detail": {
         "type": "string",
-        "description": "low (compiled truth), medium (default) or high (all chunks)."
+        "description": "low: compiled truth; medium: default; high: all chunks."
       },
       "fields": {
         "type": "string",
@@ -1052,11 +1052,11 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
           "lean",
           "full"
         ],
-        "description": "lean (remote default) or full."
+        "description": "lean (remote default)/full."
       },
       "mode": {
         "type": "string",
-        "description": "Local callers only."
+        "description": "Local only."
       },
       "lang": {
         "type": "string",
@@ -1064,15 +1064,15 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
       },
       "symbol_kind": {
         "type": "string",
-        "description": "Code symbol type."
+        "description": "Symbol type."
       },
       "near_symbol": {
         "type": "string",
-        "description": "Anchor code symbol."
+        "description": "Anchor symbol."
       },
       "walk_depth": {
         "type": "number",
-        "description": "Code walk depth 1-2."
+        "description": "Code depth 1-2."
       },
       "salience": {
         "type": "string",
@@ -1081,7 +1081,7 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
           "on",
           "strong"
         ],
-        "description": "Boost emotional pages."
+        "description": "Emotional boost."
       },
       "recency": {
         "type": "string",
@@ -1090,7 +1090,7 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
           "on",
           "strong"
         ],
-        "description": "Boost recent pages."
+        "description": "Recency boost."
       },
       "since": {
         "type": "string",
@@ -1102,7 +1102,7 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
       },
       "source_id": {
         "type": "string",
-        "description": "One source, or '__all__'."
+        "description": "Source or __all__."
       },
       "cross_modal": {
         "type": "string",
@@ -1116,19 +1116,19 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
       },
       "embedding_column": {
         "type": "string",
-        "description": "Registered embedding column."
+        "description": "Registered vector column."
       },
       "adaptive_return": {
         "type": "boolean",
-        "description": "true for one answer (fewer rows, never empty); omit for breadth."
+        "description": "true: one answer, fewer rows, never empty; omit: breadth."
       },
       "autocut": {
         "type": "boolean",
-        "description": "Default on (never empty); false: full top-K for breadth."
+        "description": "Default on, never empty; false: full top-K for breadth."
       },
       "relational": {
         "type": "boolean",
-        "description": "Relationship-graph arm (default on)."
+        "description": "Graph arm; default on."
       },
       "min_trust": {
         "type": "string",
@@ -1140,7 +1140,7 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
           "unknown",
           "external_untrusted"
         ],
-        "description": "Lowest trust tier to return (the connection floor still applies).",
+        "description": "Trust floor; connection floor applies.",
         "fullSurfaceOnly": true
       },
       "explain": {

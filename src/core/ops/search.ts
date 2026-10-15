@@ -134,7 +134,7 @@ function searchOutput(ctx: OperationContext, p: Record<string, unknown>, results
 const FIELDS_PARAM = {
   type: 'string' as const,
   enum: ['lean', 'full'],
-  description: "lean (remote default) or full.",
+  description: "lean (remote default)/full.",
 };
 
 /** Evidence delivery params shared by `search` and `query`. */
@@ -582,10 +582,10 @@ function normalizeExcludeSlugPrefixesParam(ctx: OperationContext, tool: 'search'
 }
 
 const EXCLUDE_SLUG_PREFIXES_PARAM_DESCRIPTION =
-  'Exclude slug prefixes, plus hard-excludes. CLI: --exclude-slug-prefixes atoms/,test/.';
+  'Slug-prefix + hard-excludes.';
 
 const INCLUDE_COVERED_ATOMS_PARAM_DESCRIPTION =
-  'true includes source-covered atoms; default keeps uncovered only.';
+  'Default: uncovered atoms only; true: all atoms.';
 
 /** The caller's two retrieval-exclusion knobs, normalized once per call. */
 interface RetrievalExclusionParams {
@@ -616,10 +616,10 @@ function retrievalExclusionSearchOpts(exclusion: RetrievalExclusionParams): Pick
   };
 }
 
-const TYPES_PARAM_DESCRIPTION = "Page types, e.g. ['person'].";
+const TYPES_PARAM_DESCRIPTION = 'Page types.';
 
-const SOURCE_ID_PARAM_DESCRIPTION = "One source, or '__all__'.";
-const SALIENCE_PARAM = { type: 'string' as const, enum: ['off', 'on', 'strong'], description: 'Boost emotional pages.' };
+const SOURCE_ID_PARAM_DESCRIPTION = 'Source or __all__.';
+const SALIENCE_PARAM = { type: 'string' as const, enum: ['off', 'on', 'strong'], description: 'Emotional boost.' };
 
 /**
  * Ranking explanation params, declared on `query` only and advertised on the
@@ -695,9 +695,9 @@ function finishExplainTarget(
   const { fix: _fix, ...wire } = diag;
   return wire as ExplainTargetDiagnosis;
 }
-const RECENCY_PARAM = { type: 'string' as const, enum: ['off', 'on', 'strong'], description: "Boost recent pages." };
+const RECENCY_PARAM = { type: 'string' as const, enum: ['off', 'on', 'strong'], description: 'Recency boost.' };
 
-const SNIPPET_CHARS_PARAM_DESCRIPTION = 'Chars per row (0 = full).';
+const SNIPPET_CHARS_PARAM_DESCRIPTION = 'Chars/row; 0=full.';
 
 /** The query op's image branch embed; a brain that opted out of embedding refuses before the image reaches a provider. */
 async function embedSearchImage(ctx: OperationContext, data: string, mime: string): Promise<Float32Array> {
@@ -736,12 +736,12 @@ const search: Operation = {
   outputRedaction: 'retrieval',
   description: SEARCH_DESCRIPTION,
   params: {
-    query: { type: 'string', required: true, description: "Exact tokens or names, e.g. 'acme-example series A'." },
+    query: { type: 'string', required: true, description: 'Exact tokens/names.' },
     limit: { type: 'number', description: 'Default 20.' },
-    offset: { type: 'number', description: 'Rows to skip.' },
+    offset: { type: 'number', description: 'Skip rows.' },
     match: { type: 'string', enum: ['hybrid', 'keyword'], description: SEARCH_MATCH_DESCRIPTION },
     cursor: { type: 'string', description: 'From next.' },
-    mode: { type: 'string', description: 'Local callers only.' },
+    mode: { type: 'string', description: 'Local only.' },
     // #4398: per-call source scope, mirroring `query` — MCP clients passed it
     // here, got 'unknown parameter ignored', and read UNSCOPED results.
     source_id: { type: 'string', description: SOURCE_ID_PARAM_DESCRIPTION },
@@ -764,7 +764,7 @@ const search: Operation = {
     salience: SALIENCE_PARAM,
     recency: RECENCY_PARAM,
     fields: FIELDS_PARAM,
-    min_trust: MIN_TRUST_PARAM,
+    min_trust: { ...MIN_TRUST_PARAM, description: 'Trust floor; connection floor applies.' },
   },
   handler: async (ctx, p) => {
     const startedAt = Date.now();
@@ -890,12 +890,12 @@ const query: Operation = {
     // validator at src/cli.ts honors `cliHints.altRequired` and admits the
     // image-only invocation. MCP / programmatic callers must still pass
     // `query` OR `image` (handler refuses if both are absent).
-    query: { type: 'string', required: false, description: "Question or topic (required unless image)." },
+    query: { type: 'string', required: false, description: 'Topic; required unless image.' },
     /** v0.27.1: image-similarity search. Path resolved on the CLI side
      *  before the op fires (the op receives raw bytes neither side; the
      *  CLI loads the file, base64-encodes, and passes through `image`). */
     image: { type: 'string', description: 'Base64 image.' },
-    image_mime: { type: 'string', description: 'MIME type of image.' },
+    image_mime: { type: 'string', description: 'Image MIME.' },
     // #4356 — the text/hybrid path no longer hard-defaults this to 20; an
     // omitted OR falsy (0) `limit` resolves from the active search mode's
     // searchLimit (10/25/50 for conservative/balanced/tokenmax by default,
@@ -913,7 +913,7 @@ const query: Operation = {
     // text path (was a hard `|| 20` regardless of mode, the last search arm
     // in this op that didn't honor conservative/balanced/tokenmax).
     limit: { type: 'number', description: 'Default 10/25/50 by search mode.' },
-    offset: { type: 'number', description: 'Rows to skip.' },
+    offset: { type: 'number', description: 'Skip rows.' },
     // #3985: multi-type filter (plumbing shipped v0.33; exposed here).
     types: { type: 'array', items: { type: 'string' }, description: TYPES_PARAM_DESCRIPTION },
     // B03: caller slug-prefix exclusion (engine SearchOpts.exclude_slug_prefixes).
@@ -925,16 +925,16 @@ const query: Operation = {
     return_unit: RETURN_UNIT_PARAM,
     return_window: RETURN_WINDOW_PARAM,
     token_budget: { type: 'number', description: 'Evidence token cap.' },
-    expand: { type: 'boolean', description: 'Default true; false skips the LLM expansion.' },
-    detail: { type: 'string', description: 'low (compiled truth), medium (default) or high (all chunks).' },
+    expand: { type: 'boolean', description: 'LLM expansion; default true.' },
+    detail: { type: 'string', description: 'low: compiled truth; medium: default; high: all chunks.' },
     fields: FIELDS_PARAM,
-    mode: { type: 'string', description: 'Local callers only.' },
+    mode: { type: 'string', description: 'Local only.' },
     // v0.20.0 Cathedral II Layer 10 C1/C2: language + symbol-kind filters.
     lang: { type: 'string', description: 'Code language.' },
-    symbol_kind: { type: 'string', description: 'Code symbol type.' },
+    symbol_kind: { type: 'string', description: 'Symbol type.' },
     // v0.20.0 Cathedral II Layer 7 (A2) / Layer 10 C3: two-pass structural expansion.
-    near_symbol: { type: 'string', description: 'Anchor code symbol.' },
-    walk_depth: { type: 'number', description: 'Code walk depth 1-2.' },
+    near_symbol: { type: 'string', description: 'Anchor symbol.' },
+    walk_depth: { type: 'number', description: 'Code depth 1-2.' },
     // v0.29.1 — orthogonal recency + salience axes. YOU (the agent) decide.
     salience: SALIENCE_PARAM,
     recency: RECENCY_PARAM,
@@ -942,11 +942,11 @@ const query: Operation = {
     until: { type: 'string', description: 'On/before.' },
     source_id: { type: 'string', description: SOURCE_ID_PARAM_DESCRIPTION },
     cross_modal: { type: 'string', enum: ['text', 'image', 'both', 'auto'], description: 'Default auto.' },
-    embedding_column: { type: 'string', description: 'Registered embedding column.' },
-    adaptive_return: { type: 'boolean', description: 'true for one answer (fewer rows, never empty); omit for breadth.' },
-    autocut: { type: 'boolean', description: 'Default on (never empty); false: full top-K for breadth.' },
-    relational: { type: 'boolean', description: 'Relationship-graph arm (default on).' },
-    min_trust: MIN_TRUST_PARAM,
+    embedding_column: { type: 'string', description: 'Registered vector column.' },
+    adaptive_return: { type: 'boolean', description: 'true: one answer, fewer rows, never empty; omit: breadth.' },
+    autocut: { type: 'boolean', description: 'Default on, never empty; false: full top-K for breadth.' },
+    relational: { type: 'boolean', description: 'Graph arm; default on.' },
+    min_trust: { ...MIN_TRUST_PARAM, description: 'Trust floor; connection floor applies.' },
     ...EXPLAIN_PARAMS,
   },
   handler: async (ctx, p) => {

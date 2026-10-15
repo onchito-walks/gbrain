@@ -44,6 +44,8 @@ async function handshake(mode: Mode, eager: boolean): Promise<{ initialize: stri
     SNAP_EAGER: eager ? '1' : '0', SNAP_SURFACE: mode.surface ?? '', SNAP_ACCESS: mode.access ?? '',
   });
   const proc = Bun.spawn([process.execPath, DRIVER], { cwd: parent, env, stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' });
+  // Drain both pipes while the driver runs; stderr is diagnostic, not a wire result.
+  const stderr = new Response(proc.stderr).text();
   const responses = new Map<number, string>();
   const reader = (async () => {
     const decoder = new TextDecoder();
@@ -62,7 +64,7 @@ async function handshake(mode: Mode, eager: boolean): Promise<{ initialize: stri
   const waitFor = async (id: number) => {
     const deadline = Date.now() + 60_000;
     while (!responses.has(id)) {
-      if (proc.exitCode !== null) throw new Error(`driver exited ${proc.exitCode}: ${await new Response(proc.stderr).text()}`);
+      if (proc.exitCode !== null) throw new Error(`driver exited ${proc.exitCode}: ${await stderr}`);
       if (Date.now() > deadline) throw new Error(`no response ${id}`);
       await Bun.sleep(10);
     }
@@ -79,16 +81,21 @@ async function handshake(mode: Mode, eager: boolean): Promise<{ initialize: stri
     proc.kill('SIGKILL');
     await proc.exited;
     await reader.catch(() => {});
+    await stderr;
   }
 }
 
 type Pair = { manifest: { initialize: string; tools: string }; eager: { initialize: string; tools: string } };
 let results: Pair[] = [];
 beforeAll(async () => {
-  results = await Promise.all(MODES.map(async mode => {
-    const [manifest, eager] = await Promise.all([handshake(mode, false), handshake(mode, true)]);
-    return { manifest, eager };
-  }));
+  // Fixture startup is I/O-heavy on shared hosts. Serialize BOTH arms, not just
+  // the modes; twelve concurrent drivers can stall before initialize responds.
+  results = [];
+  for (const mode of MODES) {
+    const manifest = await handshake(mode, false);
+    const eager = await handshake(mode, true);
+    results.push({ manifest, eager });
+  }
 }, 180_000);
 
 describe('stdio initialize + tools/list: manifest path == eager registry path', () => {
