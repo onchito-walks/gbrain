@@ -27,6 +27,8 @@ import { runExtractFacts } from '../src/core/cycle/extract-facts.ts';
 import { _resetWriteThroughCacheForTest } from '../src/core/write-through.ts';
 
 const SLUG = 'people/alice-example';
+/** A second real page: a legacy row may carry a position bound to another page's fence. */
+const BOB = 'people/bob-example';
 const BASE = process.env.GBRAIN_TEST_PRESERVED_STORE_BASE ?? '/tmp';
 const OS = 'os:operator';
 
@@ -70,6 +72,12 @@ async function seedPage(): Promise<void> {
   const path = join(root, `${SLUG}.md`);
   mkdirSync(join(path, '..'), { recursive: true });
   writeFileSync(path, ORIGINAL_BODY);
+  // The second page carries the fence the colliding legacy row's position lives on.
+  const bobBody = replaceOrInsertFactsFence('# Bob Example\n', renderFactsTable([fenceRow(5, 'Legacy numbered claim')]));
+  await engine.putPage(BOB, {
+    type: 'person', title: 'Bob Example', compiled_truth: bobBody, frontmatter: {}, source_path: `${BOB}.md`,
+  }, { sourceId: 'default' });
+  writeFileSync(join(root, `${BOB}.md`), bobBody);
 }
 
 /** One original fact row; `sourceSlug` defaults to the page for fence-owned shapes. */
@@ -117,7 +125,9 @@ async function seedRealShape(): Promise<{ fence: string[]; legacyNull: string; c
   for (const row of [5, 6, 7, 8]) fence.push(await seedFact({ rowNum: row, claim: `Fence row ${['five', 'six', 'seven', 'eight'][row - 5]}` }));
   const lost = await seedFact({ rowNum: 12, claim: 'Legacy lost row twelve', sourceSession: 'session-lost' });
   const legacyNull = await seedFact({ rowNum: null, claim: 'Legacy unfenced claim', sourceSlug: null, sourceSession: 'session-null' });
-  const collision = await seedFact({ rowNum: 5, claim: 'Legacy numbered claim', sourceSlug: 'people/alice-elsewhere', sourceSession: 'session-collision' });
+  // The fence's own position 5 belongs to another page, and this row's own
+  // position 5 is the one the markdown no longer carries on its entity page.
+  const collision = await seedFact({ rowNum: 5, claim: 'Legacy numbered claim', sourceSlug: BOB, sourceSession: 'session-collision' });
   return { fence, legacyNull, collision, lost };
 }
 
@@ -281,4 +291,37 @@ test('a page with no derived document reports none instead of an empty one', asy
   await seedRealShape();
   expect(await preservedFencePublicationState(engine, 'default', SLUG)).toEqual({ state: 'none' });
   expect(await readPreservedFencePublication(engine, 'default', SLUG)).toBeNull();
+});
+
+test('the migration orchestrator publishes the derived document and verifies both coordinate systems', async () => {
+  const migration = await import('../src/commands/migrations/v0_32_2.ts');
+  migration.__setTestEngineOverride(engine);
+  const OPTS = { yes: true, dryRun: false, noAutopilotInstall: true };
+  try {
+    await seedPage();
+    await seedRealShape();
+    const before = await originalDigests();
+    const bodyBefore = await fileBody();
+
+    // Phase B: the backfill's own entry point, not the shared pass directly.
+    const phaseB = await migration.__testing.phaseBFenceFacts(engine, OPTS);
+    expect(phaseB.status).toBe('complete');
+    expect(stableJson(await originalDigests())).toBe(stableJson(before));
+    expect(await fileBody()).toBe(bodyBefore);
+    expect((await preservedFencePublicationState(engine, 'default', SLUG)).state).toBe('current');
+
+    // Phase C: original coordinates AND the derived document, both verified.
+    const phaseC = await migration.__testing.phaseCVerify(engine, OPTS);
+    expect(phaseC.status).toBe('complete');
+    expect(phaseC.detail).toContain('pages_checked=2');
+
+    // A document that no longer matches its originals fails the phase by name.
+    await engine.executeRaw(`UPDATE facts SET source_session = 'drifted' WHERE id = $1`,
+      [Number((await seedFact({ rowNum: null, claim: 'A later legacy row', sourceSlug: null })))]);
+    const driftedC = await migration.__testing.phaseCVerify(engine, OPTS);
+    expect(driftedC.status).toBe('failed');
+    expect(driftedC.detail).toContain(SLUG);
+  } finally {
+    migration.__setTestEngineOverride(null);
+  }
 });

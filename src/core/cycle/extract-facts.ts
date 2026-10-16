@@ -408,20 +408,29 @@ async function planFenceReconcile(db: BrainEngine, page: { compiled_truth: strin
   // cells updated in place; a row whose number disappeared or whose claim
   // was rewritten is expired and detached (row_num NULL), never deleted.
   //
-  // Strict preservation: a row a CURRENT derived document binds is represented
-  // by that document. It keeps its identity, position and text literally and is
-  // not part of this comparison at all — never updated, expired, detached or
-  // renumbered, and its position is never re-occupied by an inserted row. A
-  // stored document that is no longer the plan of the page's current originals
-  // is drift, not authority, and the page keeps its index.
+  // Strict preservation: a row a CURRENT derived document binds is exempt from
+  // this comparison — never updated, expired, detached or renumbered, and its
+  // position is never re-occupied by an inserted row — UNLESS the page's own
+  // fence carries its derived position with exactly its stored claim; only then
+  // is it a genuinely paired fence row and this comparison is its own. A stored
+  // document that is no longer the plan of the page's current originals is
+  // drift, not authority, and the page keeps its index.
   const derived = await preservedFencePublicationState(db, sourceId, slug);
   if (derived.state === 'drifted') {
     warnings.push(`${slug}: FACTS_FENCE_DERIVED_DRIFT: the page's derived fence document is not the plan of its current originals (${derived.reason}); its fact index is left as it is.`);
     return null;
   }
-  const bound = derived.state === 'current' ? derived.boundFactIds : null;
-  const existing = (await listExistingFactsForPage(db, slug, sourceId))
-    .filter(fact => bound === null || !bound.has(String(fact.id)));
+  const compared = await listExistingFactsForPage(db, slug, sourceId);
+  const bindingByFact = new Map(derived.state === 'current'
+    ? derived.publication.bindings.map(binding => [binding.original_fact_id, binding])
+    : []);
+  const fenceByPosition = new Map(parsed.facts.map(row => [row.rowNum, row]));
+  const existing = derived.state === 'none' ? compared : compared.filter(fact => {
+    const binding = bindingByFact.get(String(fact.id));
+    if (!binding) return true;
+    const fenceRow = fenceByPosition.get(binding.derived_row_num);
+    return fenceRow !== undefined && fenceRow.claim === fact.fact;
+  });
   const desiredByRow = new Map(extracted.map(f => [f.row_num, f]));
   const matched = new Map<number, ExistingPageFact>();
   const stale: ExistingPageFact[] = [];
