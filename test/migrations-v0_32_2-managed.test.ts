@@ -34,6 +34,7 @@ import type { OrchestratorOpts } from '../src/commands/migrations/types.ts';
 import { runExtractFacts } from '../src/core/cycle/extract-facts.ts';
 import type { BrainEngine } from '../src/core/engine.ts';
 import { parseFactsFence, renderFactsTable, replaceOrInsertFactsFence } from '../src/core/facts-fence.ts';
+import { derivedFenceOf, readPreservedFencePublication } from '../src/core/facts/preserved-fence-store.ts';
 import { serializePageToMarkdown } from '../src/core/markdown.ts';
 import { submitPageMutation } from '../src/core/persistence/page-mutations.ts';
 import { maintenancePreflight, submitFactFenceAdoption } from '../src/core/persistence/prepared-maintenance.ts';
@@ -52,58 +53,59 @@ async function factRows(engine: BrainEngine, ids: number[]) {
 for (const backend of testBackends()) {
   const databaseUrl = backend === 'postgres' ? requirePostgresTestDatabase() : undefined;
 
-  test(`${backend}: legacy facts are fenced through the coordinator and adopted in place`, async () => {
+  test(`${backend}: legacy facts are published as each page's derived document, with every original untouched`, async () => {
     let seed!: LegacySeed;
     await managedBrain(async ({ engine, root }) => {
       const adopted = [...seed.legacyFactIds, ...seed.dbOnlyFactIds];
       const before = await factRows(engine, [...adopted, seed.extractorFactId]);
       const [{ n: factCount }] = await engine.executeRaw<{ n: number }>('SELECT count(*)::int AS n FROM facts');
+      const fileBefore = readFileSync(join(root, `${LEGACY_FILE_SLUG}.md`), 'utf8');
+      const dbOnlyBefore = (await engine.readPageSnapshot(LEGACY_DB_ONLY_SLUG, { sourceId: 'default' }))!;
+      const takesBefore = await engine.executeRaw('SELECT row_num, resolved_quality, resolved_by FROM takes ORDER BY row_num');
 
       const phase = await __testing.phaseBFenceFacts(engine, OPTS);
       expect(phase).toMatchObject({ name: 'fence_facts', status: 'complete' });
       expect(phase.detail).toContain('scanned=3 fenced=3 pages=2');
       expect(await __testing.phaseCVerify(engine, OPTS)).toMatchObject({ status: 'complete', detail: 'pages_checked=2' });
 
-      const after = await factRows(engine, [...adopted, seed.extractorFactId]);
-      expect(after.map(r => [Number(r.id), r.row_num, r.source_markdown_slug, r.expired_at])).toEqual([
-        [seed.legacyFactIds[0], 2, LEGACY_FILE_SLUG, null],
-        [seed.legacyFactIds[1], 3, LEGACY_FILE_SLUG, null],
-        [seed.dbOnlyFactIds[0], 1, LEGACY_DB_ONLY_SLUG, null],
-        [seed.extractorFactId, 1, LEGACY_FILE_SLUG, null],
-      ]);
-      for (let i = 0; i < after.length; i++) {
-        for (const key of ['fact', 'embedding', 'embedded_at', 'source_session', 'confidence', 'notability', 'context', 'valid_from_epoch']) {
-          expect(after[i][key]).toEqual(before[i][key]);
-        }
-      }
+      // Strict preservation: every original row (identity, position, provenance
+      // and vector), the canonical file and both page bodies are exactly as they
+      // were before the backfill.
+      expect(await factRows(engine, [...adopted, seed.extractorFactId])).toEqual(before);
       expect((await engine.executeRaw<{ n: number }>('SELECT count(*)::int AS n FROM facts'))[0].n).toBe(factCount);
+      expect(readFileSync(join(root, `${LEGACY_FILE_SLUG}.md`), 'utf8')).toBe(fileBefore);
+      // The page's own content, frontmatter and provenance are untouched; only
+      // the derivative text-projection revision the publication refreshes moves.
+      const danaAfter = (await engine.readPageSnapshot(LEGACY_DB_ONLY_SLUG, { sourceId: 'default' }))!;
+      expect(danaAfter.page.compiled_truth).toBe(dbOnlyBefore.page.compiled_truth);
+      expect(danaAfter.page.frontmatter).toEqual(dbOnlyBefore.page.frontmatter);
+      expect(danaAfter.page.source_path).toBe(dbOnlyBefore.page.source_path);
 
-      const file = readFileSync(join(root, `${LEGACY_FILE_SLUG}.md`), 'utf8');
-      expect(parseFactsFence(file).facts.map(f => [f.rowNum, f.claim])).toEqual([
-        [2, 'Alice example founded Acme example'], [3, 'Alice example moved to Lisbon']]);
-      const dbOnly = (await engine.readPageSnapshot(LEGACY_DB_ONLY_SLUG, { sourceId: 'default' }))!;
-      expect(parseFactsFence(dbOnly.page.compiled_truth).facts.map(f => f.rowNum)).toEqual([1]);
+      // The adopted positions live in each page's own derived document: position
+      // 1 is the extractor row's, so the two legacy rows take the next free ones.
+      const alice = (await readPreservedFencePublication(engine, 'default', LEGACY_FILE_SLUG))!;
+      expect(alice.bindings.map(b => [b.original_fact_id, b.original_row_num, b.derived_row_num]))
+        .toEqual([[String(seed.legacyFactIds[0]), null, 2], [String(seed.legacyFactIds[1]), null, 3]]);
+      expect(derivedFenceOf(alice).map(f => [f.rowNum, f.claim]))
+        .toEqual([[2, 'Alice example founded Acme example'], [3, 'Alice example moved to Lisbon']]);
+      const dana = (await readPreservedFencePublication(engine, 'default', LEGACY_DB_ONLY_SLUG))!;
+      expect(dana.bindings.map(b => [b.original_fact_id, b.original_row_num, b.derived_row_num]))
+        .toEqual([[String(seed.dbOnlyFactIds[0]), null, 1]]);
       expect(existsSync(join(root, `${LEGACY_DB_ONLY_SLUG}.md`))).toBe(false);
 
-      expect(await engine.executeRaw('SELECT row_num, resolved_quality, resolved_by FROM takes t JOIN pages p ON p.id=t.page_id WHERE p.slug=$1 ORDER BY row_num',
-        [LEGACY_FILE_SLUG])).toEqual([{ row_num: 1, resolved_quality: 'correct', resolved_by: 'people/alice-example' },
-        { row_num: 2, resolved_quality: null, resolved_by: null }]);
-
-      const authority = (await maintenancePreflight(engine, 'default'))!;
-      const page = (await engine.readPageSnapshot(LEGACY_FILE_SLUG, { sourceId: 'default' }))!;
-      const readopt = replaceOrInsertFactsFence(serializePageToMarkdown(page.page, page.tags), renderFactsTable([...parseFactsFence(file).facts,
-        { rowNum: 9, claim: 'Alice example founded Acme example', kind: 'fact', confidence: 0.9, visibility: 'world', notability: 'high', active: true }]));
-      await expect(submitFactFenceAdoption(engine, authority, LEGACY_FILE_SLUG, { content: readopt, expectedRevision: page.revision,
-        assignments: [{ id: seed.legacyFactIds[0], row_num: 9 }], file: true })).rejects.toMatchObject({ code: 'revision_conflict' });
+      // The takes index is untouched too: the publication writes no page content,
+      // so the takes projection is not re-run as a side effect of adopting.
+      expect(await engine.executeRaw('SELECT row_num, resolved_quality, resolved_by FROM takes ORDER BY row_num')).toEqual(takesBefore);
 
       const rerun = await __testing.phaseBFenceFacts(engine, OPTS);
       expect(rerun).toMatchObject({ status: 'complete' });
-      // adoptStamped scans the three non-cli rows even when their fences agree;
-      // agreement must cause no publication, renumbering, or row mutation.
+      // adoptStamped scans the three non-cli rows even when they are already
+      // published; a current document is a true no-op — nothing is rewritten.
       expect(rerun.detail).toBe('scanned=3 fenced=0 pages=0 skipped_no_entity=0 skipped_no_local_path=0 skipped_no_page=0');
-      expect(await factRows(engine, [...adopted, seed.extractorFactId])).toEqual(after);
-      expect(readFileSync(join(root, `${LEGACY_FILE_SLUG}.md`), 'utf8')).toBe(file);
-      expect(await engine.readPageSnapshot(LEGACY_DB_ONLY_SLUG, { sourceId: 'default' })).toEqual(dbOnly);
+      expect(await factRows(engine, [...adopted, seed.extractorFactId])).toEqual(before);
+      expect(readFileSync(join(root, `${LEGACY_FILE_SLUG}.md`), 'utf8')).toBe(fileBefore);
+      expect((await engine.readPageSnapshot(LEGACY_DB_ONLY_SLUG, { sourceId: 'default' }))!.page.compiled_truth)
+        .toBe(dbOnlyBefore.page.compiled_truth);
     }, { databaseUrl, setup: async ({ engine, root }) => {
       seed = await seedLegacyManagedContent(engine, root);
       // A take graded only in the database, as a pre-activation grader left it.
@@ -114,22 +116,28 @@ for (const backend of testBackends()) {
     } });
   }, 120_000);
 
-  test(`${backend}: a page whose timeline repeats the facts fence marker is skipped before submission; the other page adopts (#6278 2.6)`, async () => {
+  test(`${backend}: a page whose timeline repeats the facts fence marker keeps the defect and still publishes its document (#6278 2.6)`, async () => {
     let seed!: LegacySeed;
     await managedBrain(async ({ engine, root }) => {
       const before = await factRows(engine, seed.legacyFactIds);
       const file = readFileSync(join(root, `${LEGACY_FILE_SLUG}.md`), 'utf8');
       const phase = await __testing.phaseBFenceFacts(engine, OPTS);
-      expect(phase.status).toBe('failed');
-      expect(phase.detail).toContain('scanned=3 fenced=1 pages=1');
-      expect(phase.detail).toContain(`FACTS_FENCE_FAILED: ${LEGACY_FILE_SLUG} (Fence repeated_marker: in the facts fence (timeline)`);
-      // Skipped before admission: no request for the page exists, nothing changed on it.
-      expect(await engine.executeRaw('SELECT request_id FROM persistence_requests WHERE slug = $1', [LEGACY_FILE_SLUG])).toEqual([]);
+      // The publication writes no page content, so the timeline defect neither
+      // blocks it nor is written over: it stays exactly where the user left it,
+      // and the doctor's fence census still owns repairing it.
+      expect(phase).toMatchObject({ name: 'fence_facts', status: 'complete' });
+      expect(phase.detail).toContain('scanned=3 fenced=3 pages=2');
       expect(await factRows(engine, seed.legacyFactIds)).toEqual(before);
       expect(readFileSync(join(root, `${LEGACY_FILE_SLUG}.md`), 'utf8')).toBe(file);
-      // The database-only page adopted its row in the same pass.
+      const snapshot = (await engine.readPageSnapshot(LEGACY_FILE_SLUG, { sourceId: 'default' }))!;
+      expect(snapshot.page.timeline).toContain('## Facts');
+      const derived = derivedFenceOf((await readPreservedFencePublication(engine, 'default', LEGACY_FILE_SLUG))!);
+      expect(derived.map(row => row.claim)).toContain('Alice example founded Acme example');
+      expect(derived.map(row => row.claim)).toContain('Alice example moved to Lisbon');
+      // The database-only page published its row in the same pass.
       const [dana] = await factRows(engine, seed.dbOnlyFactIds);
-      expect(dana).toMatchObject({ row_num: 1, source_markdown_slug: LEGACY_DB_ONLY_SLUG, expired_at: null });
+      expect(dana).toMatchObject({ row_num: null, source_markdown_slug: null, expired_at: null });
+      expect(derivedFenceOf((await readPreservedFencePublication(engine, 'default', LEGACY_DB_ONLY_SLUG))!)).toHaveLength(1);
     }, { databaseUrl, setup: async ({ engine, root }) => {
       seed = await seedLegacyManagedContent(engine, root);
       const fence = (n: number, claim: string) => renderFactsTable([{ rowNum: n, claim, kind: 'fact', confidence: 1, visibility: 'world', notability: 'high', active: true, source: 'notes' }]);
@@ -141,22 +149,24 @@ for (const backend of testBackends()) {
     } });
   }, 120_000);
 
-  test(`${backend}: a legacy row the fence codec cannot render is reported with the stable token while the page's other rows adopt (#6278 2.1)`, async () => {
+  test(`${backend}: a legacy row the fence codec cannot render refuses its whole page, and the stable token names it (#6278 2.1)`, async () => {
     let seed!: LegacySeed;
     let struckId!: number;
     await managedBrain(async ({ engine, root }) => {
       const [struckBefore] = await factRows(engine, [struckId]);
+      const before = await factRows(engine, [...seed.legacyFactIds, struckId]);
+      const fileBefore = readFileSync(join(root, `${LEGACY_FILE_SLUG}.md`), 'utf8');
       const phase = await __testing.phaseBFenceFacts(engine, OPTS);
       expect(phase.status).toBe('failed');
-      expect(phase.detail).toContain('scanned=4 fenced=3 pages=2 ');
+      expect(phase.detail).toContain('scanned=4 fenced=1 pages=1 ');
+      // A document is published all-or-refuse: the page carrying the row the codec
+      // cannot render stores nothing, and its rows stay exactly as they are.
       expect(phase.detail).toContain(`FACTS_FENCE_FAILED: ${LEGACY_FILE_SLUG} (fence_unrenderable: 1 row(s), struck)`);
       expect(phase.detail).not.toContain('left Acme');
-      const after = await factRows(engine, [...seed.legacyFactIds, struckId]);
-      expect(after.map(r => [Number(r.id), r.row_num, r.source_markdown_slug])).toEqual([
-        [seed.legacyFactIds[0], 2, LEGACY_FILE_SLUG], [seed.legacyFactIds[1], 3, LEGACY_FILE_SLUG], [struckId, null, null]]);
-      expect(after[2]).toEqual(struckBefore);
-      expect(parseFactsFence(readFileSync(join(root, `${LEGACY_FILE_SLUG}.md`), 'utf8')).facts.map(f => f.claim)).toEqual([
-        'Alice example founded Acme example', 'Alice example moved to Lisbon']);
+      expect(await readPreservedFencePublication(engine, 'default', LEGACY_FILE_SLUG)).toBeNull();
+      expect(await factRows(engine, [...seed.legacyFactIds, struckId])).toEqual(before);
+      expect(await factRows(engine, [struckId])).toEqual([struckBefore]);
+      expect(readFileSync(join(root, `${LEGACY_FILE_SLUG}.md`), 'utf8')).toBe(fileBefore);
     }, { databaseUrl, setup: async ({ engine, root }) => {
       seed = await seedLegacyManagedContent(engine, root);
       const [row] = await engine.executeRaw<{ id: number }>(
@@ -166,28 +176,23 @@ for (const backend of testBackends()) {
     } });
   }, 120_000);
 
-  test(`${backend}: a refused adoption is retried under a new request identity once the file is restored`, async () => {
+  test(`${backend}: an uncoordinated local file edit is neither blessed nor written over`, async () => {
     let seed!: LegacySeed;
     await managedBrain(async ({ engine, root }) => {
       const path = join(root, `${LEGACY_FILE_SLUG}.md`);
       const file = readFileSync(path, 'utf8');
-      writeFileSync(path, `${file}\nAn uncoordinated local edit.\n`);
-      const refused = await __testing.phaseBFenceFacts(engine, OPTS);
-      expect(refused.status).toBe('failed');
-      expect(refused.detail).toContain('uncoordinated local edit');
-      const dbOnlyAfterRefusal = await factRows(engine, seed.dbOnlyFactIds);
-      expect(dbOnlyAfterRefusal.map(r => [Number(r.id), r.row_num, r.expired_at])).toEqual([
-        [seed.dbOnlyFactIds[0], 1, null],
-      ]);
-      writeFileSync(path, file);
-      const retried = await __testing.phaseBFenceFacts(engine, OPTS);
-      expect(retried).toMatchObject({ status: 'complete' });
-      // The already-adopted DB-only row is scanned too, but remains untouched.
-      expect(retried.detail).toBe('scanned=3 fenced=2 pages=1 skipped_no_entity=0 skipped_no_local_path=0 skipped_no_page=0');
-      expect(await factRows(engine, seed.dbOnlyFactIds)).toEqual(dbOnlyAfterRefusal);
-      expect((await factRows(engine, seed.legacyFactIds)).map(r => [Number(r.id), r.row_num, r.expired_at])).toEqual([
-        [seed.legacyFactIds[0], 2, null], [seed.legacyFactIds[1], 3, null],
-      ]);
+      const edited = `${file}\nAn uncoordinated local edit.\n`;
+      writeFileSync(path, edited);
+      const before = await factRows(engine, [...seed.legacyFactIds, ...seed.dbOnlyFactIds]);
+
+      const phase = await __testing.phaseBFenceFacts(engine, OPTS);
+      // A managed brain's system of record is the database, so the publication is
+      // planned from it: the edit neither blocks the backfill nor gets blessed by
+      // it, and the file itself is never written.
+      expect(phase).toMatchObject({ status: 'complete' });
+      expect(readFileSync(path, 'utf8')).toBe(edited);
+      expect(await factRows(engine, [...seed.legacyFactIds, ...seed.dbOnlyFactIds])).toEqual(before);
+      expect((await readPreservedFencePublication(engine, 'default', LEGACY_FILE_SLUG))!.bindings).toHaveLength(2);
       expect(await __testing.phaseCVerify(engine, OPTS)).toMatchObject({ status: 'complete', detail: 'pages_checked=2' });
     }, { databaseUrl, setup: async ({ engine, root }) => { seed = await seedLegacyManagedContent(engine, root); } });
   }, 120_000);
@@ -238,7 +243,12 @@ for (const backend of testBackends()) {
       expect(phase).toMatchObject({ name: 'fence_facts', status: 'complete' });
       expect(phase.detail).toContain('fenced=3 pages=2');
       expect(phase.detail).toContain('skipped_archived=1');
-      expect((await factRows(engine, seed.legacyFactIds)).map(r => r.row_num)).toEqual([2, 3]);
+      // The archived source's legacy fact is skipped outright: no document, no
+      // stamp, nothing that could block the active source.
+      const doc = (await readPreservedFencePublication(engine, 'default', LEGACY_FILE_SLUG))!;
+      expect(doc.bindings.map(b => [b.original_row_num, b.derived_row_num])).toEqual([[null, 2], [null, 3]]);
+      expect(await readPreservedFencePublication(engine, 'archived-example', 'people/erin-example')).toBeNull();
+      expect((await factRows(engine, seed.legacyFactIds)).map(r => r.row_num)).toEqual([null, null]);
     }, { databaseUrl, setup: async ({ engine, root }) => {
       seed = await seedLegacyManagedContent(engine, root);
       await engine.executeRaw("INSERT INTO sources (id, name, archived) VALUES ('archived-example', 'Archived example', true)");

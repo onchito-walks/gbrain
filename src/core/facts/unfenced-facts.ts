@@ -479,7 +479,7 @@ async function fenceManaged(engine: BrainEngine, plan: UnfencedFactsPlan, allowS
       // A page whose derived document is already exactly the plan of its current
       // originals writes nothing: a re-run reads as the no-op it is.
       if (receipt.wrote) {
-        outcome.fenced += receipt.bindings;
+        outcome.fenced += fence.assignments.length;
         outcome.adopted_in_place = (outcome.adopted_in_place ?? 0) + fence.assignments.filter(a => a.adopted_in_place).length;
         outcome.renumbered = (outcome.renumbered ?? 0) + fence.assignments.filter(a => a.prev_row_num !== null && !a.adopted_in_place).length;
         outcome.pages_touched += 1;
@@ -517,7 +517,7 @@ async function fenceFilePage(engine: BrainEngine, sourceId: string, entitySlug: 
     const { publishPreservedFencePublication } = await import('./preserved-fence-store.ts');
     const receipt = await publishPreservedFencePublication(engine, sourceId, entitySlug, { allowSupersede });
     if (receipt.wrote) {
-      outcome.fenced += receipt.bindings;
+      outcome.fenced += fence.assignments.length;
       outcome.adopted_in_place = (outcome.adopted_in_place ?? 0) + fence.assignments.filter(a => a.adopted_in_place).length;
       outcome.renumbered = (outcome.renumbered ?? 0) + fence.assignments.filter(a => a.prev_row_num !== null && !a.adopted_in_place).length;
       outcome.pages_touched += 1;

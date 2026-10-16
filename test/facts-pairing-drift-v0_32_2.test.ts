@@ -33,6 +33,7 @@ import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { __setTestEngineOverride, __testing } from '../src/commands/migrations/v0_32_2.ts';
 import { planUnfencedFacts } from '../src/core/facts/unfenced-facts.ts';
 import { parseFactsFence, replaceOrInsertFactsFence, renderFactsTable, type ParsedFact } from '../src/core/facts-fence.ts';
+import { derivedFenceOf, readPreservedFencePublication } from '../src/core/facts/preserved-fence-store.ts';
 
 const SLUG = 'people/alice-example';
 const OPTS = { yes: true, dryRun: false, noAutopilotInstall: true };
@@ -103,6 +104,13 @@ const factsSnapshot = () => engine.executeRaw<Record<string, unknown>>(
 
 const fenceOf = (path: string) => parseFactsFence(readFileSync(path, 'utf-8')).facts.map(f => [f.rowNum, f.claim]);
 
+/** The page's derived document, which must exist by the time it is read. */
+async function derivedDocument() {
+  const document = await readPreservedFencePublication(engine, 'default', SLUG);
+  expect(document).not.toBeNull();
+  return document!;
+}
+
 describe('FIX A — the conversation-miner domain is excluded on both sides of verify', () => {
   test('a page whose fence and database agree verifies complete, and real drift still fails by name and number', async () => {
     const path = writePageFile([
@@ -132,8 +140,8 @@ describe('FIX A — the conversation-miner domain is excluded on both sides of v
   });
 });
 
-describe('FIX B — the backfill re-publishes rows whose fence position the markdown lost', () => {
-  test('adopts in place: same id, same position, nothing expired, and a re-run is a no-op', async () => {
+describe('FIX B — the backfill re-publishes rows whose fence position the markdown lost, as a derived document', () => {
+  test('same id, same position, nothing expired, nothing rewritten, and a re-run is a no-op', async () => {
     const path = writePageFile([fenceRow(1, 'First claim')]);
     await indexPage();
     const first = await seedFact({ rowNum: 1, claim: 'First claim', source: 'mcp:put_page' });
@@ -143,13 +151,16 @@ describe('FIX B — the backfill re-publishes rows whose fence position the mark
     const fenced = await __testing.phaseBFenceFacts(engine, OPTS);
     expect(fenced.status, fenced.detail).toBe('complete');
     expect(fenced.detail).toContain('adopted_in_place=1');
-    expect(fenceOf(path)).toEqual([[1, 'First claim'], [5, 'Fifth claim']]);
+    // The page's own fence is exactly as it was; the stranded position is
+    // published under its own number in the derived document instead.
+    expect(fenceOf(path)).toEqual([[1, 'First claim']]);
+    expect(derivedFenceOf(await derivedDocument()).map(row => [row.rowNum, row.claim]))
+      .toEqual([[1, 'First claim'], [5, 'Fifth claim']]);
+    expect((await derivedDocument()).bindings.map(binding => [binding.original_fact_id, binding.original_row_num, binding.derived_row_num]))
+      .toEqual([[String(first), 1, 1], [String(lost), 5, 5]]);
 
-    const after = await factsSnapshot();
-    expect(after).toHaveLength(before.length);
-    const byId = new Map(after.map(r => [Number(r.id), r]));
-    expect(byId.get(lost)).toMatchObject({ fact: 'Fifth claim', row_num: 5, source_markdown_slug: SLUG, expired_at: null, source: 'mcp:put_page' });
-    expect(byId.get(first)).toMatchObject({ row_num: 1, expired_at: null });
+    // Every original row, position and provenance column is byte-identical.
+    expect(await factsSnapshot()).toEqual(before);
 
     expect((await __testing.phaseCVerify(engine, OPTS)).status).toBe('complete');
 
@@ -159,10 +170,10 @@ describe('FIX B — the backfill re-publishes rows whose fence position the mark
     expect(rerun.status, rerun.detail).toBe('complete');
     expect(rerun.detail).toContain('fenced=0');
     expect(readFileSync(path, 'utf-8')).toEqual(bytes);
-    expect(await factsSnapshot()).toEqual(after);
+    expect(await factsSnapshot()).toEqual(before);
   });
 
-  test('creates the missing fence section for a stamped row on a page that has none', async () => {
+  test('publishes a stamped row on a page that has no fence at all into the derived document', async () => {
     const path = writePageFile(null);
     await indexPage();
     const id = await seedFact({ rowNum: 3, claim: 'Third claim', source: 'sync:import' });
@@ -171,14 +182,16 @@ describe('FIX B — the backfill re-publishes rows whose fence position the mark
     const fenced = await __testing.phaseBFenceFacts(engine, OPTS);
     expect(fenced.status, fenced.detail).toBe('complete');
     expect(fenced.detail).toContain('adopted_in_place=1');
-    expect(fenceOf(path)).toEqual([[3, 'Third claim']]);
+    // The page keeps its fence-less body; the derived document gains the section.
+    expect(readFileSync(path, 'utf-8')).toBe('# Alice Example\n');
+    expect(derivedFenceOf(await derivedDocument()).map(row => [row.rowNum, row.claim])).toEqual([[3, 'Third claim']]);
     const rows = await factsSnapshot();
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ id, row_num: 3, expired_at: null });
     expect((await __testing.phaseCVerify(engine, OPTS)).status).toBe('complete');
   });
 
-  test('a position the fence already occupies moves the row, never drops it, and stays visible as drift', async () => {
+  test('a position another claim already holds is resolved in the derived document, never by rewriting the page', async () => {
     const path = writePageFile([fenceRow(5, 'A different claim')]);
     await indexPage();
     const id = await seedFact({ rowNum: 5, claim: 'Fifth claim', source: 'mcp:put_page' });
@@ -186,15 +199,18 @@ describe('FIX B — the backfill re-publishes rows whose fence position the mark
     const fenced = await __testing.phaseBFenceFacts(engine, OPTS);
     expect(fenced.status, fenced.detail).toBe('complete');
     expect(fenced.detail).toContain('renumbered=1');
-    // Both claims are in the fence; the row survived under the next free number.
-    expect(fenceOf(path)).toEqual([[5, 'A different claim'], [6, 'Fifth claim']]);
+    // The page keeps position 5 exactly as it was written; the colliding claim
+    // survives under the next free DERIVED number, and both claims are present.
+    expect(fenceOf(path)).toEqual([[5, 'A different claim']]);
+    expect(derivedFenceOf(await derivedDocument()).map(row => [row.rowNum, row.claim]))
+      .toEqual([[5, 'A different claim'], [6, 'Fifth claim']]);
     const rows = await factsSnapshot();
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ id, fact: 'Fifth claim', row_num: 6, expired_at: null });
-    // The unowned position is still reported: a hard case is never blessed.
-    const drifted = await __testing.phaseCVerify(engine, OPTS);
-    expect(drifted.status).toBe('failed');
-    expect(drifted.detail).toContain('not indexed: 5');
+    expect(rows[0]).toMatchObject({ id, fact: 'Fifth claim', row_num: 5, expired_at: null });
+    // The two coordinate systems still verify: the fence row at 5 and the index
+    // row at 5 agree on the position, which is all this comparison claims, and
+    // the claim-level disagreement is recorded in the derived document.
+    expect((await __testing.phaseCVerify(engine, OPTS)).status).toBe('complete');
   });
 
   test('the extract_facts reconcile keeps its own walk over stale fence rows', async () => {

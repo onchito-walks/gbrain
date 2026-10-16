@@ -1,8 +1,12 @@
 # Preserved fence publication boundary
 
-Status: pure planner/validator implemented; NOT installed in the migration or
-publication consumers. The current writer still mutates original pages/facts.
-This document does not claim migration readiness or authorize deployment.
+Status: INSTALLED. `src/core/facts/preserved-fence-publication.ts` plans and
+validates the separate representation, `src/core/facts/preserved-fence-store.ts`
+publishes it through the existing owner/journal, and the v0.32.2 migration's
+phase B (the shared `src/core/facts/unfenced-facts.ts` pass the `extract_facts`
+cycle also runs) publishes it instead of rewriting originals. This document does
+not claim migration acceptance: the freeze, the protected build and the strict
+delta/native rehearsal are separate.
 
 ## Representation
 
@@ -15,15 +19,18 @@ NULL, an original position 5 remains 5 even when the derived position is 9,
 and any codec-normalized claim exists only in the derived document/binding.
 Original source, page, body and every supplied fact/provenance column are
 fingerprinted with the existing persistence digest helpers; the complete
-supplied original fact population is pinned, not merely candidate IDs.
+supplied original fact population is pinned, not merely candidate IDs. The page
+digest normalizes the two derivative index columns the publishing write itself
+refreshes (`MAINTENANCE_REFRESHED_PAGE_COLUMNS`); every other page column is
+covered, and any difference in one of them refuses.
 
 This object is not a write capability. Neither it nor its assignments may be
 applied as UPDATEs to original facts or installed over the original page/file.
-No storage or owner authority is invented by this module. An adapter must
-prove column and row population completeness from the engine, not accept a
-caller-asserted subset as discovery. Digest-captured vectors in diagnostic
-fixtures prove only equality of those captured digests, not an independent
-read of the original vectors.
+No storage or owner authority is invented by this module. The adapter proves
+column and row population completeness from the engine, never from a
+caller-asserted subset. Digest-captured vectors in diagnostic fixtures prove
+only equality of those captured digests, not an independent read of the
+original vectors.
 
 Validation replans from current complete originals and compares the entire
 publication, including its derived document, bindings and manifest. No
@@ -34,40 +41,48 @@ unrenderable candidates and source/page mismatches refuse the entire plan.
 Noncandidate conversation-domain zero coordinates are preserved as original
 evidence; they are not silently converted into valid fence positions.
 
-## Required integration, not implemented by this boundary
+## Installed integration
 
-A durable adapter must publish the separate derived document and binding
-through the existing source owner/journal, retaining the original source and
-page bindings and checking them again inside publication. It must not rely on
-an unvalidated JSON frontmatter flag, bypass managed writer guards, fabricate
-source provenance or silently use database-only publication for a file-backed
-source. An incomplete or interrupted publication must remain uncommitted or
-resume under the native exact-input idempotency rules.
-
-The following consumers must be integrated together before enabling this path:
-
-- v0.32.2 phase B must publish the derived representation instead of invoking
-  the existing inline mutator; phase C must verify original and derived
-  coordinates independently. The original page's unrelated fence rows still
-  participate in normal drift validation; bindings are not a drift exemption.
-- `pendingLegacyRows` must recognize only complete validated publications,
-  otherwise preserved NULL originals remain gated forever.
-- `planFenceReconcile` and canonical publication must bind derived rows to
-  their original identities without expiring, detaching, restamping or
-  rewriting original rows. A raw sidecar alone is not sufficient.
-- Import/rebuild/recovery must preserve truthful provenance and distinguish
-  derived records from original rows. Original identities must never be
-  inferred from matching claim text alone or from a fabricated origin.
+- v0.32.2 phase B publishes the derived representation instead of invoking the
+  inline mutator: `fenceFilePage` writes no file, mirrors no body and runs no
+  `UPDATE facts`; the managed path submits one
+  `managed_maintenance_publish_preserved_fence` request. The canonical file and
+  every original fact row are left exactly as they are, so a page whose fence
+  step reports `fenced=N` gained N derived positions and no original edit.
+- Phase C verifies both coordinate systems independently: the original fence
+  against the index rows the document does not bind, and every stored document
+  against its page's current originals (plus, per document, that every original
+  fence claim survives and every binding is addressable). A document that is no
+  longer the plan of its current originals fails the phase by name; pages whose
+  adopted rows hold no position at all are verified through the stored documents
+  themselves.
+- `pendingLegacyRows` recognizes only complete validated publications, so a
+  preserved NULL original no longer gates its page forever.
+- `planFenceReconcile` binds derived rows to their original identities without
+  expiring, detaching, restamping or rewriting them: a bound row is exempt
+  unless the page's own fence carries its derived position with exactly its
+  stored claim, and it is never re-occupied by an inserted row. A drifted
+  document is drift, not authority: the page keeps its index.
+- The derived document is a projection the tool maintains: it is recomputed from
+  the page's current originals, so a stale one is replaced by a truthful replan
+  rather than freezing the page's fence step, and losing the row (a rebuild, a
+  restored backup) is not data loss — the next run recreates it. Import/rebuild
+  never treats a document as a fact source, and original identities are never
+  inferred from matching claim text or a fabricated origin.
 - Existing source ownership, trust, withdrawal, deletion, remote authorization,
-  idempotency and interruption controls remain mandatory. A binding cannot
-  grant a low-trust caller permission to freeze or overwrite another row.
+  idempotency and interruption controls are unchanged: the unmanaged path writes
+  inside one maintenance transaction under the page lock, the managed path
+  through the coordinator against the page revision, and a publication that is
+  already current writes nothing at all.
 
 ## Verification scope
 
 The pure unit suite covers literal NULL/numbered originals, the 5-to-derived-9
 collision, already-paired rows, normalized derived claims, duplicate and
 ambiguous candidates, complete population/provenance drift, source isolation,
-idempotent replanning and refusal without input mutation. Pure planning is not
-publication crash/recovery proof. Existing migration/managed/cycle tests must
-still pass, followed by real integrated publication/recovery controls before
-one final protected binary build and the required delta/native rehearsal.
+idempotent replanning and refusal without input mutation. The store suite adds
+the publication path (originals byte-identical, canonical plan stored, drift
+refused without supersede). The adoption suite drives the shared pass and the
+migration's own phases over real originals. Pure planning is not publication
+crash/recovery proof: the freeze, the protected build and the strict
+delta/native rehearsal remain required.
