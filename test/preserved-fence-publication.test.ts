@@ -54,7 +54,7 @@ test('existing5 collision maps to derived9 without changing original5 or either 
 test('an unoccupied existing numbered position is mapped without any original-body edit', () => {
   const input = inputs([fact({ row_num: 5, source_markdown_slug: 'people/example' })]);
   expect(planPreservedFencePublication(input).bindings[0]).toMatchObject({ original_row_num: 5, derived_row_num: 5 });
-  expect(input.body).toBe(input.page.compiled_truth);
+  expect(input.body).toBe(input.page.compiled_truth as string);
 });
 
 test('already-paired candidates receive exact explicit bindings, not duplicate derived rows', () => {
