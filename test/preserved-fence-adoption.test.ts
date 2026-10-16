@@ -207,11 +207,11 @@ test('the cycle reconcile leaves bound originals alone: no expiry, no detach, no
   expect((await preservedFencePublicationState(engine, 'default', SLUG)).state).toBe('current');
 });
 
-test('a drifted derived document refuses instead of expiring or replacing originals', async () => {
+test('a drifted derived document is replanned from the current originals; no original is expired or rewritten', async () => {
   await seedPage();
   const { lost } = await seedRealShape();
   await adopt();
-  const document = await readPreservedFencePublication(engine, 'default', SLUG);
+  const first = await readPreservedFencePublication(engine, 'default', SLUG);
 
   // A provenance change on a bound original invalidates the stored document.
   await engine.executeRaw(`UPDATE facts SET source_session = 'drifted' WHERE id = $1`, [Number(lost)]);
@@ -221,10 +221,28 @@ test('a drifted derived document refuses instead of expiring or replacing origin
 
   const result = await runExtractFacts(engine, { sourceId: 'default', slugs: [SLUG] });
 
-  // Drift is not authority: nothing is replaced, expired or detached, and the
-  // row that is no longer covered stays pending so its page keeps its index.
-  expect(await readPreservedFencePublication(engine, 'default', SLUG)).toEqual(document!);
+  // The projection is maintained, not frozen: it is replanned from the current
+  // originals. No original row is expired, detached, renumbered or rewritten.
+  expect(await readPreservedFencePublication(engine, 'default', SLUG)).not.toEqual(first!);
+  expect((await preservedFencePublicationState(engine, 'default', SLUG)).state).toBe('current');
   expect(await factRow(lost)).toMatchObject({ fact: 'Legacy lost row twelve', row_num: 12, expired_at: null, source_session: 'drifted' });
+  expect(result.factsDeleted).toBe(0);
+  expect(result.legacyRowsPending).toBe(0);
+});
+
+test('a drifted document that cannot be replanned leaves the page its index instead of expiring bound rows', async () => {
+  await seedPage();
+  const { lost } = await seedRealShape();
+  await adopt();
+  // The stored document is stale AND the page now carries a row the codec cannot
+  // render, so replanning the document refuses for the whole page.
+  await engine.executeRaw(`UPDATE facts SET source_session = 'drifted' WHERE id = $1`, [Number(lost)]);
+  const broken = await seedFact({ rowNum: null, claim: 'unrenderable <br> claim', sourceSlug: null });
+
+  const result = await runExtractFacts(engine, { sourceId: 'default', slugs: [SLUG] });
+
+  expect(await factRow(lost)).toMatchObject({ fact: 'Legacy lost row twelve', row_num: 12, expired_at: null, source_session: 'drifted' });
+  expect(await factRow(broken)).toMatchObject({ fact: 'unrenderable <br> claim', row_num: null, expired_at: null });
   expect(result.factsDeleted).toBe(0);
   expect(result.guardTriggered).toBe(true);
 });
