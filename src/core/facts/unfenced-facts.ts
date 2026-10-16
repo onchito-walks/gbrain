@@ -324,15 +324,26 @@ export interface FenceAssignment {
  * a second row whose normalized claim and source the page already carries,
  * are returned in `rejected` and left alone.
  */
+export interface OccupiedFactPosition { id: string; row_num: number; fact: string; source: string | null }
+
 export async function planFence(engine: BrainEngine, sourceId: string, entitySlug: string, body: string, group: UnfencedFactRow[]):
   Promise<{ body: string; assignments: FenceAssignment[]; rejected: UnadoptableFactRecord[] } | { warnings: string[] }> {
-  const existingFence = parseFactsFence(body);
-  if (existingFence.warnings.length > 0) return { warnings: existingFence.warnings };
-  const occupiedRows = await engine.executeRaw<{ id: string; row_num: number; fact: string; source: string | null }>(
+  const parsed = parseFactsFence(body);
+  if (parsed.warnings.length > 0) return { warnings: parsed.warnings };
+  const occupiedRows = await engine.executeRaw<OccupiedFactPosition>(
     `SELECT id, row_num, fact, source FROM facts
       WHERE source_id = $1 AND source_markdown_slug = $2 AND row_num IS NOT NULL`,
     [sourceId, entitySlug],
   );
+  return planFenceWithOccupiedRows(sourceId, entitySlug, body, group, occupiedRows);
+}
+
+/** Pure codec plan. Its assignments are derived coordinates, not authority to change original rows. */
+export function planFenceWithOccupiedRows(sourceId: string, entitySlug: string, body: string,
+  group: UnfencedFactRow[], occupiedRows: OccupiedFactPosition[]):
+  { body: string; assignments: FenceAssignment[]; rejected: UnadoptableFactRecord[] } | { warnings: string[] } {
+  const existingFence = parseFactsFence(body);
+  if (existingFence.warnings.length > 0) return { warnings: existingFence.warnings };
   const occupied = new Map(occupiedRows.map(row => [Number(row.row_num), row]));
   const fenceRowAt = new Map(existingFence.facts.map(f => [f.rowNum, f] as const));
   let nextRowNum = Math.max(0, ...occupied.keys(), ...existingFence.facts.map(f => f.rowNum)) + 1;
