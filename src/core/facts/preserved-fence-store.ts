@@ -82,6 +82,8 @@ export interface PreservedFencePublishReceipt {
   path: 'unmanaged' | 'managed';
   reason?: string;
   requestId?: string;
+  /** True when this call wrote the document; false when it was already the plan of the current originals. */
+  wrote: boolean;
   derivedBodySha256: string;
   bindings: number;
   /** True when a previously stored, no-longer-current document was replaced on purpose. */
@@ -348,17 +350,16 @@ export async function publishPreservedFencePublication(engine: BrainEngine, sour
   // blessed by simply running the backfill again.
   const existing = await readPreservedFencePublication(engine, sourceId, slug);
   let superseded = false;
+  let alreadyCurrent = false;
   if (existing) {
     let current = true;
     try { await assertPublicationIsCurrent(engine, sourceId, slug, existing); }
     catch { current = false; }
-    if (!current) {
-      if (!opts.allowSupersede) {
-        refuse('stored_publication_drifted',
-          `${sourceId}/${slug} has a stored derived document that is not the plan of its current originals; refusing to replace it without an explicit supersede`);
-      }
-      superseded = true;
-    }
+    if (current) alreadyCurrent = true;
+    else if (!opts.allowSupersede) {
+      refuse('stored_publication_drifted',
+        `${sourceId}/${slug} has a stored derived document that is not the plan of its current originals; refusing to replace it without an explicit supersede`);
+    } else superseded = true;
   }
   const publication = planPreservedFencePublication(originals.input);
   const base = {
@@ -370,6 +371,9 @@ export async function publishPreservedFencePublication(engine: BrainEngine, sour
     originalBodySha256: publication.original_body_sha256,
   };
   const managed = await managedPersistenceEnabled(engine);
+  // The stored document is already exactly the plan of the current originals:
+  // there is nothing to write, and a re-run stays a true no-op.
+  if (alreadyCurrent) return { published: true, wrote: false, path: managed ? 'managed' : 'unmanaged', ...base };
   if (!managed) {
     await maintenanceTransaction(engine, async tx => {
       // Re-check under the transaction: the plan must still be the plan of the
@@ -377,7 +381,7 @@ export async function publishPreservedFencePublication(engine: BrainEngine, sour
       await assertPublicationIsCurrent(tx, sourceId, slug, publication);
       await writePublicationRow(tx, sourceId, slug, publication);
     });
-    return { published: true, path: 'unmanaged', ...base };
+    return { published: true, wrote: true, path: 'unmanaged', ...base };
   }
   const authority = opts.authority ?? await maintenancePreflight(engine, sourceId);
   if (!authority) throw opError('permission_denied', 'The preserved fence publication has no maintenance authority.',
@@ -390,7 +394,7 @@ export async function publishPreservedFencePublication(engine: BrainEngine, sour
     const prior = await getWriteRequest(engine, authority.writer.principal, requestId);
     if (prior && isTerminal(prior) && prior.state !== 'committed') continue;
     const receipt = await submitDatabaseMaintenanceIntent(engine, authority, slug, intent as Record<string, unknown> & { kind: string; expected_revision: string | null }, requestId);
-    return { published: receipt.published === true, path: 'managed', requestId, ...base };
+    return { published: receipt.published === true, wrote: true, path: 'managed', requestId, ...base };
   }
 }
 

@@ -2,9 +2,11 @@
  * v0.32.2 — migration orchestrator tests.
  *
  * Covers phaseASchema (asserts v51 ran), phaseBFenceFacts (legacy
- * row → fence backfill happy path, idempotent re-run, dry-run, NULL
- * entity_slug skip, missing local_path skip), and phaseCVerify
- * (mismatch detection).
+ * row → derived fence document under strict preservation: no stamped
+ * position, no rewritten claim, no page body gaining a fence; idempotent
+ * re-run, dry-run, NULL entity_slug skip, missing local_path skip), and
+ * phaseCVerify (both coordinate systems: the fence against the index and
+ * every derived document against its current originals).
  *
  * Real PGLite + real tempdir filesystem. Engine injected via
  * __setTestEngineOverride so we don't need a configured brain.
@@ -20,6 +22,9 @@ import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { v0_32_2, __setTestEngineOverride, __testing } from '../src/commands/migrations/v0_32_2.ts';
 import { runExtractFacts } from '../src/core/cycle/extract-facts.ts';
 import { parseFactsFence, renderFactsTable, replaceOrInsertFactsFence, upsertFactRow, type ParsedFact } from '../src/core/facts-fence.ts';
+import {
+  derivedFenceOf, planPagePreservedFencePublication, readPreservedFencePublication,
+} from '../src/core/facts/preserved-fence-store.ts';
 
 let engine: PGLiteEngine;
 let brainDir: string;
@@ -50,6 +55,13 @@ beforeEach(async () => {
 
 const OPTS = { yes: true, dryRun: false, noAutopilotInstall: true };
 const DRY_OPTS = { ...OPTS, dryRun: true };
+
+/** The derived document of one page, which must exist by the time it is read. */
+async function derivedDocument(slug: string) {
+  const document = await readPreservedFencePublication(engine, 'default', slug);
+  expect(document).not.toBeNull();
+  return document!;
+}
 
 async function seedLegacyFact(input: {
   entity_slug: string | null;
@@ -136,7 +148,7 @@ describe('phaseBFenceFacts — dry-run reporting', () => {
 });
 
 describe('phaseBFenceFacts — happy path backfill', () => {
-  test('fences legacy DB rows into entity pages + updates row_num', async () => {
+  test('publishes legacy DB rows into the page derived document and leaves the originals literal', async () => {
     const id1 = await seedLegacyFact({ entity_slug: 'people/alice', fact: 'Founded Acme in 2017' });
     const id2 = await seedLegacyFact({ entity_slug: 'people/alice', fact: 'Prefers async over meetings' });
 
@@ -145,21 +157,26 @@ describe('phaseBFenceFacts — happy path backfill', () => {
     expect(r.detail).toContain('fenced=2');
     expect(r.detail).toContain('pages=1');
 
-    // Existing page now has fence content.
+    // Strict preservation: no page body gained a fence and no row was stamped.
     const filePath = join(brainDir, 'people/alice.md');
     expect(existsSync(filePath)).toBe(true);
-    const body = readFileSync(filePath, 'utf-8');
-    expect(body).toContain('## Facts');
-    expect(body).toContain('Founded Acme in 2017');
-    expect(body).toContain('Prefers async over meetings');
+    expect(readFileSync(filePath, 'utf-8')).toBe('# Existing page\n');
 
-    // DB rows now have row_num + source_markdown_slug populated.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const rows = await (engine as any).db.query(
-      'SELECT id, row_num, source_markdown_slug FROM facts ORDER BY id',
+      'SELECT id, row_num, source_markdown_slug, fact FROM facts ORDER BY id',
     );
-    expect(rows.rows[0]).toMatchObject({ id: id1, row_num: 1, source_markdown_slug: 'people/alice' });
-    expect(rows.rows[1]).toMatchObject({ id: id2, row_num: 2, source_markdown_slug: 'people/alice' });
+    expect(rows.rows[0]).toMatchObject({ id: id1, row_num: null, source_markdown_slug: null, fact: 'Founded Acme in 2017' });
+    expect(rows.rows[1]).toMatchObject({ id: id2, row_num: null, source_markdown_slug: null, fact: 'Prefers async over meetings' });
+
+    // The adopted positions live in the derived document, bound to both rows.
+    const document = await derivedDocument('people/alice');
+    expect(document.bindings.map(binding => binding.original_fact_id).sort()).toEqual([String(id1), String(id2)].sort());
+    expect(document.bindings.every(binding => binding.original_row_num === null)).toBe(true);
+    expect(new Set(document.bindings.map(binding => binding.derived_row_num)).size).toBe(2);
+    expect(document.derived_body).toContain('## Facts');
+    expect(document.derived_body).toContain('Founded Acme in 2017');
+    expect(document.derived_body).toContain('Prefers async over meetings');
   });
 
   test('groups by entity page — multi-entity batch touches multiple files', async () => {
@@ -177,51 +194,42 @@ describe('phaseBFenceFacts — happy path backfill', () => {
     expect(existsSync(join(brainDir, 'deals/seed.md'))).toBe(true);
   });
 
-  test('appends to existing entity page without overwriting body', async () => {
+  test('keeps an existing entity page byte-identical and publishes the fence into the derived document', async () => {
     mkdirSync(join(brainDir, 'people'), { recursive: true });
-    writeFileSync(
-      join(brainDir, 'people/alice.md'),
-      '---\ntype: person\ntitle: Alice\nslug: people/alice\n---\n\n# Alice\n\nNotes about Alice.\n',
-      'utf-8',
-    );
+    const original = '---\ntype: person\ntitle: Alice\nslug: people/alice\n---\n\n# Alice\n\nNotes about Alice.\n';
+    writeFileSync(join(brainDir, 'people/alice.md'), original, 'utf-8');
     await seedLegacyFact({ entity_slug: 'people/alice', fact: 'Founded Acme' });
 
     await __testing.phaseBFenceFacts(engine, OPTS);
 
-    const body = readFileSync(join(brainDir, 'people/alice.md'), 'utf-8');
-    expect(body).toContain('Notes about Alice.');  // preserved
-    expect(body).toContain('## Facts');
-    expect(body).toContain('Founded Acme');
+    expect(readFileSync(join(brainDir, 'people/alice.md'), 'utf-8')).toBe(original);
+    const document = await derivedDocument('people/alice');
+    expect(document.bindings).toHaveLength(1);
+    expect(document.derived_body).toContain('## Facts');
+    expect(document.derived_body).toContain('Founded Acme');
   });
 
-  test('idempotent: re-running after partial completion does NOT duplicate rows', async () => {
+  test('idempotent: re-running republishes the same derived document without duplicating rows', async () => {
     await seedLegacyFact({ entity_slug: 'people/alice', fact: 'First' });
     await seedLegacyFact({ entity_slug: 'people/alice', fact: 'Second' });
 
     await __testing.phaseBFenceFacts(engine, OPTS);
-
-    // Manually clear one row's row_num to simulate a partial state.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await (engine as any).db.query(
-      `UPDATE facts SET row_num = NULL, source_markdown_slug = NULL
-       WHERE fact = 'Second'`,
-    );
+    const first = await derivedDocument('people/alice');
+    expect(first.bindings).toHaveLength(2);
 
     const r = await __testing.phaseBFenceFacts(engine, OPTS);
     expect(r.status).toBe('complete');
 
-    // The re-run should reuse the existing row_num=2 (matched by claim
-    // content) rather than appending a new row_num=3.
-    const body = readFileSync(join(brainDir, 'people/alice.md'), 'utf-8');
-    const parsed = parseFactsFence(body);
-    expect(parsed.facts).toHaveLength(2);
-    expect(parsed.facts.map(f => f.claim).sort()).toEqual(['First', 'Second']);
-
+    // The projection is recomputed from the same originals, so it reads back
+    // identical, and no fact row was added or stamped.
+    const second = await derivedDocument('people/alice');
+    expect(second).toEqual(first);
+    expect(second).toEqual(await planPagePreservedFencePublication(engine, 'default', 'people/alice'));
+    const derived = derivedFenceOf(second);
+    expect(derived.map(row => row.claim).sort()).toEqual(['First', 'Second']);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const rows = await (engine as any).db.query(
-      'SELECT row_num FROM facts WHERE row_num IS NOT NULL ORDER BY row_num',
-    );
-    expect(rows.rows.map((r: { row_num: number }) => r.row_num)).toEqual([1, 2]);
+    const rows = await (engine as any).db.query('SELECT row_num FROM facts ORDER BY id');
+    expect(rows.rows.map((row: { row_num: number | null }) => row.row_num)).toEqual([null, null]);
   });
 
   test('skips facts with NULL entity_slug (unfenceable)', async () => {
@@ -233,13 +241,14 @@ describe('phaseBFenceFacts — happy path backfill', () => {
     expect(r.detail).toContain('fenced=1');
     expect(r.detail).toContain('skipped_no_entity=1');
 
-    // The unparented fact's row_num remains NULL.
+    // The unparented fact's row_num remains NULL and no document binds it.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const rows = await (engine as any).db.query(
       `SELECT entity_slug, row_num FROM facts ORDER BY id`,
     );
-    expect(rows.rows[0]).toMatchObject({ entity_slug: 'people/alice', row_num: 1 });
+    expect(rows.rows[0]).toMatchObject({ entity_slug: 'people/alice', row_num: null });
     expect(rows.rows[1]).toMatchObject({ entity_slug: null, row_num: null });
+    expect((await derivedDocument('people/alice')).bindings).toHaveLength(1);
   });
 
   test('skips when source has no local_path', async () => {
@@ -285,15 +294,18 @@ describe('phaseBFenceFacts — missing pages and occupied fence rows', () => {
     expect(result.detail).toContain('fenced=1');
     expect(existsSync(join(brainDir, 'missing-example.md'))).toBe(false);
     expect(existsSync(join(brainDir, 'projects/missing-example.md'))).toBe(false);
-    expect(readFileSync(existingPath, 'utf8')).toContain('# Existing notes');
+    // The recorded page keeps its own body: the adopted position is published
+    // into the derived document, never appended to the page.
+    expect(readFileSync(existingPath, 'utf8')).toBe('# Existing notes\n');
     const rows = await engine.executeRaw<{ fact: string; row_num: number | null }>(
       `SELECT fact, row_num FROM facts ORDER BY id`,
     );
     expect(rows).toEqual([
-      { fact: 'Existing page fact', row_num: 1 },
+      { fact: 'Existing page fact', row_num: null },
       { fact: 'Unresolved root fact', row_num: null },
       { fact: 'Missing prefixed fact', row_num: null },
     ]);
+    expect(derivedFenceOf(await derivedDocument(slug)).map(row => row.claim)).toEqual(['Existing page fact']);
   });
 
   test('requires a live entity page in the fact source even when an orphan file exists', async () => {
@@ -323,16 +335,18 @@ describe('phaseBFenceFacts — missing pages and occupied fence rows', () => {
     expect(existsSync(join(brainDir, 'missing-example.md'))).toBe(false);
   });
 
-  test('writes and verifies the recorded page path instead of creating a slug-named twin', async () => {
+  test('publishes against the recorded page path instead of creating a slug-named twin', async () => {
     const path = await page('# Existing notes\n', 'People/Alice Example.md');
     await seedLegacyFact({ entity_slug: slug, fact: 'Recorded file fact' });
     expect((await __testing.phaseBFenceFacts(engine, OPTS)).status).toBe('complete');
-    expect(parseFactsFence(readFileSync(path, 'utf8')).facts[0]?.claim).toBe('Recorded file fact');
+    // The recorded file is the page the document is planned from, and it stays as it is.
+    expect(readFileSync(path, 'utf8')).toBe('# Existing notes\n');
     expect(existsSync(join(brainDir, `${slug}.md`))).toBe(false);
+    expect(derivedFenceOf(await derivedDocument(slug)).map(row => row.claim)).toEqual(['Recorded file fact']);
     expect((await __testing.phaseCVerify(engine, OPTS)).status).toBe('complete');
   });
 
-  test('allocates above DB-owned numbers after a markdown fence disappeared', async () => {
+  test('allocates above DB-owned numbers after a markdown fence disappeared, without renumbering the original', async () => {
     await page();
     await engine.executeRaw(
       `INSERT INTO facts (source_id, entity_slug, fact, kind, source, row_num, source_markdown_slug)
@@ -341,9 +355,13 @@ describe('phaseBFenceFacts — missing pages and occupied fence rows', () => {
     await seedLegacyFact({ entity_slug: slug, fact: 'Needs fencing' });
     const result = await __testing.phaseBFenceFacts(engine, OPTS);
     expect(result.status).toBe('complete');
-    expect(await engine.executeRaw(`SELECT fact, row_num FROM facts ORDER BY row_num`)).toEqual([
-      { fact: 'Already indexed', row_num: 7 }, { fact: 'Needs fencing', row_num: 8 },
+    // Originals literal: the row that held 7 keeps 7 and the legacy row keeps NULL.
+    expect(await engine.executeRaw(`SELECT fact, row_num FROM facts ORDER BY id`)).toEqual([
+      { fact: 'Already indexed', row_num: 7 }, { fact: 'Needs fencing', row_num: null },
     ]);
+    const document = await derivedDocument(slug);
+    expect(document.bindings.map(binding => [binding.original_row_num, binding.derived_row_num]))
+      .toEqual([[7, 7], [null, 8]]);
   });
 
   test('moves a stranded colliding row without dropping an earlier appended fact', async () => {
@@ -358,57 +376,58 @@ describe('phaseBFenceFacts — missing pages and occupied fence rows', () => {
     );
     await seedLegacyFact({ entity_slug: slug, fact: 'Append before stranded' });
     await seedLegacyFact({ entity_slug: slug, fact: 'Stranded fact' });
-    const before = await engine.executeRaw('SELECT id, fact, expired_at FROM facts ORDER BY id');
+    const before = await engine.executeRaw('SELECT id, fact, row_num, source_markdown_slug, expired_at FROM facts ORDER BY id');
     const result = await __testing.phaseBFenceFacts(engine, OPTS);
     expect(result.status).toBe('complete');
     expect(result.detail).toContain('scanned=3 fenced=3 pages=1');
     expect(result.detail).toContain('renumbered=1');
-    const facts = parseFactsFence(readFileSync(path, 'utf8')).facts;
-    // adoptStamped publishes the colliding DB-owned claim at 2 first, then
-    // appends at 3; reusing the stranded fence row must not drop either claim.
-    expect(facts.map(f => [f.claim, f.rowNum])).toEqual([
-      ['Stranded fact', 4], ['Already indexed', 2], ['Append before stranded', 3],
-    ]);
-    expect(await engine.executeRaw(`SELECT fact, row_num FROM facts ORDER BY row_num`)).toEqual([
-      { fact: 'Already indexed', row_num: 2 },
-      { fact: 'Append before stranded', row_num: 3 },
-      { fact: 'Stranded fact', row_num: 4 },
-    ]);
-    expect(await engine.executeRaw('SELECT id, fact, expired_at FROM facts ORDER BY id')).toEqual(before);
+    // The page keeps its own fence with the stranded row exactly where it was.
+    expect(readFileSync(path, 'utf8')).toBe(body);
+    expect(await engine.executeRaw('SELECT id, fact, row_num, source_markdown_slug, expired_at FROM facts ORDER BY id')).toEqual(before);
+    // The collision is resolved in the DERIVED document: the colliding
+    // DB-owned claim takes 2, the appended row 3, and the stranded fence row
+    // 4 — neither claim is dropped.
+    const derived = derivedFenceOf(await derivedDocument(slug));
+    expect(derived.map(row => [row.claim, row.rowNum]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))))
+      .toEqual([['Already indexed', 2], ['Append before stranded', 3], ['Stranded fact', 4]]);
     expect((await __testing.phaseCVerify(engine, OPTS)).status).toBe('complete');
-    const adopted = await engine.executeRaw('SELECT id, fact, row_num, expired_at FROM facts ORDER BY id');
-    const file = readFileSync(path, 'utf8');
     const rerun = await __testing.phaseBFenceFacts(engine, OPTS);
     expect(rerun.detail).toBe('scanned=3 fenced=0 pages=0 skipped_no_entity=0 skipped_no_local_path=0 skipped_no_page=0');
-    expect(readFileSync(path, 'utf8')).toBe(file);
-    expect(await engine.executeRaw('SELECT id, fact, row_num, expired_at FROM facts ORDER BY id')).toEqual(adopted);
+    expect(readFileSync(path, 'utf8')).toBe(body);
+    expect(await engine.executeRaw('SELECT id, fact, row_num, source_markdown_slug, expired_at FROM facts ORDER BY id')).toEqual(before);
   });
 
   test('never lets two legacy rows claim the same stranded fence row', async () => {
-    const path = await page(upsertFactRow('# Notes\n', {
+    const body = upsertFactRow('# Notes\n', {
       rowNum: 5, claim: 'Same claim', kind: 'fact', confidence: 1, visibility: 'private',
       notability: 'medium', source: 'mcp:put_page',
-    }).body);
+    }).body;
+    const path = await page(body);
     await seedLegacyFact({ entity_slug: slug, fact: 'Same claim' });
     await seedLegacyFact({ entity_slug: slug, fact: 'Same claim', visibility: 'world' });
     expect((await __testing.phaseBFenceFacts(engine, OPTS)).status).toBe('complete');
-    expect(parseFactsFence(readFileSync(path, 'utf8')).facts.map(f => f.rowNum)).toEqual([5, 6]);
+    expect(readFileSync(path, 'utf8')).toBe(body);
+    expect(derivedFenceOf(await derivedDocument(slug)).map(row => row.rowNum)).toEqual([5, 6]);
     expect((await __testing.phaseCVerify(engine, OPTS)).status).toBe('complete');
   });
 
   test('preserves a legitimate DB-owned matching fence row and appends the separate legacy fact', async () => {
-    const path = await page(upsertFactRow('# Notes\n', {
+    const body = upsertFactRow('# Notes\n', {
       rowNum: 4, claim: 'Shared claim', kind: 'fact', confidence: 0.8, visibility: 'private',
       notability: 'high', source: 'mcp:put_page', context: 'Original provenance',
       claimMetric: 'count', claimValue: 8,
-    }).body);
+    }).body;
+    const path = await page(body);
     await engine.executeRaw(
       `INSERT INTO facts (source_id, entity_slug, fact, kind, source, row_num, source_markdown_slug)
        VALUES ('default', $1, 'Shared claim', 'fact', 'mcp:put_page', 4, $1)`, [slug],
     );
     await seedLegacyFact({ entity_slug: slug, fact: 'Shared claim', visibility: 'world' });
     expect((await __testing.phaseBFenceFacts(engine, OPTS)).status).toBe('complete');
-    const facts = parseFactsFence(readFileSync(path, 'utf8')).facts;
+    // The fence row the database already owns is carried unchanged, provenance
+    // and claim metrics included; only the separate legacy fact is appended.
+    expect(readFileSync(path, 'utf8')).toBe(body);
+    const facts = derivedFenceOf(await derivedDocument(slug));
     expect(facts).toHaveLength(2);
     expect(facts[0]).toMatchObject({
       rowNum: 4, claim: 'Shared claim', confidence: 0.8, visibility: 'private',
@@ -495,38 +514,59 @@ describe('phaseBFenceFacts — dirty-tree refusal scoping (#927)', () => {
 });
 
 describe('phaseCVerify', () => {
-  test('returns complete when fence + DB row counts match', async () => {
-    await seedLegacyFact({ entity_slug: 'people/alice', fact: 'F1' });
-    await seedLegacyFact({ entity_slug: 'people/alice', fact: 'F2' });
-    await __testing.phaseBFenceFacts(engine, OPTS);
+  test('returns complete when the fence, the index and the derived document agree', async () => {
+    await writeFencedPage([fenceRow(1, 'Lives in Paris'), fenceRow(2, 'Works at Acme example')]);
+    await engine.executeRaw(
+      `INSERT INTO facts (source_id, entity_slug, fact, kind, visibility, notability,
+                          valid_from, source, confidence, row_num, source_markdown_slug)
+       VALUES ('default', $1, 'Lives in Paris', 'fact', 'private', 'medium', now(), 'manual', 1.0, 1, $1),
+              ('default', $1, 'Works at Acme example', 'fact', 'private', 'medium', now(), 'manual', 1.0, 2, $1)`,
+      [SLUG],
+    );
+    // A legacy row is adopted: the backfill publishes the page's derived document.
+    await seedLegacyFact({ entity_slug: SLUG, fact: 'Adopted later', withPage: false });
+    expect((await __testing.phaseBFenceFacts(engine, OPTS)).status).toBe('complete');
+    expect(derivedFenceOf(await derivedDocument(SLUG)).map(row => row.claim))
+      .toEqual(['Lives in Paris', 'Works at Acme example', 'Adopted later']);
 
     const r = await __testing.phaseCVerify(engine, OPTS);
     expect(r.status).toBe('complete');
     expect(r.detail).toContain('pages_checked=1');
   });
 
-  test('returns failed when fence row count drifts from DB', async () => {
-    await seedLegacyFact({ entity_slug: 'people/alice', fact: 'F1' });
-    await __testing.phaseBFenceFacts(engine, OPTS);
+  test('returns failed when the fence drifts from the database', async () => {
+    await writeFencedPage([fenceRow(1, 'Lives in Paris')]);
+    await engine.executeRaw(
+      `INSERT INTO facts (source_id, entity_slug, fact, kind, visibility, notability,
+                          valid_from, source, confidence, row_num, source_markdown_slug)
+       VALUES ('default', $1, 'Lives in Paris', 'fact', 'private', 'medium', now(), 'manual', 1.0, 1, $1)`,
+      [SLUG],
+    );
 
     // Corrupt the fence: append a row manually that's not in the DB.
-    const path = join(brainDir, 'people/alice.md');
+    const path = join(brainDir, `${SLUG}.md`);
     const body = readFileSync(path, 'utf-8');
     const corrupted = body.replace(
       '<!--- gbrain:facts:end -->',
       '| 99 | extra row | fact | 1.0 | world | medium | 2026-01-01 |  | manual |  |\n<!--- gbrain:facts:end -->',
     );
+    expect(corrupted).not.toBe(body);
     writeFileSync(path, corrupted, 'utf-8');
 
     const r = await __testing.phaseCVerify(engine, OPTS);
     expect(r.status).toBe('failed');
     expect(r.detail).toContain('drifted');
-    expect(r.detail).toContain('people/alice');
+    expect(r.detail).toContain(SLUG);
   });
 
   test('ignores conversation-miner facts that have no markdown fence', async () => {
-    await seedLegacyFact({ entity_slug: 'people/alice', fact: 'F1' });
-    await __testing.phaseBFenceFacts(engine, OPTS);
+    await writeFencedPage([fenceRow(1, 'Lives in Paris')]);
+    await engine.executeRaw(
+      `INSERT INTO facts (source_id, entity_slug, fact, kind, visibility, notability,
+                          valid_from, source, confidence, row_num, source_markdown_slug)
+       VALUES ('default', $1, 'Lives in Paris', 'fact', 'private', 'medium', now(), 'manual', 1.0, 1, $1)`,
+      [SLUG],
+    );
 
     const slug = 'cursor-sessions/chat-1';
     mkdirSync(join(brainDir, 'cursor-sessions'), { recursive: true });

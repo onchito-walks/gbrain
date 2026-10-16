@@ -291,22 +291,26 @@ function isConversationMinerFenceRow(fact: ParsedFact, cliRowNums: ReadonlySet<n
 
 /**
  * The derived coordinate system, verified independently of the replan: every
- * row the ORIGINAL fence carries must survive in the derived document unchanged
- * (same claim, source and active state), and every binding the document
- * publishes must be addressable in it at its own derived position with its own
- * derived claim. Returns the mismatch, or null when the two agree.
+ * CLAIM the ORIGINAL fence carries must survive in the derived document as an
+ * active row with the same source (its position may move — that is exactly what
+ * a position the index already holds forces, and the derived document is where
+ * the move is recorded), and every binding the document publishes must be
+ * addressable in it at its own derived position with its own derived claim.
+ * Returns the mismatch, or null when the two agree.
  */
 function derivedCoordinateMismatch(publication: PreservedFencePublication, originalFence: ParsedFact[],
   cliRowNums: ReadonlySet<number>): string | null {
   const derived = parseFactsFence(publication.derived_body);
   if (derived.warnings.length > 0) return `the derived document does not parse (${derived.warnings.join('; ')})`;
   const byPosition = new Map(derived.facts.map(row => [row.rowNum, row]));
+  const carried = new Set(derived.facts.filter(row => row.active).map(row => `${row.claim}\u0000${row.source ?? ''}`));
   for (const row of originalFence) {
     if (isConversationMinerFenceRow(row, cliRowNums)) continue;
-    const kept = byPosition.get(row.rowNum);
-    if (!kept || kept.claim !== row.claim || (kept.source ?? '') !== (row.source ?? '') || kept.active !== row.active) {
-      return `original fence row ${row.rowNum} is not carried unchanged`;
-    }
+    const at = byPosition.get(row.rowNum);
+    const unchanged = at !== undefined && at.active === row.active && at.claim === row.claim && (at.source ?? '') === (row.source ?? '');
+    if (unchanged) continue;
+    if (carried.has(`${row.claim}\u0000${row.source ?? ''}`)) continue;
+    return `original fence row ${row.rowNum} (${row.claim}) is not carried by the derived document`;
   }
   for (const binding of publication.bindings) {
     const row = byPosition.get(binding.derived_row_num);
@@ -379,35 +383,25 @@ async function phaseCVerify(
     for (const g of groups) {
       const positions = (g.row_nums ?? []).map(Number);
       const ids = (g.ids ?? []).map(String);
-      // Strict preservation: a row a CURRENT derived document binds is
-      // represented by that document, so its original coordinates are excluded
-      // from this comparison and verified on the derived side instead. A stored
-      // document that is no longer the plan of the page's current originals is
-      // drift and fails this phase by name; nothing is written on this path.
+      // Strict preservation: a row a CURRENT derived document binds is compared
+      // against its DERIVED coordinate, not against the fence. A stored document
+      // that is no longer the plan of the page's current originals is drift and
+      // fails this phase by name; nothing is written on this path.
       const derived = await preservedFencePublicationState(engine, g.source_id, g.source_markdown_slug);
       if (derived.state === 'drifted') {
         mismatches.push(`${g.source_markdown_slug} (derived document is not the plan of its current originals: ${derived.reason})`);
         pagesChecked += 1;
         continue;
       }
-      const bound = derived.state === 'current' ? derived.boundFactIds : null;
-      const indexed = new Set<number>();
-      for (let i = 0; i < positions.length; i++) {
-        if (bound?.has(ids[i]!)) continue;
-        indexed.add(positions[i]!);
-      }
-      // A page with no non-conversation-miner fenced row and no derived document
-      // is not fence-owned and is not compared (unchanged: the filter used to
-      // run in SQL).
-      if (indexed.size === 0 && derived.state === 'none') continue;
+      if (positions.length === 0 && derived.state === 'none') continue;
       const cliRowNums = new Set((g.cli_row_nums ?? []).map(Number));
-      const dbRows = [...indexed].sort((a, b) => a - b);
+      const allRows = [...new Set(positions)].sort((a, b) => a - b);
       let body: string;
       if (managed) {
         const snapshot = await engine.readPageSnapshot(g.source_markdown_slug, { sourceId: g.source_id });
         if (!snapshot) {
           classify(
-            { kind: 'page_missing', sourceId: g.source_id, slug: g.source_markdown_slug, surface: 'page', rows: dbRows },
+            { kind: 'page_missing', sourceId: g.source_id, slug: g.source_markdown_slug, surface: 'page', rows: allRows },
             `${g.source_markdown_slug} (page missing)`,
           );
           continue;
@@ -419,7 +413,7 @@ async function phaseCVerify(
         const target = await resolvePageWriteTarget(engine, g.source_markdown_slug, g.source_id);
         if (!target.ok || !existsSync(target.filePath)) {
           classify(
-            { kind: 'page_missing', sourceId: g.source_id, slug: g.source_markdown_slug, surface: 'file', rows: dbRows },
+            { kind: 'page_missing', sourceId: g.source_id, slug: g.source_markdown_slug, surface: 'file', rows: allRows },
             `${g.source_markdown_slug} (file missing)`,
           );
           continue;
@@ -427,6 +421,24 @@ async function phaseCVerify(
         body = readFileSync(target.filePath, 'utf-8');
       }
       const parsed = parseFactsFence(body);
+      // A bound row is compared at its DERIVED coordinate: when the page's fence
+      // carries that position, the row is one of the fence's own rows and is
+      // compared here as before; when it does not (an adopted row, a position
+      // the markdown lost, a collision the document resolves), it is verified on
+      // the derived side instead and is never counted as fence drift.
+      // A bound row is exempt exactly when the page's own fence does not carry
+      // its original position: that is the shape this comparison would
+      // otherwise report as a row the fence lacks, and its representation is
+      // verified on the derived side instead. A bound row AT a fence position
+      // is one of the fence's own rows and is compared here as before.
+      const bound = derived.state === 'current' ? derived.boundFactIds : null;
+      const fencePositions = new Set(parsed.facts.map(row => row.rowNum));
+      const indexed = new Set<number>();
+      for (let i = 0; i < positions.length; i++) {
+        if (bound?.has(ids[i]!) && !fencePositions.has(positions[i]!)) continue;
+        indexed.add(positions[i]!);
+      }
+      if (indexed.size === 0 && derived.state === 'none') continue;
       const fenced = new Set(parsed.facts.filter(f => !isConversationMinerFenceRow(f, cliRowNums)).map(f => f.rowNum));
       // #5814: a duplicate active row may be absent from the index.
       // extract_facts indexes it once (#1781) while the managed publication
