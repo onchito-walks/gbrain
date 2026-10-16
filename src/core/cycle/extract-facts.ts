@@ -75,6 +75,7 @@ import {
 } from '../facts/supersede-resolve.ts';
 import { writeReceipt } from '../extract/receipt-writer.ts';
 import { fenceUnfencedFacts, planUnfencedFacts } from '../facts/unfenced-facts.ts';
+import { preservedFencePublicationState } from '../facts/preserved-fence-store.ts';
 import { classifyRunStop, upsertExtractRollup } from '../extract/rollup-writer.ts';
 import { parseFactsFence, FACTS_FENCE_BEGIN } from '../facts-fence.ts';
 import {
@@ -406,7 +407,21 @@ async function planFenceReconcile(db: BrainEngine, page: { compiled_truth: strin
   // (row_num, claim) is still in the fence keeps its id and has its other
   // cells updated in place; a row whose number disappeared or whose claim
   // was rewritten is expired and detached (row_num NULL), never deleted.
-  const existing = await listExistingFactsForPage(db, slug, sourceId);
+  //
+  // Strict preservation: a row a CURRENT derived document binds is represented
+  // by that document. It keeps its identity, position and text literally and is
+  // not part of this comparison at all — never updated, expired, detached or
+  // renumbered, and its position is never re-occupied by an inserted row. A
+  // stored document that is no longer the plan of the page's current originals
+  // is drift, not authority, and the page keeps its index.
+  const derived = await preservedFencePublicationState(db, sourceId, slug);
+  if (derived.state === 'drifted') {
+    warnings.push(`${slug}: FACTS_FENCE_DERIVED_DRIFT: the page's derived fence document is not the plan of its current originals (${derived.reason}); its fact index is left as it is.`);
+    return null;
+  }
+  const bound = derived.state === 'current' ? derived.boundFactIds : null;
+  const existing = (await listExistingFactsForPage(db, slug, sourceId))
+    .filter(fact => bound === null || !bound.has(String(fact.id)));
   const desiredByRow = new Map(extracted.map(f => [f.row_num, f]));
   const matched = new Map<number, ExistingPageFact>();
   const stale: ExistingPageFact[] = [];
@@ -747,11 +762,14 @@ function timelineHasGenuineFactsFenceMarker(timeline: string): boolean {
  * (`dimension IS NULL`, #6264: those are never fenced, so they must not gate
  * either). Rows without a page or checkout (#2484: the inline writer's
  * slugify-floor / stub-guard-blocked slugs) are structurally unfenceable and
- * never gate.
+ * never gate. A row a CURRENT derived fence publication binds does not gate
+ * either: strict preservation keeps its original NULL position, so the row is
+ * represented by the derived document instead of being fenced in place, and a
+ * page it binds reconciles normally with that row exempt from the comparison.
  */
 async function pendingLegacyRows(engine: BrainEngine, sourceId: string): Promise<{ count: number; slugs: Set<string> }> {
-  const legacy = await engine.executeRaw<{ entity_slug: string; n: string }>(
-    `SELECT f.entity_slug, COUNT(*) AS n
+  const legacy = await engine.executeRaw<{ id: string | number; entity_slug: string }>(
+    `SELECT f.id, f.entity_slug
        FROM facts f
       WHERE f.source_id = $1
         AND f.row_num IS NULL
@@ -769,10 +787,28 @@ async function pendingLegacyRows(engine: BrainEngine, sourceId: string): Promise
            WHERE s.id = f.source_id
              AND s.local_path IS NOT NULL
         )
-      GROUP BY f.entity_slug`,
+      ORDER BY f.entity_slug, f.id`,
     [sourceId],
   );
-  return { count: legacy.reduce((sum, row) => sum + parseInt(row.n ?? '0', 10), 0), slugs: new Set(legacy.map(row => row.entity_slug)) };
+  // Strict preservation: a row a CURRENT derived document binds is represented
+  // on that page's derived representation, so it is not pending and must not
+  // gate the page's reconciliation. Only a document that is still exactly the
+  // plan of the page's current originals counts; a drifted one binds nothing
+  // (its rows stay pending, the page keeps its index, and the reconcile pass
+  // names the drift).
+  const states = new Map<string, Set<string> | null>();
+  const slugs = new Set<string>();
+  let count = 0;
+  for (const row of legacy) {
+    if (!states.has(row.entity_slug)) {
+      const state = await preservedFencePublicationState(engine, sourceId, row.entity_slug);
+      states.set(row.entity_slug, state.state === 'current' ? state.boundFactIds : null);
+    }
+    if (states.get(row.entity_slug)?.has(String(row.id))) continue;
+    count += 1;
+    slugs.add(row.entity_slug);
+  }
+  return { count, slugs };
 }
 
 /**

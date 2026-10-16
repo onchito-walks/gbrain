@@ -252,6 +252,31 @@ export async function readPreservedFencePublication(engine: BrainEngine, sourceI
   return parsed;
 }
 
+/** The state of one page's stored derived document, relative to its current originals. */
+export type StoredPublicationState =
+  | { state: 'none' }
+  | { state: 'current'; publication: PreservedFencePublication; boundFactIds: Set<string> }
+  | { state: 'drifted'; reason: string };
+
+/**
+ * Read one page's stored derived document and say whether it is still the plan
+ * of the page's CURRENT complete originals. A consumer that would otherwise
+ * treat a bound original row as fence-unowned (retiring, renumbering or
+ * rewriting it) must come through here first: only a `current` state is
+ * evidence that the row is represented, and a `drifted` state is never
+ * authority to replace, expire or rewrite anything.
+ */
+export async function preservedFencePublicationState(engine: BrainEngine, sourceId: string, slug: string): Promise<StoredPublicationState> {
+  const stored = await readPreservedFencePublication(engine, sourceId, slug);
+  if (!stored) return { state: 'none' };
+  try {
+    await assertPublicationIsCurrent(engine, sourceId, slug, stored);
+  } catch (error) {
+    return { state: 'drifted', reason: error instanceof Error ? error.message : String(error) };
+  }
+  return { state: 'current', publication: stored, boundFactIds: new Set(stored.bindings.map(binding => binding.original_fact_id)) };
+}
+
 /** Verify the stored publication against current originals. Never repairs. */
 export async function verifyPreservedFencePublication(engine: BrainEngine, sourceId: string, slug: string):
   Promise<{ ok: boolean; reason?: string; bindings: number }> {
