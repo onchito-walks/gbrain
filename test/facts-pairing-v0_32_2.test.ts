@@ -28,6 +28,7 @@ import { join } from 'node:path';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { __setTestEngineOverride, __testing } from '../src/commands/migrations/v0_32_2.ts';
 import { parseFactsFence, replaceOrInsertFactsFence, renderFactsTable, type ParsedFact } from '../src/core/facts-fence.ts';
+import { PRESERVED_FENCE_SOURCE, derivedFenceOf, readPreservedFencePublication } from '../src/core/facts/preserved-fence-store.ts';
 
 const SLUG = 'people/alice-example';
 const OPTS = { yes: true, dryRun: false, noAutopilotInstall: true };
@@ -104,10 +105,11 @@ const allFacts = () => engine.executeRaw<Record<string, unknown>>(
      FROM facts ORDER BY id`);
 
 describe('a paired copy fences and verifies without touching the other tree', () => {
-  test('phase B writes only inside the configured source path; the untouched tree stays byte-identical', async () => {
+  test('phase B writes no tree at all; both the live and the paired copy stay byte-identical', async () => {
     const livePath = writePage(live, []);
     const copyPath = writePage(copy, []);
     const liveBefore = readFileSync(livePath);
+    const copyBefore = readFileSync(copyPath);
     await indexPage();
     await seedFact(null, 'Founded Acme example');
     await engine.executeRaw(`UPDATE sources SET local_path = $1 WHERE id = 'default'`, [copy]);
@@ -116,8 +118,13 @@ describe('a paired copy fences and verifies without touching the other tree', ()
     expect(fenced.status).toBe('complete');
     expect(fenced.detail).toContain('fenced=1');
 
-    expect(readFileSync(copyPath, 'utf-8')).toContain('Founded Acme example');
+    // Strict preservation: the adoption is published as the page's derived
+    // document, so NEITHER tree is written — the paired copy included.
+    expect(readFileSync(copyPath)).toEqual(copyBefore);
     expect(readFileSync(livePath)).toEqual(liveBefore);
+    const document = await readPreservedFencePublication(engine, 'default', SLUG);
+    expect(document).not.toBeNull();
+    expect(derivedFenceOf(document!).map(row => row.claim)).toEqual(['Founded Acme example']);
     expect((await __testing.phaseCVerify(engine, OPTS)).status).toBe('complete');
   });
 
@@ -164,7 +171,7 @@ describe('a paired copy fences and verifies without touching the other tree', ()
     expect(readFileSync(join(live, `${SLUG}.md`))).toEqual(bytes);
   });
 
-  test('a partial fence write recovers on re-run without duplicating or losing facts', async () => {
+  test('a partial publication recovers on re-run without duplicating or losing facts', async () => {
     writePage(copy, []);
     await indexPage();
     await seedFact(null, 'First claim');
@@ -173,19 +180,21 @@ describe('a paired copy fences and verifies without touching the other tree', ()
     const first = await __testing.phaseBFenceFacts(engine, OPTS);
     expect(first.status, first.detail).toBe('complete');
     const afterFirst = await allFacts();
+    const document = await readPreservedFencePublication(engine, 'default', SLUG);
+    expect(document!.bindings).toHaveLength(2);
 
-    // Simulate the interrupted state the run99 rehearsal stopped in.
-    await engine.executeRaw(
-      `UPDATE facts SET row_num = NULL, source_markdown_slug = NULL WHERE fact = 'Second claim'`);
-    const partial = await allFacts();
-    expect(partial.filter(r => r.row_num === null)).toHaveLength(1);
+    // Simulate the interrupted state the run99 rehearsal stopped in: the
+    // publication never landed.
+    await engine.executeRaw(`DELETE FROM raw_data WHERE source = $1`, [PRESERVED_FENCE_SOURCE]);
+    expect(await readPreservedFencePublication(engine, 'default', SLUG)).toBeNull();
 
     const rerun = await __testing.phaseBFenceFacts(engine, OPTS);
     expect(rerun.status, rerun.detail).toBe('complete');
-    const recovered = await allFacts();
-    expect(recovered).toEqual(afterFirst);
-    expect(parseFactsFence(readFileSync(join(copy, `${SLUG}.md`), 'utf-8')).facts.map(f => f.claim))
-      .toEqual(['First claim', 'Second claim']);
+    // The projection is recomputed from the same originals, so it reads back
+    // identical, and no fact row was duplicated, stamped or lost.
+    expect(await readPreservedFencePublication(engine, 'default', SLUG)).toEqual(document!);
+    expect(await allFacts()).toEqual(afterFirst);
+    expect(derivedFenceOf(document!).map(f => f.claim)).toEqual(['First claim', 'Second claim']);
     expect(existsSync(join(live, `${SLUG}.md`))).toBe(false);
   });
 });

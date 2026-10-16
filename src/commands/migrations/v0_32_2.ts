@@ -86,7 +86,7 @@ import { serializePageToMarkdown } from '../../core/markdown.ts';
 import { managedPersistenceEnabled } from '../../core/persistence/ownership.ts';
 import { OperationError } from '../../core/ops/contract.ts';
 import { fenceableRowCount, fenceUnfencedFacts, planUnfencedFacts, type UnfencedFactsOutcome } from '../../core/facts/unfenced-facts.ts';
-import { preservedFencePublicationState } from '../../core/facts/preserved-fence-store.ts';
+import { PRESERVED_FENCE_SOURCE, preservedFencePublicationState } from '../../core/facts/preserved-fence-store.ts';
 import type { PreservedFencePublication } from '../../core/facts/preserved-fence-publication.ts';
 import {
   describeToleratedDrift,
@@ -355,6 +355,8 @@ async function phaseCVerify(
     );
 
     const mismatches: string[] = [];
+    /** Pages already compared by the group walk below, so none is counted twice. */
+    const covered = new Set<string>();
     // Named, evidenced, field-for-field exceptions (accepted pre-existing data
     // conditions). Tolerated observations are reported by name below — never
     // dropped, never suppressed, and nothing is written on this path.
@@ -383,6 +385,7 @@ async function phaseCVerify(
     for (const g of groups) {
       const positions = (g.row_nums ?? []).map(Number);
       const ids = (g.ids ?? []).map(String);
+      const key = `${g.source_id}\u0000${g.source_markdown_slug}`;
       // Strict preservation: a row a CURRENT derived document binds is compared
       // against its DERIVED coordinate, not against the fence. A stored document
       // that is no longer the plan of the page's current originals is drift and
@@ -391,6 +394,7 @@ async function phaseCVerify(
       if (derived.state === 'drifted') {
         mismatches.push(`${g.source_markdown_slug} (derived document is not the plan of its current originals: ${derived.reason})`);
         pagesChecked += 1;
+        covered.add(key);
         continue;
       }
       if (positions.length === 0 && derived.state === 'none') continue;
@@ -404,6 +408,7 @@ async function phaseCVerify(
             { kind: 'page_missing', sourceId: g.source_id, slug: g.source_markdown_slug, surface: 'page', rows: allRows },
             `${g.source_markdown_slug} (page missing)`,
           );
+          covered.add(key);
           continue;
         }
         body = serializePageToMarkdown(snapshot.page, snapshot.tags);
@@ -416,6 +421,7 @@ async function phaseCVerify(
             { kind: 'page_missing', sourceId: g.source_id, slug: g.source_markdown_slug, surface: 'file', rows: allRows },
             `${g.source_markdown_slug} (file missing)`,
           );
+          covered.add(key);
           continue;
         }
         body = readFileSync(target.filePath, 'utf-8');
@@ -468,6 +474,37 @@ async function phaseCVerify(
         if (derivedMismatch) mismatches.push(`${g.source_markdown_slug} (derived: ${derivedMismatch})`);
       }
       pagesChecked += 1;
+      covered.add(key);
+    }
+
+    // A page whose adopted rows hold no position at all appears in no group
+    // above. Every stored document is verified here anyway, so a page the
+    // backfill published is never left unchecked.
+    const published = await engine.executeRaw<{ source_id: string; slug: string }>(
+      `SELECT p.source_id, p.slug FROM raw_data rd JOIN pages p ON p.id = rd.page_id
+        WHERE rd.source = $1 AND p.deleted_at IS NULL ORDER BY p.source_id, p.slug`,
+      [PRESERVED_FENCE_SOURCE],
+    );
+    for (const page of published) {
+      if (covered.has(`${page.source_id}\u0000${page.slug}`)) continue;
+      const derived = await preservedFencePublicationState(engine, page.source_id, page.slug);
+      if (derived.state === 'none') continue;
+      pagesChecked += 1;
+      if (derived.state === 'drifted') {
+        mismatches.push(`${page.slug} (derived document is not the plan of its current originals: ${derived.reason})`);
+        continue;
+      }
+      let body: string | null = null;
+      if (managed) {
+        const snapshot = await engine.readPageSnapshot(page.slug, { sourceId: page.source_id });
+        if (snapshot) body = serializePageToMarkdown(snapshot.page, snapshot.tags);
+      } else {
+        const target = await resolvePageWriteTarget(engine, page.slug, page.source_id);
+        if (target.ok && existsSync(target.filePath)) body = readFileSync(target.filePath, 'utf-8');
+      }
+      if (body === null) continue;
+      const mismatch = derivedCoordinateMismatch(derived.publication, parseFactsFence(body).facts, new Set());
+      if (mismatch) mismatches.push(`${page.slug} (derived: ${mismatch})`);
     }
 
     // An accepted condition is still an observed one: say so by name, on every

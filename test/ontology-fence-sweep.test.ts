@@ -20,7 +20,8 @@
  * Seams: none; real PGLite (and Postgres through the e2e registration), the
  * operations' handlers, `runMaintenanceSweep`, `runCycle` and the repair
  * command. The old fence behavior is reproduced by handing the ontology row
- * to `fenceUnfencedFacts` directly.
+ * to the fence step directly — which the strict step now refuses, so the state
+ * itself is reconstructed.
  */
 import { expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -30,11 +31,12 @@ import { runRepairCommand } from '../src/commands/repair.ts';
 import { ontologyFactsCheck } from '../src/commands/doctor/checks/ontology-facts.ts';
 import { runCycle } from '../src/core/cycle.ts';
 import type { BrainEngine } from '../src/core/engine.ts';
-import { parseFactsFence } from '../src/core/facts-fence.ts';
-import { fenceUnfencedFacts, planUnfencedFacts } from '../src/core/facts/unfenced-facts.ts';
+import { formatFenceDate, parseFactsFence, renderFactsTable, replaceOrInsertFactsFence } from '../src/core/facts-fence.ts';
+import { planUnfencedFacts } from '../src/core/facts/unfenced-facts.ts';
 import { parseMarkdown, serializePageToMarkdown } from '../src/core/markdown.ts';
 import { operationsByName, type OperationContext } from '../src/core/operations.ts';
 import { managedPersistenceEnabled } from '../src/core/persistence/ownership.ts';
+import { maintenancePreflight, submitFactFenceAdoption } from '../src/core/persistence/prepared-maintenance.ts';
 import { runMaintenanceSweep } from '../src/core/sweep.ts';
 import { managedBrain } from './helpers/managed-brain.ts';
 import { isolatedSharedSkillsEngine } from './helpers/shared-skills-engine.ts';
@@ -167,14 +169,39 @@ for (const backend of testBackends()) {
       await propose(ctx, 'expertise', 'databases', '2026-02-01');
       const [location, role, employer, expertise] = (await ontologyRows(engine)).map(r => Number(r.id));
 
-      // The pre-fix fence step: every ontology row of the page is fenced through the coordinator.
+      // The pre-fix fence step fenced every ontology row of the page through the
+      // coordinator, which stamped its position and rewrote its provenance to the
+      // page. The strict fence step can no longer produce that state (it
+      // re-derives its candidate set from the engine, and an ontology row is
+      // never a candidate), so the state the repair must fix is reconstructed
+      // directly here.
       const plan = await planUnfencedFacts(engine, { sourceId: 'default' });
       expect(plan.groups.size).toBe(0);
-      const rows = await engine.executeRaw<any>(
-        `SELECT id, source_id, entity_slug, fact, kind, visibility, notability, context, valid_from, valid_until, source, confidence,
-                claim_metric, claim_value, claim_unit, claim_period, true AS page_exists FROM facts WHERE dimension IS NOT NULL ORDER BY id`);
-      plan.groups.set(`default\0${SLUG}`, rows);
-      expect((await fenceUnfencedFacts(engine, plan)).fenced).toBe(4);
+      const stray = await engine.executeRaw<{ id: number; fact: string; source: string | null; kind: 'fact'; visibility: 'private' | 'world';
+        notability: 'high' | 'medium' | 'low'; confidence: number; valid_from: Date | string }>(
+        `SELECT id, fact, source, kind, visibility, notability, confidence, valid_from FROM facts WHERE dimension IS NOT NULL ORDER BY id`);
+      expect(stray).toHaveLength(4);
+      // The old step published through the coordinator's fence-adoption intent.
+      // That path is off the repair now, but the intent is still live, so it is
+      // what reconstructs the pre-fix state (positions stamped, page body
+      // carrying the rows, provenance rewritten to the page) — a managed brain
+      // refuses a direct write to facts by design.
+      const bodyBefore = (await engine.getPage(SLUG, { sourceId: 'default' }))!.compiled_truth;
+      const content = replaceOrInsertFactsFence(bodyBefore, renderFactsTable([
+        ...parseFactsFence(bodyBefore).facts,
+        ...stray.map((row, index) => ({ rowNum: index + 2, claim: row.fact, kind: row.kind, confidence: row.confidence,
+          // The same date projection the fence codec writes (never a raw String()
+          // of the driver's value, which would not read back as the same date).
+          visibility: row.visibility, notability: row.notability,
+          validFrom: formatFenceDate(row.valid_from instanceof Date ? row.valid_from : new Date(row.valid_from)),
+          source: row.source ?? 'manual', active: true })),
+      ]));
+      const authority = (await maintenancePreflight(engine, 'default'))!;
+      await submitFactFenceAdoption(engine, authority, SLUG, {
+        content, expectedRevision: await revision(engine),
+        assignments: stray.map((row, index) => ({ id: row.id, row_num: index + 2 })), file: true,
+      });
+      expect((await ontologyRows(engine)).map(r => [r.row_num, r.page])).toEqual([[2, SLUG], [3, SLUG], [4, SLUG], [5, SLUG]]);
       expect((await ontology(ctx)).map(r => r[2])).toEqual([SLUG, SLUG, SLUG, SLUG]);
 
       // The user forgets employer while it is fenced.

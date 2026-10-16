@@ -39,6 +39,7 @@ import { readRequestIndexStates } from '../src/core/persistence/checkpoint-valid
 import { requestIndexesCheck } from '../src/commands/doctor/checks/persistence-requests.ts';
 import { parseGoogleSourceConfig, runGoogleSync } from '../src/core/google/google-source.ts';
 import { parseFactsFence } from '../src/core/facts-fence.ts';
+import { derivedFenceOf, readPreservedFencePublication } from '../src/core/facts/preserved-fence-store.ts';
 import { __testing as v0_32_2 } from '../src/commands/migrations/v0_32_2.ts';
 import { runPersistenceAdministration } from '../src/core/persistence/administration.ts';
 import { writerAdminState } from '../src/core/persistence/admin-intent.ts';
@@ -129,9 +130,13 @@ test('X4: the v0.32.2 facts adoption on a connector page publishes above the tim
     await disposePersistenceConsumer(engine);
     expect(phase).toMatchObject({ name: 'fence_facts', status: 'complete' });
     const [row] = await engine.executeRaw<{ row_num: number | null; expired_at: string | null }>('SELECT row_num, expired_at FROM facts WHERE id=$1', [factId]);
-    expect(row).toEqual({ row_num: 1, expired_at: null });
+    // Strict preservation: the legacy row keeps its own null position and the
+    // adopted position is published as the page's derived document instead.
+    expect(row).toEqual({ row_num: null, expired_at: null });
     const adopted = (await engine.readPageSnapshot(slug, { sourceId: f.id }))!;
-    expect(parseFactsFence(adopted.page.compiled_truth).facts.map(fact => fact.claim)).toEqual(['Adopt example prefers email']);
+    expect(parseFactsFence(adopted.page.compiled_truth).facts).toEqual([]);
+    expect(derivedFenceOf((await readPreservedFencePublication(engine, f.id, slug))!).map(fact => [fact.rowNum, fact.claim]))
+      .toEqual([[1, 'Adopt example prefers email']]);
 
     // Full re-walks, so the connector really re-renders the adopted page. Lane B's re-render carries the fence (no
     // connector_fence_below_timeline) byte for byte. The first re-render takes one admission back from the maintenance
@@ -144,7 +149,8 @@ test('X4: the v0.32.2 facts adoption on a connector page publishes above the tim
     const settled = await pageAdmissions(engine, f.id);
     expect((await rewalk()).status).not.toBe('partial');
     expect(await pageAdmissions(engine, f.id)).toBe(settled);
-    expect(parseFactsFence((await engine.readPageSnapshot(slug, { sourceId: f.id }))!.page.compiled_truth).facts.map(fact => fact.rowNum)).toEqual([1]);
+    expect(parseFactsFence((await engine.readPageSnapshot(slug, { sourceId: f.id }))!.page.compiled_truth).facts).toEqual([]);
+    expect(derivedFenceOf((await readPreservedFencePublication(engine, f.id, slug))!).map(fact => fact.rowNum)).toEqual([1]);
     const [kept] = await engine.executeRaw<{ expired_at: string | null }>('SELECT expired_at FROM facts WHERE id=$1', [factId]);
     expect(kept.expired_at).toBeNull();
   }

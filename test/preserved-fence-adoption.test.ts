@@ -144,7 +144,9 @@ test('an adopting run publishes the derived document and leaves every original b
 
   const outcome = await adopt();
   expect(outcome.pages_touched).toBe(1);
-  expect(outcome.fenced).toBeGreaterThanOrEqual(4);
+  // The rows this run had to place: the NULL row, the colliding row and the row
+  // whose position the markdown lost (the fence's own rows stay paired).
+  expect(outcome.fenced).toBe(3);
 
   // Originals: full rows (every discovered column), the canonical file, the page body.
   expect(stableJson(await originalDigests())).toBe(stableJson(before));

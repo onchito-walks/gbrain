@@ -13,6 +13,24 @@ import { parseFactsFence } from '../facts-fence.ts';
 import { adoptableClaim, planFenceWithOccupiedRows, type UnfencedFactRow } from './unfenced-facts.ts';
 
 export type OriginalRecord = Record<string, unknown>;
+
+/**
+ * Page columns the write that publishes a document refreshes itself: derivative
+ * index bookkeeping (the text-projection and chunker revisions the maintenance
+ * path re-stamps), never original content, identity or provenance. They are
+ * named here and normalized in the page digest below so a document captured
+ * before its own publication still validates afterwards — a difference in ANY
+ * other page column still refuses.
+ */
+export const MAINTENANCE_REFRESHED_PAGE_COLUMNS = ['text_projection_revision', 'chunker_version'] as const;
+
+/** The page row's digest, with the maintenance-refreshed index columns held constant. */
+export function preservedPageDigest(row: OriginalRecord): string {
+  const normalized: OriginalRecord = { ...row };
+  for (const column of MAINTENANCE_REFRESHED_PAGE_COLUMNS) if (column in normalized) normalized[column] = null;
+  return digest(normalized);
+}
+
 export interface PreservedFenceInputs {
   sourceId: string;
   entitySlug: string;
@@ -143,7 +161,7 @@ export function planPreservedFencePublication(input: PreservedFenceInputs): Pres
       derived_row_num: derivedPosition, derived_claim: cell.claim };
   });
   return { schema: 'gbrain.preserved-fence-publication.v1', source_id: sourceId, entity_slug: entitySlug,
-    original_source_sha256: digest(input.source), original_page_sha256: digest(input.page), original_body_sha256: sha256(body),
+    original_source_sha256: digest(input.source), original_page_sha256: preservedPageDigest(input.page), original_body_sha256: sha256(body),
     original_facts: rows.map(row => ({ id: identity(row.id), sha256: digest(row) })),
     columns: structuredClone(columns), derived_body: plan.body, bindings };
 }
