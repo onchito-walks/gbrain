@@ -207,7 +207,12 @@ async function phaseBFenceFacts(
       }
     }
 
-    try { await fenceUnfencedFacts(engine, plan); }
+    // `allowSupersede`: this migration's job is to publish the CURRENT
+    // originals into the page's derived representation. A document left by an
+    // earlier run whose originals have moved on is therefore brought up to date
+    // by replanning from the current originals — never by rewriting, expiring
+    // or renumbering an original row, which stays byte-identical either way.
+    try { await fenceUnfencedFacts(engine, plan, { allowSupersede: true }); }
     catch (error) {
       if (!(error instanceof OperationError) || error.code !== 'queue_capacity') throw error;
       return { name: 'fence_facts', status: 'failed', detail: `queue_capacity: ${error.message} ${error.suggestion ?? ''}`.trim() };

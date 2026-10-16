@@ -41,11 +41,11 @@
  * break, so a legacy claim is adopted only when `parseFactsFence(
  * renderFactsTable([row]))` hands it back active, non-empty, with the same
  * kind, visibility, validity and source, differing from the stored text by
- * whitespace and line endings alone. The parsed text is what the fence will
- * project, so it is written back into `facts.fact` with the row number (the
- * canonical projection expires any adopted row whose text differs from its
- * fence row). A row the codec would change further, or whose normalized
- * claim, source and visibility another active fence row or planned row
+ * whitespace and line endings alone. That parsed text is what the derived
+ * representation projects; it is written ONLY into the derived document's
+ * binding, never back into `facts.fact`. A row the codec would change further,
+ * or whose normalized claim, source and visibility another active fence row or
+ * planned row
  * already carries (the reconciler indexes a duplicate once and would retire
  * the second),
  * stays a legacy row exactly as it is: never deleted or expired, recorded as
@@ -54,33 +54,29 @@
  * `<slug> (fence_unrenderable: N row(s), <class>)`. The other rows of the
  * page still adopt; a page with no adoptable row submits nothing.
  *
- * Write discipline (`fenceUnfencedFacts`):
- * - Managed: one `managed_maintenance_adopt_fact_fence` request per page
- *   through the coordinator, which publishes the fence and adopts the rows
- *   in place (ids, vectors and provenance kept).
- * - Unmanaged: under the source filesystem lock and the page lock, the same
- *   `.tmp` + parse + rename write as `fence-write.ts`, then one maintenance
- *   transaction mirrors the file body into `pages` and stamps the rows; a
- *   durability-hardened checkout commits the file.
- * A page that fails is reported in `failed_pages`; the others still fence.
+ * Write discipline (`fenceUnfencedFacts`) — strict preservation: every original
+ * fact row keeps its identity, position (including NULL), claim text and
+ * provenance, and the canonical page body is never rewritten. What the page's
+ * fence would have gained is published as that page's separate derived document
+ * (one row in the page-scoped `raw_data` store with explicit
+ * original-fact-to-derived-position bindings), through the SAME owner path:
+ * - Managed: one `managed_maintenance_publish_preserved_fence` request per page
+ *   through the coordinator, admitted against the page revision and replanned
+ *   under the page key.
+ * - Unmanaged: one maintenance transaction, under the page lock.
+ * A page that fails is reported in `failed_pages`; the others still publish.
  */
-import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 import type { BrainEngine } from '../engine.ts';
-import { sanitizeText } from '../batch-rows.ts';
-import { isDurabilityHardened } from '../brain-repo-durability.ts';
 import { formatFenceDate, normalizeClaimWhitespace, parseFactsFence, renderFactsTable, replaceOrInsertFactsFence, type ParsedFact } from '../facts-fence.ts';
 import { FENCE_SOURCE_DEFAULT } from './extract-from-fence.ts';
-import { parseMarkdown, serializePageToMarkdown } from '../markdown.ts';
-import { assertSourceFilesystemActive, hasSourceFilesystemLock, withSourceFilesystemLock } from '../minions/source-filesystem.ts';
+import { serializePageToMarkdown } from '../markdown.ts';
 import { withPageLock } from '../page-lock.ts';
-import { maintenanceTransaction } from '../persistence/attribution.ts';
 import { assertLifetimeIdHeadroom } from '../persistence/journal.ts';
 import { managedPersistenceEnabled } from '../persistence/ownership.ts';
-import { maintenancePreflight, submitFactFenceAdoption, type MaintenanceAuthority } from '../persistence/prepared-maintenance.ts';
-import { contentHash } from '../utils.ts';
+import { maintenancePreflight, type MaintenanceAuthority } from '../persistence/prepared-maintenance.ts';
 import { resolvePageWriteTarget } from '../write-through.ts';
-import { commitFactFenceFile, gitPathState } from './fence-write.ts';
 
 export interface UnfencedFactRow {
   id: string;
@@ -424,6 +420,16 @@ export function planFenceWithOccupiedRows(sourceId: string, entitySlug: string, 
   return { body: replaceOrInsertFactsFence(body, renderFactsTable(existingFence.facts)), assignments, rejected };
 }
 
+/**
+ * Name one page once in `failed_pages`. A page already named by class (the
+ * unadoptable-row token) is not named a second time by the refusal that
+ * followed it; the message is trimmed, never dropped.
+ */
+function noteFailure(outcome: UnfencedFactsOutcome, slug: string, reason: string): void {
+  if (outcome.failed_pages.some(entry => entry.startsWith(`${slug} (`))) return;
+  outcome.failed_pages.push(`${slug} (${reason.slice(0, 300)})`);
+}
+
 /** Keep the typed records and name the page once in `failed_pages` with the stable token; the rows stay as they are. */
 function recordUnadoptable(outcome: UnfencedFactsOutcome, slug: string, records: UnadoptableFactRecord[]): void {
   if (records.length === 0) return;
@@ -439,7 +445,7 @@ function recordUnadoptable(outcome: UnfencedFactsOutcome, slug: string, records:
  * place. The page body comes from the database, so database-only pages are
  * included. Preflight and capacity refusals throw before any page publishes.
  */
-async function fenceManaged(engine: BrainEngine, plan: UnfencedFactsPlan): Promise<void> {
+async function fenceManaged(engine: BrainEngine, plan: UnfencedFactsPlan, allowSupersede = false): Promise<void> {
   const { groups, outcome } = plan;
   const authorities = new Map<string, MaintenanceAuthority>();
   for (const key of groups.keys()) {
@@ -463,36 +469,34 @@ async function fenceManaged(engine: BrainEngine, plan: UnfencedFactsPlan): Promi
       }
       recordUnadoptable(outcome, entitySlug, fence.rejected);
       if (fence.assignments.length === 0) continue;
-      // The managed adoption intent's eligibility check refuses a fact that
-      // already holds a row_num, so a position the markdown lost cannot be
-      // republished through it. Name the page instead of publishing a partial
-      // fence; the rows stay exactly as they are.
-      const inPlace = fence.assignments.filter(a => a.prev_row_num !== null);
-      if (inPlace.length > 0) {
-        outcome.failed_pages.push(`${entitySlug} (managed_adopt_in_place_unsupported: ${inPlace.length} row(s))`);
-        continue;
-      }
-      const target = await resolvePageWriteTarget(engine, entitySlug, sourceId);
-      await submitFactFenceAdoption(engine, authority, entitySlug, {
-        content: fence.body, expectedRevision: snapshot.revision,
-        assignments: fence.assignments.map(a => ({ id: Number(a.id), row_num: a.row_num })),
-        file: Boolean(snapshot.page.source_path) || snapshot.page.source_uri?.startsWith('file:') === true || (target.ok && existsSync(target.filePath)),
-      });
-      outcome.fenced += fence.assignments.length;
+      // Strict preservation: the originals are never stamped, restamped or
+      // rewritten. The adopted positions and the codec-normalized text live in
+      // the page's separate derived document, published through the SAME
+      // coordinator path (one `managed_maintenance_publish_preserved_fence`
+      // request), and every original row keeps its id, position and text.
+      const { publishPreservedFencePublication } = await import('./preserved-fence-store.ts');
+      const receipt = await publishPreservedFencePublication(engine, sourceId, entitySlug, { authority, allowSupersede });
+      outcome.fenced += receipt.bindings;
+      outcome.adopted_in_place = (outcome.adopted_in_place ?? 0) + fence.assignments.filter(a => a.adopted_in_place).length;
+      outcome.renumbered = (outcome.renumbered ?? 0) + fence.assignments.filter(a => a.prev_row_num !== null && !a.adopted_in_place).length;
       outcome.pages_touched += 1;
       outcome.fenced_slugs.push(entitySlug);
     } catch (err) {
-      outcome.failed_pages.push(`${entitySlug} (${err instanceof Error ? err.message : String(err)})`);
+      noteFailure(outcome, entitySlug, err instanceof Error ? err.message : String(err));
     }
   }
 }
 
-/** One unmanaged page: file first (atomic), then the page mirror and row stamps in one maintenance transaction. */
+/**
+ * One unmanaged page: the derived document is published through the existing
+ * owner path. The canonical file and every original fact row are left exactly
+ * as they are — the adopted positions and codec-normalized text exist only in
+ * the derived document, so there is no file write and nothing to commit back.
+ */
 async function fenceFilePage(engine: BrainEngine, sourceId: string, entitySlug: string, filePath: string,
-  group: UnfencedFactRow[], outcome: UnfencedFactsOutcome, lockRoot?: string): Promise<void> {
+  group: UnfencedFactRow[], outcome: UnfencedFactsOutcome, lockRoot?: string, allowSupersede = false): Promise<void> {
   const target = await resolvePageWriteTarget(engine, entitySlug, sourceId);
   if (!target.ok) { outcome.skipped_no_page += group.length; return; }
-  const { writeRoot } = target;
   const write = () => withPageLock(entitySlug, async () => {
     const fence = await planFence(engine, sourceId, entitySlug, readFileSync(filePath, 'utf-8'), group);
     if ('warnings' in fence) {
@@ -501,53 +505,23 @@ async function fenceFilePage(engine: BrainEngine, sourceId: string, entitySlug: 
     }
     recordUnadoptable(outcome, entitySlug, fence.rejected);
     if (fence.assignments.length === 0) return;
-    const durable = isDurabilityHardened(writeRoot);
-    const prewrite = durable ? gitPathState(writeRoot, filePath) : 'clean';
-    const tmpPath = `${filePath}.tmp`;
-    assertSourceFilesystemActive();
-    writeFileSync(tmpPath, fence.body, 'utf-8');
-    const tmpBody = readFileSync(tmpPath, 'utf-8');
-    const parsed = parseFactsFence(tmpBody);
-    if (parsed.warnings.length > 0) {
-      // .tmp stays for inspection; the canonical file is untouched.
-      outcome.failed_pages.push(`${entitySlug} (${parsed.warnings.join('; ')})`);
-      return;
-    }
-    renameSync(tmpPath, filePath);
-    // Mirror the file into pages so this run's reconcile and get_page read the
-    // new fence (same body-only mirror as fence-write.ts: the row keeps its
-    // content_hash, so the next sync re-imports and re-chunks the page).
-    const reparsed = parseMarkdown(tmpBody, `${entitySlug}.md`);
-    await maintenanceTransaction(engine, async tx => {
-      const existing = await tx.getPage(entitySlug, { sourceId });
-      if (existing) {
-        await tx.refreshPageBody(entitySlug, sourceId, sanitizeText(reparsed.compiled_truth), sanitizeText(reparsed.timeline),
-          existing.content_hash || contentHash(existing));
-      }
-      // The parsed claim is what the fence projects; the row keeps its id,
-      // vectors and provenance (the reconcile would retire a row whose text
-      // differs from its fence row). The stamp re-checks the position the row
-      // held, so a row another writer re-numbered since planning is left alone.
-      for (const a of fence.assignments) {
-        await tx.executeRaw(
-          `UPDATE facts SET row_num = $1, source_markdown_slug = $2, fact = $5
-            WHERE id = $3 AND source_id = $4
-              AND (row_num IS NULL OR row_num = $6)`,
-          [a.row_num, entitySlug, a.id, sourceId, a.fact, a.prev_row_num],
-        );
-      }
-    });
-    if (durable) await commitFactFenceFile(writeRoot, filePath, entitySlug, sourceId, prewrite);
-    outcome.fenced += fence.assignments.length;
+    // Strict preservation: the canonical file and every original fact row are
+    // left exactly as they are. The adopted positions and the codec-normalized
+    // text live ONLY in the page's separate derived document, published
+    // through the existing owner path (one maintenance transaction here).
+    // Nothing is written to the file, so there is nothing to commit back.
+    const { publishPreservedFencePublication } = await import('./preserved-fence-store.ts');
+    const receipt = await publishPreservedFencePublication(engine, sourceId, entitySlug, { allowSupersede });
+    outcome.fenced += receipt.bindings;
     outcome.adopted_in_place = (outcome.adopted_in_place ?? 0) + fence.assignments.filter(a => a.adopted_in_place).length;
     outcome.renumbered = (outcome.renumbered ?? 0) + fence.assignments.filter(a => a.prev_row_num !== null && !a.adopted_in_place).length;
     outcome.pages_touched += 1;
     outcome.fenced_slugs.push(entitySlug);
   }, { timeoutMs: 5_000, ...(lockRoot ? { lockRoot } : {}) });
   try {
-    await (hasSourceFilesystemLock(writeRoot) ? write() : withSourceFilesystemLock(engine, writeRoot, write));
+    await write();
   } catch (err) {
-    outcome.failed_pages.push(`${entitySlug} (${err instanceof Error ? err.message : String(err)})`);
+    noteFailure(outcome, entitySlug, err instanceof Error ? err.message : String(err));
   }
 }
 
@@ -585,14 +559,14 @@ export async function auditUnadoptableFacts(engine: BrainEngine, plan: UnfencedF
  * `plan.outcome`. A managed preflight or capacity refusal throws before any
  * page publishes; a per-page failure lands in `failed_pages`.
  */
-export async function fenceUnfencedFacts(engine: BrainEngine, plan: UnfencedFactsPlan, opts: { pageLockRoot?: string } = {}): Promise<UnfencedFactsOutcome> {
+export async function fenceUnfencedFacts(engine: BrainEngine, plan: UnfencedFactsPlan, opts: { pageLockRoot?: string; allowSupersede?: boolean } = {}): Promise<UnfencedFactsOutcome> {
   if (plan.managed) {
-    await fenceManaged(engine, plan);
+    await fenceManaged(engine, plan, opts.allowSupersede === true);
     return plan.outcome;
   }
   for (const [key, group] of plan.groups) {
     const [sourceId, entitySlug] = key.split('\0');
-    await fenceFilePage(engine, sourceId, entitySlug, plan.filePaths.get(key)!, group, plan.outcome, opts.pageLockRoot);
+    await fenceFilePage(engine, sourceId, entitySlug, plan.filePaths.get(key)!, group, plan.outcome, opts.pageLockRoot, opts.allowSupersede === true);
   }
   return plan.outcome;
 }
