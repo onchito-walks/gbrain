@@ -844,12 +844,12 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
     "name": "search",
     "idempotent": true,
     "outputRedaction": "retrieval",
-    "description": "Cheap hybrid search; no LLM expansion; top 20. NOT proof of coverage; landscape:`query`; all:list_pages. match: \"keyword\" pages every keyword match and takes OR across quoted names or codes (\"A\" OR \"B\" OR …): one call lists every page matching any. Name lists: entity names. Personal/emotional:get_recent_salience/find_anomalies; return_unit:sections/conversations; fields: \"full\".",
+    "description": "Cheap hybrid search; no LLM expansion; top 20. NOT proof of coverage; landscape:`query`; all:list_pages. match: \"keyword\" pages every keyword match and takes OR across quoted names or codes (\"A\" OR \"B\" OR …): one call lists every page matching any. Name lists: entity names. Personal:get_recent_salience/find_anomalies; return_unit:sections/conversations; fields: \"full\".",
     "params": {
       "query": {
         "type": "string",
         "required": true,
-        "description": "Exact names/tokens"
+        "description": "Names/tokens"
       },
       "limit": {
         "type": "number",
@@ -865,7 +865,7 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
           "hybrid",
           "keyword"
         ],
-        "description": ""
+        "description": "Mode"
       },
       "cursor": {
         "type": "string",

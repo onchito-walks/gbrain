@@ -2,8 +2,8 @@
   "golden": {
     "exitCode": 0,
     "stderr": "",
-    "stdoutBytes": 231463,
-    "stdoutSha256": "0eef73e648c1efab72edc554c3ff2d304b6d5f7d59897bcb2b888de04c64280f",
+    "stdoutBytes": 231480,
+    "stdoutSha256": "f2077c5acb56c7877fd71a3f03519819f19f0d1f8f4e1caab44dc7832122c9c0",
     "toolNames": [
       "remember",
       "entity",
@@ -1097,7 +1097,7 @@
         "scope": "write"
       },
       {
-        "description": "Cheap hybrid search; no LLM expansion; top 20. NOT proof of coverage; landscape:`query`; all:list_pages. match: \"keyword\" pages every keyword match and takes OR across quoted names or codes (\"A\" OR \"B\" OR …): one call lists every page matching any. Name lists: entity names. Personal/emotional:get_recent_salience/find_anomalies; return_unit:sections/conversations; fields: \"full\".",
+        "description": "Cheap hybrid search; no LLM expansion; top 20. NOT proof of coverage; landscape:`query`; all:list_pages. match: \"keyword\" pages every keyword match and takes OR across quoted names or codes (\"A\" OR \"B\" OR …): one call lists every page matching any. Name lists: entity names. Personal:get_recent_salience/find_anomalies; return_unit:sections/conversations; fields: \"full\".",
         "idempotent": true,
         "local_only": false,
         "mutating": false,
@@ -1153,6 +1153,7 @@
               "type": "number"
             },
             "match": {
+              "description": "Mode",
               "enum": [
                 "hybrid",
                 "keyword"
@@ -1180,7 +1181,7 @@
               "type": "number"
             },
             "query": {
-              "description": "Exact names/tokens",
+              "description": "Names/tokens",
               "type": "string"
             },
             "recency": {

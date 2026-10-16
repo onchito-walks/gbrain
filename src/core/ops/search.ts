@@ -736,7 +736,7 @@ const search: Operation = {
   outputRedaction: 'retrieval',
   description: SEARCH_DESCRIPTION,
   params: {
-    query: { type: 'string', required: true, description: 'Exact names/tokens' },
+    query: { type: 'string', required: true, description: 'Names/tokens' },
     limit: { type: 'number', description: 'Default 20.' },
     offset: { type: 'number', description: 'Skip rows.' },
     match: { type: 'string', enum: ['hybrid', 'keyword'], description: SEARCH_MATCH_DESCRIPTION },
