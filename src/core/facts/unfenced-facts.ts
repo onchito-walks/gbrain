@@ -476,11 +476,15 @@ async function fenceManaged(engine: BrainEngine, plan: UnfencedFactsPlan, allowS
       // request), and every original row keeps its id, position and text.
       const { publishPreservedFencePublication } = await import('./preserved-fence-store.ts');
       const receipt = await publishPreservedFencePublication(engine, sourceId, entitySlug, { authority, allowSupersede });
-      outcome.fenced += receipt.bindings;
-      outcome.adopted_in_place = (outcome.adopted_in_place ?? 0) + fence.assignments.filter(a => a.adopted_in_place).length;
-      outcome.renumbered = (outcome.renumbered ?? 0) + fence.assignments.filter(a => a.prev_row_num !== null && !a.adopted_in_place).length;
-      outcome.pages_touched += 1;
-      outcome.fenced_slugs.push(entitySlug);
+      // A page whose derived document is already exactly the plan of its current
+      // originals writes nothing: a re-run reads as the no-op it is.
+      if (receipt.wrote) {
+        outcome.fenced += receipt.bindings;
+        outcome.adopted_in_place = (outcome.adopted_in_place ?? 0) + fence.assignments.filter(a => a.adopted_in_place).length;
+        outcome.renumbered = (outcome.renumbered ?? 0) + fence.assignments.filter(a => a.prev_row_num !== null && !a.adopted_in_place).length;
+        outcome.pages_touched += 1;
+        outcome.fenced_slugs.push(entitySlug);
+      }
     } catch (err) {
       noteFailure(outcome, entitySlug, err instanceof Error ? err.message : String(err));
     }
@@ -512,11 +516,13 @@ async function fenceFilePage(engine: BrainEngine, sourceId: string, entitySlug: 
     // Nothing is written to the file, so there is nothing to commit back.
     const { publishPreservedFencePublication } = await import('./preserved-fence-store.ts');
     const receipt = await publishPreservedFencePublication(engine, sourceId, entitySlug, { allowSupersede });
-    outcome.fenced += receipt.bindings;
-    outcome.adopted_in_place = (outcome.adopted_in_place ?? 0) + fence.assignments.filter(a => a.adopted_in_place).length;
-    outcome.renumbered = (outcome.renumbered ?? 0) + fence.assignments.filter(a => a.prev_row_num !== null && !a.adopted_in_place).length;
-    outcome.pages_touched += 1;
-    outcome.fenced_slugs.push(entitySlug);
+    if (receipt.wrote) {
+      outcome.fenced += receipt.bindings;
+      outcome.adopted_in_place = (outcome.adopted_in_place ?? 0) + fence.assignments.filter(a => a.adopted_in_place).length;
+      outcome.renumbered = (outcome.renumbered ?? 0) + fence.assignments.filter(a => a.prev_row_num !== null && !a.adopted_in_place).length;
+      outcome.pages_touched += 1;
+      outcome.fenced_slugs.push(entitySlug);
+    }
   }, { timeoutMs: 5_000, ...(lockRoot ? { lockRoot } : {}) });
   try {
     await write();
