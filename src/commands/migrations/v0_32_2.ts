@@ -14,14 +14,27 @@
  *                     unfenced shapes: rows with no position yet, and rows
  *                     whose position the markdown no longer carries (the
  *                     page body was replaced or reverted after the stamp).
- *                     The second shape is re-published under its own
- *                     position, so the markdown becomes the system of
- *                     record again without losing or renumbering a row.
- *   C. Verify       — re-parse each fence-owned page and compare its fence
- *                     row numbers with the DB rows for that page; a
- *                     duplicate active fence row may be absent from the
- *                     index (extract_facts indexes it once). Partial on
- *                     mismatch. Conversation-miner (`cli:`) rows are not
+ *                     STRICT PRESERVATION: no original row is stamped,
+ *                     renumbered, rewritten or expired and no page body gains
+ *                     a fence. Each page's adopted positions and
+ *                     codec-normalized text are published as that page's
+ *                     separate DERIVED document (one page-scoped raw_data row
+ *                     with explicit original-fact-to-derived-position
+ *                     bindings), through the same owner/journal path.
+ *   C. Verify       — compare the two coordinate systems independently.
+ *                     Original: re-parse each page's own fence (the canonical
+ *                     file, or the database copy on a managed brain) and
+ *                     compare its row numbers with the DB rows for that page,
+ *                     excluding the rows a CURRENT derived document binds. A
+ *                     duplicate active fence row may be absent from the index
+ *                     (extract_facts indexes it once). Partial on mismatch.
+ *                     Derived: every document must still be the plan of its
+ *                     page's current originals, every original fence row must
+ *                     survive in it unchanged, and every binding must be
+ *                     addressable at its own derived position. A document that
+ *                     is no longer that plan fails the phase by name. Nothing
+ *                     on this path writes.
+ *                     Conversation-miner (`cli:`) rows are not
  *                     fence-owned (extract-conversation-facts writes the
  *                     chat log as source of truth) and are excluded from
  *                     BOTH sides: the database side always filtered the
@@ -45,11 +58,11 @@
  * run stopped.
  * Phase B is the shared core pass `src/core/facts/unfenced-facts.ts`, which
  * the extract_facts cycle phase also runs: managed brains publish each page
- * through the coordinator (`managed_maintenance_adopt_fact_fence`) and
- * verify from the database; unmanaged pages are written per page atomically
- * (.tmp + parse + rename under the page lock, same primitive as
- * fence-write.ts). The migration adds a dirty-tree refusal that mirrors
- * src/core/dry-fix.ts so the user can review the diff before committing.
+ * through the coordinator (`managed_maintenance_publish_preserved_fence`) and
+ * verify from the database; unmanaged pages publish through one maintenance
+ * transaction under the page lock. The migration adds a dirty-tree refusal
+ * that mirrors src/core/dry-fix.ts so the user can review the diff before
+ * committing.
  *
  * Facts with NULL entity_slug are structurally unfenceable (no page to
  * fence onto). They're skipped with a warning; the operator decides
@@ -73,6 +86,8 @@ import { serializePageToMarkdown } from '../../core/markdown.ts';
 import { managedPersistenceEnabled } from '../../core/persistence/ownership.ts';
 import { OperationError } from '../../core/ops/contract.ts';
 import { fenceableRowCount, fenceUnfencedFacts, planUnfencedFacts, type UnfencedFactsOutcome } from '../../core/facts/unfenced-facts.ts';
+import { preservedFencePublicationState } from '../../core/facts/preserved-fence-store.ts';
+import type { PreservedFencePublication } from '../../core/facts/preserved-fence-publication.ts';
 import {
   describeToleratedDrift,
   formatToleratedDriftReport,
@@ -274,6 +289,34 @@ function isConversationMinerFenceRow(fact: ParsedFact, cliRowNums: ReadonlySet<n
   return cliRowNums.has(fact.rowNum) || (fact.source ?? '').startsWith(CONVERSATION_MINER_PREFIX);
 }
 
+/**
+ * The derived coordinate system, verified independently of the replan: every
+ * row the ORIGINAL fence carries must survive in the derived document unchanged
+ * (same claim, source and active state), and every binding the document
+ * publishes must be addressable in it at its own derived position with its own
+ * derived claim. Returns the mismatch, or null when the two agree.
+ */
+function derivedCoordinateMismatch(publication: PreservedFencePublication, originalFence: ParsedFact[],
+  cliRowNums: ReadonlySet<number>): string | null {
+  const derived = parseFactsFence(publication.derived_body);
+  if (derived.warnings.length > 0) return `the derived document does not parse (${derived.warnings.join('; ')})`;
+  const byPosition = new Map(derived.facts.map(row => [row.rowNum, row]));
+  for (const row of originalFence) {
+    if (isConversationMinerFenceRow(row, cliRowNums)) continue;
+    const kept = byPosition.get(row.rowNum);
+    if (!kept || kept.claim !== row.claim || (kept.source ?? '') !== (row.source ?? '') || kept.active !== row.active) {
+      return `original fence row ${row.rowNum} is not carried unchanged`;
+    }
+  }
+  for (const binding of publication.bindings) {
+    const row = byPosition.get(binding.derived_row_num);
+    if (!row || !row.active || row.claim !== binding.derived_claim) {
+      return `binding for original fact ${binding.original_fact_id} is not addressable at derived position ${binding.derived_row_num}`;
+    }
+  }
+  return null;
+}
+
 async function phaseCVerify(
   engine: BrainEngine | null,
   opts: OrchestratorOpts,
@@ -297,8 +340,9 @@ async function phaseCVerify(
     // that ran extract-conversation-facts. Both arrays come from the same
     // read so the file side can skip exactly the positions the database
     // attributes to that domain (see isConversationMinerFenceRow).
-    const groups = await engine.executeRaw<{ source_id: string; source_markdown_slug: string; row_nums: number[] | null; cli_row_nums: number[] | null }>(
+    const groups = await engine.executeRaw<{ source_id: string; source_markdown_slug: string; ids: number[] | null; row_nums: number[] | null; cli_row_nums: number[] | null }>(
       `SELECT source_id, source_markdown_slug,
+              array_agg(id ORDER BY row_num) FILTER (WHERE COALESCE(source, '') NOT LIKE 'cli:%') AS ids,
               array_agg(row_num ORDER BY row_num) FILTER (WHERE COALESCE(source, '') NOT LIKE 'cli:%') AS row_nums,
               array_agg(row_num ORDER BY row_num) FILTER (WHERE COALESCE(source, '') LIKE 'cli:%') AS cli_row_nums
          FROM facts
@@ -333,10 +377,29 @@ async function phaseCVerify(
     };
 
     for (const g of groups) {
-      const indexed = new Set((g.row_nums ?? []).map(Number));
-      // A page with no non-conversation-miner fenced row is not fence-owned
-      // and is not compared (unchanged: the filter used to run in SQL).
-      if (indexed.size === 0) continue;
+      const positions = (g.row_nums ?? []).map(Number);
+      const ids = (g.ids ?? []).map(String);
+      // Strict preservation: a row a CURRENT derived document binds is
+      // represented by that document, so its original coordinates are excluded
+      // from this comparison and verified on the derived side instead. A stored
+      // document that is no longer the plan of the page's current originals is
+      // drift and fails this phase by name; nothing is written on this path.
+      const derived = await preservedFencePublicationState(engine, g.source_id, g.source_markdown_slug);
+      if (derived.state === 'drifted') {
+        mismatches.push(`${g.source_markdown_slug} (derived document is not the plan of its current originals: ${derived.reason})`);
+        pagesChecked += 1;
+        continue;
+      }
+      const bound = derived.state === 'current' ? derived.boundFactIds : null;
+      const indexed = new Set<number>();
+      for (let i = 0; i < positions.length; i++) {
+        if (bound?.has(ids[i]!)) continue;
+        indexed.add(positions[i]!);
+      }
+      // A page with no non-conversation-miner fenced row and no derived document
+      // is not fence-owned and is not compared (unchanged: the filter used to
+      // run in SQL).
+      if (indexed.size === 0 && derived.state === 'none') continue;
       const cliRowNums = new Set((g.cli_row_nums ?? []).map(Number));
       const dbRows = [...indexed].sort((a, b) => a - b);
       let body: string;
@@ -384,6 +447,13 @@ async function phaseCVerify(
           },
           `${g.source_markdown_slug} (fence=${parsed.facts.length}, db=${indexed.size}; ${missing})`,
         );
+      } else if (derived.state === 'current') {
+        // The other coordinate system, verified independently: the document is
+        // the plan of the current originals (replanned above), and every row the
+        // original fence carries must survive in it unchanged while every
+        // binding it publishes must be addressable in it.
+        const derivedMismatch = derivedCoordinateMismatch(derived.publication, parsed.facts, cliRowNums);
+        if (derivedMismatch) mismatches.push(`${g.source_markdown_slug} (derived: ${derivedMismatch})`);
       }
       pagesChecked += 1;
     }

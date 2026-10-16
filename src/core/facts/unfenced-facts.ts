@@ -558,15 +558,23 @@ export async function auditUnadoptableFacts(engine: BrainEngine, plan: UnfencedF
  * Fence every group of the plan through the brain's write path; fills
  * `plan.outcome`. A managed preflight or capacity refusal throws before any
  * page publishes; a per-page failure lands in `failed_pages`.
+ *
+ * `allowSupersede` defaults to TRUE: the derived document is a projection
+ * maintained by the tool, always recomputed from the page's CURRENT originals,
+ * so a document left behind by an earlier state of the originals (a page edit,
+ * a provenance change) is brought up to date instead of freezing the page's
+ * fence step forever. No original row or page body is touched either way — the
+ * option only decides whether a stale DERIVED row may be replaced.
  */
 export async function fenceUnfencedFacts(engine: BrainEngine, plan: UnfencedFactsPlan, opts: { pageLockRoot?: string; allowSupersede?: boolean } = {}): Promise<UnfencedFactsOutcome> {
+  const allowSupersede = opts.allowSupersede !== false;
   if (plan.managed) {
-    await fenceManaged(engine, plan, opts.allowSupersede === true);
+    await fenceManaged(engine, plan, allowSupersede);
     return plan.outcome;
   }
   for (const [key, group] of plan.groups) {
     const [sourceId, entitySlug] = key.split('\0');
-    await fenceFilePage(engine, sourceId, entitySlug, plan.filePaths.get(key)!, group, plan.outcome, opts.pageLockRoot, opts.allowSupersede === true);
+    await fenceFilePage(engine, sourceId, entitySlug, plan.filePaths.get(key)!, group, plan.outcome, opts.pageLockRoot, allowSupersede);
   }
   return plan.outcome;
 }
