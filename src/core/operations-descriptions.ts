@@ -52,10 +52,10 @@ export const QUERY_DESCRIPTION =
   "Concept/landscape: expansion recovers synonyms. Still top-K; all: list_pages. `search` is cheaper (no LLM call). Needs an embedding key: vectors; else keyword-only; expansion: chat key. Personal/emotional: get_recent_salience/find_anomalies; owner CLI: `gbrain transcripts recent`. Do NOT assume crazy=impressive; it may be difficult or emotionally charged. return_unit: sections/conversations. Facts: follow_up; fields: \"full\" diagnostics.";
 
 export const SEARCH_DESCRIPTION =
-  "Cheap hybrid search; no LLM expansion; top 20. NOT proof of coverage; landscape:`query`; all:list_pages. match: \"keyword\" pages every keyword match and takes OR across quoted names or codes (\"A\" OR \"B\" OR …): one call lists every page matching any. Name lists: entity names. Personal/emotional:get_recent_salience/find_anomalies; return_unit:sections/conversations; fields: \"full\".";
+  "Cheap hybrid search; no LLM expansion; top 20. NOT proof of coverage; landscape:`query`; all:list_pages. match: \"keyword\" pages every keyword match and takes OR across quoted names or codes (\"A\" OR \"B\" OR …): one call lists every page matching any. Name lists: entity names. Personal:get_recent_salience/find_anomalies; return_unit:sections/conversations; fields: \"full\".";
 
-/** `match` paging/OR guidance is fully advertised above; do not duplicate it. */
-export const SEARCH_MATCH_DESCRIPTION = '';
+/** Keep parameter guidance non-empty without duplicating the paging/OR prose. */
+export const SEARCH_MATCH_DESCRIPTION = 'Mode';
 
 // ──────────────────────────────────────────────────────────────────────────────
 // v0.32.6 — contradiction probe MCP surface (M3)
