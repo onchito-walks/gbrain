@@ -2,8 +2,8 @@
   "golden": {
     "exitCode": 0,
     "stderr": "",
-    "stdoutBytes": 232106,
-    "stdoutSha256": "425d487859007d2a16c0ff19ae08699da0932ac73912c9195814828585c71d89",
+    "stdoutBytes": 231463,
+    "stdoutSha256": "0eef73e648c1efab72edc554c3ff2d304b6d5f7d59897bcb2b888de04c64280f",
     "toolNames": [
       "remember",
       "entity",
@@ -1097,7 +1097,7 @@
         "scope": "write"
       },
       {
-        "description": "Cheap hybrid search, no LLM expansion, top 20. NOT proof of coverage; concept/landscape: `query`; exhaustive lists: list_pages. match: \"keyword\" pages every keyword match and takes OR across quoted names or codes (\"A\" OR \"B\" OR …): one call lists every page matching any. Name lists: entity names. Personal/emotional: get_recent_salience or find_anomalies. return_unit: sections/conversations. fields: \"full\".",
+        "description": "Cheap hybrid search; no LLM expansion; top 20. NOT proof of coverage; landscape:`query`; all:list_pages. match: \"keyword\" pages every keyword match and takes OR across quoted names or codes (\"A\" OR \"B\" OR …): one call lists every page matching any. Name lists: entity names. Personal/emotional:get_recent_salience/find_anomalies; return_unit:sections/conversations; fields: \"full\".",
         "idempotent": true,
         "local_only": false,
         "mutating": false,
@@ -1130,14 +1130,14 @@
               "type": "string"
             },
             "exclude_slug_prefixes": {
-              "description": "Exclude slug prefixes, plus hard-excludes. CLI: --exclude-slug-prefixes atoms/,test/.",
+              "description": "Prefixes + hard-excludes.",
               "items": {
                 "type": "string"
               },
               "type": "array"
             },
             "fields": {
-              "description": "lean (remote default) or full.",
+              "description": "lean (remote default)/full.",
               "enum": [
                 "lean",
                 "full"
@@ -1145,7 +1145,7 @@
               "type": "string"
             },
             "include_covered_atoms": {
-              "description": "true includes source-covered atoms; default keeps uncovered only.",
+              "description": "Default: uncovered only; true: all.",
               "type": "boolean"
             },
             "limit": {
@@ -1153,7 +1153,6 @@
               "type": "number"
             },
             "match": {
-              "description": "keyword: every match, paged.",
               "enum": [
                 "hybrid",
                 "keyword"
@@ -1161,7 +1160,7 @@
               "type": "string"
             },
             "min_trust": {
-              "description": "Lowest trust tier to return (the connection floor still applies).",
+              "description": "Trust floor; connection floor applies.",
               "enum": [
                 "user_confirmed",
                 "operator_curated",
@@ -1173,19 +1172,19 @@
               "type": "string"
             },
             "mode": {
-              "description": "Local callers only.",
+              "description": "Local only.",
               "type": "string"
             },
             "offset": {
-              "description": "Rows to skip.",
+              "description": "Skip rows.",
               "type": "number"
             },
             "query": {
-              "description": "Exact tokens or names, e.g. 'acme-example series A'.",
+              "description": "Exact names/tokens",
               "type": "string"
             },
             "recency": {
-              "description": "Boost recent pages.",
+              "description": "Recency boost.",
               "enum": [
                 "off",
                 "on",
@@ -1194,7 +1193,7 @@
               "type": "string"
             },
             "return_unit": {
-              "description": "Default auto: whole conversations.",
+              "description": "Default auto: conversations.",
               "enum": [
                 "chunk",
                 "window",
@@ -1205,11 +1204,11 @@
               "type": "string"
             },
             "return_window": {
-              "description": "Window radius 1-3.",
+              "description": "Radius 1-3.",
               "type": "number"
             },
             "salience": {
-              "description": "Boost emotional pages.",
+              "description": "Emotional boost.",
               "enum": [
                 "off",
                 "on",
@@ -1218,11 +1217,11 @@
               "type": "string"
             },
             "snippet_chars": {
-              "description": "Chars per row (0 = full).",
+              "description": "Chars/row; 0=full.",
               "type": "number"
             },
             "source_id": {
-              "description": "One source, or '__all__'.",
+              "description": "Source or __all__.",
               "type": "string"
             },
             "token_budget": {
@@ -1230,7 +1229,7 @@
               "type": "number"
             },
             "types": {
-              "description": "Page types, e.g. ['person'].",
+              "description": "Types.",
               "items": {
                 "type": "string"
               },
@@ -1245,7 +1244,7 @@
         "scope": "read"
       },
       {
-        "description": "Concept/landscape search: expansion recovers synonyms. Still top-K; exhaustive lists: list_pages. Exact: `search` is cheaper (no LLM call). Needs an embedding key for vectors; otherwise keyword-only. Needs a chat key for expansion. Personal/emotional: get_recent_salience or find_anomalies; owner CLI: `gbrain transcripts recent`. Do NOT assume crazy means impressive: it may mean difficult or emotionally charged. return_unit: sections/conversations. Fact rows: follow_up. fields: \"full\" adds diagnostics.",
+        "description": "Concept/landscape: expansion recovers synonyms. Still top-K; all: list_pages. `search` is cheaper (no LLM call). Needs an embedding key: vectors; else keyword-only; expansion: chat key. Personal/emotional: get_recent_salience/find_anomalies; owner CLI: `gbrain transcripts recent`. Do NOT assume crazy=impressive; it may be difficult or emotionally charged. return_unit: sections/conversations. Facts: follow_up; fields: \"full\" diagnostics.",
         "idempotent": true,
         "local_only": false,
         "mutating": false,
@@ -1289,11 +1288,11 @@
         "schema": {
           "properties": {
             "adaptive_return": {
-              "description": "true for one answer (fewer rows, never empty); omit for breadth.",
+              "description": "true for one answer, fewer rows, never empty; omit: breadth.",
               "type": "boolean"
             },
             "autocut": {
-              "description": "Default on (never empty); false: full top-K for breadth.",
+              "description": "Default on, never empty; false: full top-K for breadth.",
               "type": "boolean"
             },
             "cross_modal": {
@@ -1307,7 +1306,7 @@
               "type": "string"
             },
             "detail": {
-              "description": "low (compiled truth), medium (default) or high (all chunks).",
+              "description": "low: compiled truth; medium: default; high: all chunks.",
               "type": "string"
             },
             "embedding_column": {
@@ -1315,14 +1314,14 @@
               "type": "string"
             },
             "exclude_slug_prefixes": {
-              "description": "Exclude slug prefixes, plus hard-excludes. CLI: --exclude-slug-prefixes atoms/,test/.",
+              "description": "Prefixes + hard-excludes.",
               "items": {
                 "type": "string"
               },
               "type": "array"
             },
             "expand": {
-              "description": "Default true; false skips the LLM expansion.",
+              "description": "LLM expansion; default true.",
               "type": "boolean"
             },
             "explain": {
@@ -1334,7 +1333,7 @@
               "type": "string"
             },
             "fields": {
-              "description": "lean (remote default) or full.",
+              "description": "lean (remote default)/full.",
               "enum": [
                 "lean",
                 "full"
@@ -1346,11 +1345,11 @@
               "type": "string"
             },
             "image_mime": {
-              "description": "MIME type of image.",
+              "description": "Image MIME.",
               "type": "string"
             },
             "include_covered_atoms": {
-              "description": "true includes source-covered atoms; default keeps uncovered only.",
+              "description": "Default: uncovered only; true: all.",
               "type": "boolean"
             },
             "lang": {
@@ -1362,7 +1361,7 @@
               "type": "number"
             },
             "min_trust": {
-              "description": "Lowest trust tier to return (the connection floor still applies).",
+              "description": "Trust floor; connection floor applies.",
               "enum": [
                 "user_confirmed",
                 "operator_curated",
@@ -1374,23 +1373,23 @@
               "type": "string"
             },
             "mode": {
-              "description": "Local callers only.",
+              "description": "Local only.",
               "type": "string"
             },
             "near_symbol": {
-              "description": "Anchor code symbol.",
+              "description": "Anchor symbol.",
               "type": "string"
             },
             "offset": {
-              "description": "Rows to skip.",
+              "description": "Skip rows.",
               "type": "number"
             },
             "query": {
-              "description": "Question or topic (required unless image).",
+              "description": "Topic; required unless image.",
               "type": "string"
             },
             "recency": {
-              "description": "Boost recent pages.",
+              "description": "Recency boost.",
               "enum": [
                 "off",
                 "on",
@@ -1399,11 +1398,11 @@
               "type": "string"
             },
             "relational": {
-              "description": "Relationship-graph arm (default on).",
+              "description": "Graph arm; default on.",
               "type": "boolean"
             },
             "return_unit": {
-              "description": "Default auto: whole conversations.",
+              "description": "Default auto: conversations.",
               "enum": [
                 "chunk",
                 "window",
@@ -1414,11 +1413,11 @@
               "type": "string"
             },
             "return_window": {
-              "description": "Window radius 1-3.",
+              "description": "Radius 1-3.",
               "type": "number"
             },
             "salience": {
-              "description": "Boost emotional pages.",
+              "description": "Emotional boost.",
               "enum": [
                 "off",
                 "on",
@@ -1431,15 +1430,15 @@
               "type": "string"
             },
             "snippet_chars": {
-              "description": "Chars per row (0 = full).",
+              "description": "Chars/row; 0=full.",
               "type": "number"
             },
             "source_id": {
-              "description": "One source, or '__all__'.",
+              "description": "Source or __all__.",
               "type": "string"
             },
             "symbol_kind": {
-              "description": "Code symbol type.",
+              "description": "Symbol type.",
               "type": "string"
             },
             "token_budget": {
@@ -1447,7 +1446,7 @@
               "type": "number"
             },
             "types": {
-              "description": "Page types, e.g. ['person'].",
+              "description": "Types.",
               "items": {
                 "type": "string"
               },
@@ -1458,7 +1457,7 @@
               "type": "string"
             },
             "walk_depth": {
-              "description": "Code walk depth 1-2.",
+              "description": "Code depth 1-2.",
               "type": "number"
             }
           },

@@ -844,12 +844,12 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
     "name": "search",
     "idempotent": true,
     "outputRedaction": "retrieval",
-    "description": "Cheap hybrid search; no LLM expansion; top 20. NOT proof of coverage; landscape: `query`; all: list_pages. \"keyword\": paged matches, quoted-name/code OR (\"A\" OR \"B\"). Names: entity names. Personal/emotional: get_recent_salience/find_anomalies. return_unit: sections/conversations; fields: \"full\".",
+    "description": "Cheap hybrid search; no LLM expansion; top 20. NOT proof of coverage; landscape:`query`; all:list_pages. match: \"keyword\" pages every keyword match and takes OR across quoted names or codes (\"A\" OR \"B\" OR …): one call lists every page matching any. Name lists: entity names. Personal/emotional:get_recent_salience/find_anomalies; return_unit:sections/conversations; fields: \"full\".",
     "params": {
       "query": {
         "type": "string",
         "required": true,
-        "description": "Exact tokens/names."
+        "description": "Exact names/tokens"
       },
       "limit": {
         "type": "number",
@@ -865,7 +865,7 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
           "hybrid",
           "keyword"
         ],
-        "description": "keyword: every match, paged."
+        "description": ""
       },
       "cursor": {
         "type": "string",
@@ -884,18 +884,18 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
         "items": {
           "type": "string"
         },
-        "description": "Page types."
+        "description": "Types."
       },
       "exclude_slug_prefixes": {
         "type": "array",
         "items": {
           "type": "string"
         },
-        "description": "Slug-prefix + hard-excludes."
+        "description": "Prefixes + hard-excludes."
       },
       "include_covered_atoms": {
         "type": "boolean",
-        "description": "Default: uncovered atoms only; true: all atoms."
+        "description": "Default: uncovered only; true: all."
       },
       "snippet_chars": {
         "type": "number",
@@ -910,11 +910,11 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
           "page",
           "auto"
         ],
-        "description": "Default auto: whole conversations."
+        "description": "Default auto: conversations."
       },
       "return_window": {
         "type": "number",
-        "description": "Window radius 1-3."
+        "description": "Radius 1-3."
       },
       "token_budget": {
         "type": "number",
@@ -1002,18 +1002,18 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
         "items": {
           "type": "string"
         },
-        "description": "Page types."
+        "description": "Types."
       },
       "exclude_slug_prefixes": {
         "type": "array",
         "items": {
           "type": "string"
         },
-        "description": "Slug-prefix + hard-excludes."
+        "description": "Prefixes + hard-excludes."
       },
       "include_covered_atoms": {
         "type": "boolean",
-        "description": "Default: uncovered atoms only; true: all atoms."
+        "description": "Default: uncovered only; true: all."
       },
       "snippet_chars": {
         "type": "number",
@@ -1028,11 +1028,11 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
           "page",
           "auto"
         ],
-        "description": "Default auto: whole conversations."
+        "description": "Default auto: conversations."
       },
       "return_window": {
         "type": "number",
-        "description": "Window radius 1-3."
+        "description": "Radius 1-3."
       },
       "token_budget": {
         "type": "number",
@@ -1116,11 +1116,11 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
       },
       "embedding_column": {
         "type": "string",
-        "description": "Registered vector column."
+        "description": "Registered embedding column."
       },
       "adaptive_return": {
         "type": "boolean",
-        "description": "true: one answer, fewer rows, never empty; omit: breadth."
+        "description": "true for one answer, fewer rows, never empty; omit: breadth."
       },
       "autocut": {
         "type": "boolean",

@@ -141,11 +141,11 @@ const FIELDS_PARAM = {
 const RETURN_UNIT_PARAM = {
   type: 'string' as const,
   enum: ['chunk', 'window', 'section', 'page', 'auto'],
-  description: 'Default auto: whole conversations.',
+  description: 'Default auto: conversations.',
 };
 const RETURN_WINDOW_PARAM = {
   type: 'number' as const,
-  description: 'Window radius 1-3.',
+  description: 'Radius 1-3.',
 };
 
 /**
@@ -582,10 +582,10 @@ function normalizeExcludeSlugPrefixesParam(ctx: OperationContext, tool: 'search'
 }
 
 const EXCLUDE_SLUG_PREFIXES_PARAM_DESCRIPTION =
-  'Slug-prefix + hard-excludes.';
+  'Prefixes + hard-excludes.';
 
 const INCLUDE_COVERED_ATOMS_PARAM_DESCRIPTION =
-  'Default: uncovered atoms only; true: all atoms.';
+  'Default: uncovered only; true: all.';
 
 /** The caller's two retrieval-exclusion knobs, normalized once per call. */
 interface RetrievalExclusionParams {
@@ -616,7 +616,7 @@ function retrievalExclusionSearchOpts(exclusion: RetrievalExclusionParams): Pick
   };
 }
 
-const TYPES_PARAM_DESCRIPTION = 'Page types.';
+const TYPES_PARAM_DESCRIPTION = 'Types.';
 
 const SOURCE_ID_PARAM_DESCRIPTION = 'Source or __all__.';
 const SALIENCE_PARAM = { type: 'string' as const, enum: ['off', 'on', 'strong'], description: 'Emotional boost.' };
@@ -736,7 +736,7 @@ const search: Operation = {
   outputRedaction: 'retrieval',
   description: SEARCH_DESCRIPTION,
   params: {
-    query: { type: 'string', required: true, description: 'Exact tokens/names.' },
+    query: { type: 'string', required: true, description: 'Exact names/tokens' },
     limit: { type: 'number', description: 'Default 20.' },
     offset: { type: 'number', description: 'Skip rows.' },
     match: { type: 'string', enum: ['hybrid', 'keyword'], description: SEARCH_MATCH_DESCRIPTION },
@@ -942,8 +942,8 @@ const query: Operation = {
     until: { type: 'string', description: 'On/before.' },
     source_id: { type: 'string', description: SOURCE_ID_PARAM_DESCRIPTION },
     cross_modal: { type: 'string', enum: ['text', 'image', 'both', 'auto'], description: 'Default auto.' },
-    embedding_column: { type: 'string', description: 'Registered vector column.' },
-    adaptive_return: { type: 'boolean', description: 'true: one answer, fewer rows, never empty; omit: breadth.' },
+    embedding_column: { type: 'string', description: 'Registered embedding column.' },
+    adaptive_return: { type: 'boolean', description: 'true for one answer, fewer rows, never empty; omit: breadth.' },
     autocut: { type: 'boolean', description: 'Default on, never empty; false: full top-K for breadth.' },
     relational: { type: 'boolean', description: 'Graph arm; default on.' },
     min_trust: { ...MIN_TRUST_PARAM, description: 'Trust floor; connection floor applies.' },
@@ -1308,7 +1308,7 @@ const assemble_evidence: Operation = {
   params: {
     hits: { type: 'array', required: true, items: { type: 'object' }, description: 'Ordered hits, best first (max 50): [{ "source_id": "default", "slug": "chat/session-0412", "chunk_id": 8812 }]. chunk_id 0 addresses the page\'s first chunk.' },
     return_unit: { ...RETURN_UNIT_PARAM, description: "Evidence unit: 'chunk' | 'window' | 'section' | 'page' | 'auto' (default 'page')." },
-    return_window: RETURN_WINDOW_PARAM,
+    return_window: { ...RETURN_WINDOW_PARAM, description: 'Window radius 1-3.' },
     token_budget: { type: 'number', description: 'Token budget for the delivered evidence (default search.return_budget_default = 6000, auto search.return_budget_conversation = 24000; remote max 32000).' },
     detail: { type: 'string', enum: ['low', 'medium', 'high'], description: "As query: 'low' delivers compiled truth only (no timeline text)." },
     min_trust: MIN_TRUST_PARAM,
