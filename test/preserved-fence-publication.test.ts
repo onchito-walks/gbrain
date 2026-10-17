@@ -173,8 +173,22 @@ test('source and page isolation reject cross-source originals and moved candidat
   expect(() => planPreservedFencePublication(moved)).toThrow('ineligible_candidate');
 });
 
+test('Postgres bigint identities stay exact, including IDs above the JS safe-integer range', () => {
+  for (const id of [7n, 9007199254740993n]) {
+    const input = inputs([fact({ id })]), before = structuredClone(input);
+    const publication = planPreservedFencePublication(input);
+    expect(publication.bindings[0]!.original_fact_id).toBe(String(id));
+    expect(input).toEqual(before);
+    expect(input.facts[0]!.id).toBe(id);
+    validatePreservedFencePublication(publication, input);
+    const changed = structuredClone(input); changed.facts[0]!.id = id + 1n;
+    changed.candidateIds = [String(id + 1n)];
+    expect(() => validatePreservedFencePublication(publication, changed)).toThrow('original_or_derived_drift');
+  }
+});
+
 test('malformed identities are not repaired and unsafe numeric identities are not rounded', () => {
-  for (const id of ['07', ' 7', '7x', 9007199254740992]) {
+  for (const id of ['07', ' 7', '7x', 9007199254740992, 0n, -7n]) {
     expect(() => planPreservedFencePublication(inputs([fact({ id })]))).toThrow('invalid_fact_identity');
   }
 });
