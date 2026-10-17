@@ -38,6 +38,7 @@ import { opError } from '../ops/contract.ts';
 import { readFix } from '../ops/op-fix.ts';
 import { maintenanceTransaction } from '../persistence/attribution.ts';
 import type { PreparedMutation } from '../persistence/coordinator.ts';
+import { prepareCoreGuard } from '../persistence/core-guard.ts';
 import type { WriteRequest } from '../persistence/model.ts';
 import {
   maintenancePreflight,
@@ -321,7 +322,7 @@ async function writePublicationRow(tx: BrainEngine, sourceId: string, slug: stri
   publication: PreservedFencePublication): Promise<void> {
   const written = await tx.executeRaw<{ id: number }>(
     `INSERT INTO raw_data (page_id, source, data)
-     SELECT id, $3, $4::jsonb FROM pages WHERE source_id = $1 AND slug = $2
+     SELECT id, $3, $4::text::jsonb FROM pages WHERE source_id = $1 AND slug = $2
      ON CONFLICT (page_id, source) DO UPDATE SET data = EXCLUDED.data, fetched_at = now()
      RETURNING id`,
     [sourceId, slug, PRESERVED_FENCE_SOURCE, JSON.stringify(publication)],
@@ -429,6 +430,15 @@ export async function preparePreservedFencePublication(unbounded: BrainEngine, r
       `Page ${row.slug} in ${row.source_id} no longer exists, so its derived fence document was not published. Nothing changed.`,
       { fix: receiptFixFor(row.request_id) });
   }
+  // This request publishes a derived document and never changes page text, so the
+  // core write-path guard is asked with the page's OWN current content as the
+  // incoming page: core marking, the brain-wide budget, the remote-edit policy and
+  // the ordered core source lock then apply exactly as they would to a write that
+  // wrote this content back unchanged (core-guard.ts).
+  const core = await prepareCoreGuard(unbounded, {
+    row, snapshot,
+    incoming: { title: snapshot.page.title, compiled_truth: snapshot.page.compiled_truth, frontmatter: snapshot.page.frontmatter },
+  });
   // The same fail-closed rule as the unmanaged path: a stored document that is
   // no longer the plan of the current originals is only replaced when the
   // request says so explicitly.
@@ -454,10 +464,12 @@ export async function preparePreservedFencePublication(unbounded: BrainEngine, r
   };
   await recheck(unbounded);
   return { observedRevision: snapshot.revision, noop: false,
-    validate: async tx => { await recheck(tx); },
+    ...(core ? { exclusiveSources: core.exclusiveSources } : {}),
+    validate: async tx => { await recheck(tx); await core?.validate(tx); },
     apply: async tx => {
       await recheck(tx);
       await writePublicationRow(tx, row.source_id, row.slug, publication);
+      await core?.record(tx, snapshot.revision);
       return { status: 'completed', published: true, bindings: publication.bindings.length,
         derived_body_sha256: sha256(publication.derived_body) };
     } };
