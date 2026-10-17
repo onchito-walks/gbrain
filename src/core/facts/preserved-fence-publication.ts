@@ -69,7 +69,9 @@ function refuse(reason: string): never { throw new Error(`preserved_fence_refuse
 function identity(value: unknown): string {
   // Do not coerce an unsafe JS number or repair a malformed identifier.
   if (typeof value === 'number' && (!Number.isSafeInteger(value) || value < 1)) return refuse('invalid_fact_identity');
-  if (typeof value !== 'string' && typeof value !== 'number') return refuse('invalid_fact_identity');
+  // postgres.js returns BIGSERIAL as bigint; keep its exact decimal identity
+  // in the derived binding without converting or rewriting the original row.
+  if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'bigint') return refuse('invalid_fact_identity');
   const id = String(value);
   if (!/^[1-9][0-9]*$/.test(id)) return refuse('invalid_fact_identity');
   return id;
