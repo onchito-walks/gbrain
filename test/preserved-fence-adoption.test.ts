@@ -327,3 +327,45 @@ test('the migration orchestrator publishes the derived document and verifies bot
     migration.__setTestEngineOverride(null);
   }
 });
+
+test('verify indexes a current derived binding to an existing fence without stamping its NULL original', async () => {
+  const migration = await import('../src/commands/migrations/v0_32_2.ts');
+  const opts = { yes: true, dryRun: false, noAutopilotInstall: true };
+  await seedPage();
+  for (const row of FENCE_ROWS) {
+    await seedFact({ rowNum: null, claim: row.claim, sourceSlug: null, sourceSession: 'original-import' });
+  }
+  // Real rehearsal shape: a CLI-owned coordinate creates the verifier group,
+  // while the original import rows matching the fence still hold NULL positions.
+  const cli = await seedFact({ rowNum: 1, claim: 'Conversation domain row' });
+  await engine.executeRaw(`UPDATE facts SET source = 'cli:extract-conversation-facts' WHERE id = $1`, [Number(cli)]);
+  const before = await originalDigests();
+  expect((await migration.__testing.phaseBFenceFacts(engine, opts)).status).toBe('complete');
+  const publication = await readPreservedFencePublication(engine, 'default', SLUG);
+  expect(publication!.bindings.map(row => row.derived_row_num)).toEqual([5, 6, 7, 8]);
+  expect(publication!.bindings.every(row => row.original_row_num === null)).toBe(true);
+  expect((await migration.__testing.phaseCVerify(engine, opts)).status).toBe('complete');
+  expect((await migration.__testing.phaseBFenceFacts(engine, opts)).status).toBe('complete');
+  expect((await migration.__testing.phaseCVerify(engine, opts)).status).toBe('complete');
+  expect(stableJson(await originalDigests())).toBe(stableJson(before));
+  expect(await fileBody()).toBe(ORIGINAL_BODY);
+
+  await engine.executeRaw(`UPDATE facts SET source_session = 'drifted' WHERE id = $1`,
+    [Number(publication!.bindings[0]!.original_fact_id)]);
+  const drifted = await migration.__testing.phaseCVerify(engine, opts);
+  expect(drifted.status).toBe('failed');
+  expect(drifted.detail).toContain('derived document is not the plan of its current originals');
+});
+
+test('a derived publication does not excuse an original fence row with no bound fact', async () => {
+  const migration = await import('../src/commands/migrations/v0_32_2.ts');
+  const opts = { yes: true, dryRun: false, noAutopilotInstall: true };
+  await seedPage();
+  for (const row of FENCE_ROWS.slice(0, 3)) await seedFact({ rowNum: null, claim: row.claim, sourceSlug: null });
+  const cli = await seedFact({ rowNum: 1, claim: 'Conversation domain row' });
+  await engine.executeRaw(`UPDATE facts SET source = 'cli:extract-conversation-facts' WHERE id = $1`, [Number(cli)]);
+  expect((await migration.__testing.phaseBFenceFacts(engine, opts)).status).toBe('complete');
+  const result = await migration.__testing.phaseCVerify(engine, opts);
+  expect(result.status).toBe('failed');
+  expect(result.detail).toContain('not indexed: 8');
+});

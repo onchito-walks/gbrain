@@ -84,6 +84,7 @@ import { duplicateActiveFenceRows } from '../../core/facts/extract-from-fence.ts
 import { resolvePageWriteTarget } from '../../core/write-through.ts';
 import { serializePageToMarkdown } from '../../core/markdown.ts';
 import { managedPersistenceEnabled } from '../../core/persistence/ownership.ts';
+import { stableJson } from '../../core/persistence/digest.ts';
 import { OperationError } from '../../core/ops/contract.ts';
 import { fenceableRowCount, fenceUnfencedFacts, planUnfencedFacts, type UnfencedFactsOutcome } from '../../core/facts/unfenced-facts.ts';
 import { PRESERVED_FENCE_SOURCE, preservedFencePublicationState } from '../../core/facts/preserved-fence-store.ts';
@@ -443,6 +444,20 @@ async function phaseCVerify(
       for (let i = 0; i < positions.length; i++) {
         if (bound?.has(ids[i]!) && !fencePositions.has(positions[i]!)) continue;
         indexed.add(positions[i]!);
+      }
+      // A preserved NULL-position import can already match an original fence
+      // cell. Its verified derived binding is the index entry; stamping the
+      // original just to make this comparison pass would violate preservation.
+      // Count only a bound cell that is literally the same parsed original row,
+      // never every row carried by the derived document (some are unindexed).
+      if (derived.state === 'current') {
+        const originalAt = new Map(parsed.facts.map(row => [row.rowNum, row]));
+        const derivedAt = new Map(parseFactsFence(derived.publication.derived_body).facts.map(row => [row.rowNum, row]));
+        for (const binding of derived.publication.bindings) {
+          const original = originalAt.get(binding.derived_row_num);
+          const cell = derivedAt.get(binding.derived_row_num);
+          if (original && cell && stableJson(original) === stableJson(cell)) indexed.add(binding.derived_row_num);
+        }
       }
       if (indexed.size === 0 && derived.state === 'none') continue;
       const fenced = new Set(parsed.facts.filter(f => !isConversationMinerFenceRow(f, cliRowNums)).map(f => f.rowNum));
