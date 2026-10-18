@@ -189,7 +189,12 @@ test('extract_atoms records a credentials abort as provider_auth; extract_facts 
   const stub = {
     async executeRaw(sql: string, params: unknown[] = []) {
       calls.push({ sql: sql.replace(/\s+/g, ' '), params });
-      if (/COUNT\(\*\) AS n/.test(sql)) return [{ n: '3' }];
+      // The guard's own predicate reads one row per pending fact (id + entity_slug,
+      // per page) and resolves each page's derived document, so the double answers
+      // that shape — the retired `COUNT(*) AS n` aggregate is not it.
+      if (/FROM facts f\b/.test(sql) && /ORDER BY f\.entity_slug, f\.id/.test(sql)) {
+        return Array.from({ length: 3 }, (_, i) => ({ id: String(i + 1), entity_slug: 'notes/probe' }));
+      }
       if (sql.includes('FROM persistence_brain')) return [{ enabled: false }];
       return [];
     },

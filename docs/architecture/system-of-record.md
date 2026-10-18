@@ -208,6 +208,16 @@ with a grep of `src` for direct page, version, fact, take and timeline writers
 outside the engine and schema layers. The number in parentheses is that grep's
 count for the file.
 
+`src/core/facts/unfenced-facts.ts` is deliberately absent from the lists below:
+with strict preservation the fence step is no longer a direct writer at all. It
+writes neither the canonical file nor a fact row — the adopted positions and the
+codec-normalized claim text exist only in the page's derived document, published
+by `preserved-fence-store.ts` (one `maintenanceTransaction` on unmanaged brains;
+one `managed_maintenance_publish_preserved_fence` request on managed brains,
+whose preparer writes inside the coordinated publication). Every original row
+keeps its id, position (including NULL), text and provenance, and a row a current
+document binds is exempt from the fence comparison instead of being restamped.
+
 Attributed (inside a request, a coordinated scope or `maintenanceTransaction`,
 or a physical projection that leaves attribution untouched):
 
@@ -243,7 +253,6 @@ or a physical projection that leaves attribution untouched):
 - `src/core/facts/proposal-supersede.ts` (4): unmanaged `decide` proposal accept and undo run in one `maintenanceTransaction` each; managed brains publish a `decide_proposal` request.
 - `src/core/facts/purge.ts` (2): `purge_fact` rewrites purged pages' bodies and redacts their versions inside `withCoordinatedWrite` with the purge request's attribution.
 - `src/core/facts/relink-publish.ts` (2): `relink_facts` request preparer.
-- `src/core/facts/unfenced-facts.ts` (2): the cycle and v0.32.2 fence of `row_num`-NULL facts: a maintenance request on managed brains; the unmanaged body mirror and row-number stamp run in `maintenanceTransaction`.
 - `src/core/facts/withdrawal.ts` (1): runs inside the `forget` request's coordinated write.
 - `src/core/trust/timeline-projection.ts` (2): `gbrain extract` timeline walks (file, incremental, stale) and the per-entry fallback write through it: one `maintenanceTransaction` per page tier.
 - `src/core/facts/write-single.ts` (2): the legacy single-fact insert and its supersession link each run in `maintenanceTransaction`; managed brains publish through the fact request.

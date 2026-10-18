@@ -8,6 +8,9 @@
  * Stub-engine repro from the issue: no database, no filesystem. The guard
  * path must book exactly one rollup UPSERT with halt_delta=1 /
  * round_completed_delta=0; the healthy path books completed=1 / halt=0.
+ * The double answers the guard's CURRENT predicate — one row per pending fact
+ * (id + entity_slug), the shape `pendingLegacyRows` reads since the strict
+ * preservation repair — not the retired `COUNT(*) AS n` aggregate.
  */
 
 import { describe, test, expect } from 'bun:test';
@@ -24,7 +27,12 @@ function mkEngine(legacyCount: number): { calls: CapturedCall[]; engine: BrainEn
   const engine = {
     async executeRaw(sql: string, params: unknown[] = []) {
       calls.push({ sql: sql.trim().replace(/\s+/g, ' '), params });
-      if (/COUNT\(\*\) AS n/.test(sql)) return [{ n: String(legacyCount) }];
+      // The guard reads its pending rows one by one (id + entity_slug per row) and
+      // resolves each page's derived document, so the double answers THAT query
+      // shape. A COUNT(*) shape is no longer the guard's own predicate.
+      if (/FROM facts f\b/.test(sql) && /ORDER BY f\.entity_slug, f\.id/.test(sql)) {
+        return Array.from({ length: legacyCount }, (_, i) => ({ id: String(i + 1), entity_slug: 'notes/probe' }));
+      }
       if (sql.includes('FROM persistence_brain')) return [{ enabled: false }]; // #6482: the strict mode reader needs one well-formed unmanaged row.
       return [];
     },
