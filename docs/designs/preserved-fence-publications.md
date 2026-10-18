@@ -74,6 +74,27 @@ evidence; they are not silently converted into valid fence positions.
   inside one maintenance transaction under the page lock, the managed path
   through the coordinator against the page revision, and a publication that is
   already current writes nothing at all.
+- **Cycle completion is a transition, not a drift repair.**
+  `src/core/cycle/preserved-fence-completion.ts` owns the per-source `runCycle`
+  stamp. Where a source has stored derived documents, that stamp is not a bare
+  `updateSourceConfig`: because the document's complete-source digest covers the
+  whole `sources` row, stamping `last_source_cycle_at`/`last_full_cycle_at`
+  immediately after publication would invalidate the document it had just
+  finished. The completion instead commits the two completion keys and a
+  re-derived, version-bound document for every page **in one transaction** (one
+  `maintenanceTransaction` unmanaged; one
+  `managed_maintenance_complete_preserved_cycle` request through the
+  coordinator, admitted against the page revision, for managed brains). Every
+  prior document is first asserted to still be the plan of its current
+  originals, and the only difference permitted between the pre- and post-image
+  of the source is those two keys: a changed config key, page, fact or stored
+  document refuses the whole completion. The previous document is retained
+  under `${PRESERVED_FENCE_SOURCE}:version:<sha256>` (an additive `raw_data`
+  row) and nothing else advances. A failure, an abort or a dry run advances
+  neither the stamp nor a document (`stamp_write_failed` still degrades the run
+  to `partial`). Unrelated external edits are never blessed and automatic blind
+  rebinding is not performed: an explicit supersede is propagated only when the
+  caller requests one, and then only after the current-originals check.
 
 ## Verification scope
 
@@ -82,7 +103,17 @@ collision, already-paired rows, normalized derived claims, duplicate and
 ambiguous candidates, complete population/provenance drift, source isolation,
 idempotent replanning and refusal without input mutation. The store suite adds
 the publication path (originals byte-identical, canonical plan stored, drift
-refused without supersede). The adoption suite drives the shared pass and the
+refused without supersede, and that a supersede that was requested propagates
+onto the managed request while an unrequested one does not). The completion
+suite (`test/preserved-fence-completion.test.ts`, unmanaged and managed,
+PGLite and Postgres) covers: the atomic version-bound completion with literal
+originals; pre-existing unrelated source-config, completion-key, page, fact and
+stored-document drift each refusing with the stamp and every stored row
+unchanged; a concurrent source/page/fact edit committed between planning and
+apply refusing without rebinding; dry-run and last-phase abort advancing
+nothing; and a post-stamp storage failure rolling the source, the documents and
+the original-row changes back together while the run reports
+`stamp_write_failed`. The adoption suite drives the shared pass and the
 migration's own phases over real originals. Pure planning is not publication
 crash/recovery proof: the freeze, the protected build and the strict
 delta/native rehearsal remain required.

@@ -318,8 +318,17 @@ export function derivedFenceOf(publication: PreservedFencePublication) {
  * transaction (unmanaged) or inside a coordinator apply (managed): the caller
  * owns the transaction, this only writes the one row.
  */
-async function writePublicationRow(tx: BrainEngine, sourceId: string, slug: string,
-  publication: PreservedFencePublication): Promise<void> {
+export async function writePublicationRow(tx: BrainEngine, sourceId: string, slug: string,
+  publication: PreservedFencePublication, opts: { versionExisting?: boolean } = {}): Promise<void> {
+  if (opts.versionExisting) {
+    const previous = await readPreservedFencePublication(tx, sourceId, slug);
+    if (previous) await tx.executeRaw(
+      `INSERT INTO raw_data (page_id, source, data)
+       SELECT id, $3, $4::text::jsonb FROM pages WHERE source_id = $1 AND slug = $2
+       ON CONFLICT (page_id, source) DO NOTHING`,
+      [sourceId, slug, `${PRESERVED_FENCE_SOURCE}:version:${sha256(stableJson(previous))}`, JSON.stringify(previous)],
+    );
+  }
   const written = await tx.executeRaw<{ id: number }>(
     `INSERT INTO raw_data (page_id, source, data)
      SELECT id, $3, $4::text::jsonb FROM pages WHERE source_id = $1 AND slug = $2
@@ -380,7 +389,7 @@ export async function publishPreservedFencePublication(engine: BrainEngine, sour
       // Re-check under the transaction: the plan must still be the plan of the
       // originals as they are inside the write, or nothing is written.
       await assertPublicationIsCurrent(tx, sourceId, slug, publication);
-      await writePublicationRow(tx, sourceId, slug, publication);
+      await writePublicationRow(tx, sourceId, slug, publication, { versionExisting: superseded });
     });
     return { published: true, wrote: true, path: 'unmanaged', ...base };
   }
@@ -389,6 +398,7 @@ export async function publishPreservedFencePublication(engine: BrainEngine, sour
     `Source ${sourceId} did not grant this caller a maintenance authority, so the derived document for ${slug} was not published. Nothing changed; the original facts and page are untouched.`);
   const intent = { kind: PUBLISH_PRESERVED_FENCE_INTENT, expected_revision: originals.pageRevision,
     publication: publication as unknown as Record<string, unknown>,
+    ...(opts.allowSupersede === true ? { supersede: true } : {}),
     source_incarnation: authority.writer.sourceIncarnation };
   for (let attempt = 0; ; attempt++) {
     const requestId = maintenanceRequestId(sourceId, slug, intent, attempt);
@@ -468,7 +478,7 @@ export async function preparePreservedFencePublication(unbounded: BrainEngine, r
     validate: async tx => { await recheck(tx); await core?.validate(tx); },
     apply: async tx => {
       await recheck(tx);
-      await writePublicationRow(tx, row.source_id, row.slug, publication);
+      await writePublicationRow(tx, row.source_id, row.slug, publication, { versionExisting: intent?.supersede === true });
       await core?.record(tx, snapshot.revision);
       return { status: 'completed', published: true, bindings: publication.bindings.length,
         derived_body_sha256: sha256(publication.derived_body) };

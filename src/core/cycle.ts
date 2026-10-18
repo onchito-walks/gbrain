@@ -60,6 +60,7 @@ import { acquireLeaseSet, maintenanceLockBusySkip, MAINTENANCE_LEASE_ID } from '
 import { assertEmbedNotStalled } from './embed-stall.ts'; import { embedBackfillFix } from './embed-consent.ts';
 import { anyAbortSignal } from './abort-signals.ts';
 import { maybeRefreshPlannerStats } from './planner-stats.ts';
+import { completeSourceCycle } from './cycle/preserved-fence-completion.ts';
 
 export { PHASE_SCOPE, SOURCE_FRESHNESS_PHASES, type PhaseScope } from './cycle/phase-scope.ts';
 export { anyAbortSignal } from './abort-signals.ts';
@@ -3133,10 +3134,7 @@ export async function runCycle(
       // phases (those gate on autopilot.last_global_at), so writing it on a
       // source-only cycle does not re-introduce the freshness poisoning codex
       // flagged in the rejected skip-based design.
-      await engine.updateSourceConfig(opts.sourceId, {
-        last_source_cycle_at: nowIso,
-        last_full_cycle_at: nowIso,
-      });
+      await completeSourceCycle(engine, opts.sourceId, nowIso);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       // Record it so `--json` consumers and the autopilot runner can see it.
