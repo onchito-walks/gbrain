@@ -37,6 +37,7 @@ import { companyBrainProfile } from '../company-brain/profile.ts';
 import { companyBrainPolicyFingerprint } from '../company-brain/policy.ts';
 import { isUnboundSourcePage, UNBOUND_COLLISION_MESSAGE } from './unbound-source.ts';
 import { checkpointRetryCommand, findIncompleteSyncReceipt } from './checkpoint-validation.ts';
+import { logManagedSyncIngest, type ManagedSyncIngestCursor } from './sync-ingest.ts';
 import { frontmatterSlugConflictMessage } from './verb-errors.ts';
 import { chunkerStamp } from '../chunkers/code.ts';
 import { clearGitHold, countGitHolds, recordSyncImportProvenance } from './sync-holds.ts';
@@ -400,7 +401,7 @@ export async function prepareManagedSyncMutation(unbounded: BrainEngine, row: Wr
     }
   };
   if (p.kind === 'managed_sync_checkpoint') return { sourceExclusive: true, observedRevision: null, validate, apply: async tx => {
-    const [cursor] = await tx.executeRaw<{ completed_keys: [{ runId: string; index: number; total: number }] }>(
+    const [cursor] = await tx.executeRaw<{ completed_keys: [ManagedSyncIngestCursor & { runId: string; index: number; total: number }] }>(
       "SELECT completed_keys FROM op_checkpoints WHERE op='managed-sync' AND fingerprint=$1 FOR UPDATE", [p.cursorKey]);
     if (!cursor || cursor.completed_keys[0].runId !== p.runId || cursor.completed_keys[0].index !== p.total || cursor.completed_keys[0].total !== p.total) {
       throw syncPublicationRefusal('revision_conflict', 'The sync cursor is not fully committed.', row, p,
@@ -427,6 +428,7 @@ export async function prepareManagedSyncMutation(unbounded: BrainEngine, row: Wr
     if (settled && (p.from === null || p.syncOptions?.full === true)) await tx.executeRaw('UPDATE sources SET chunker_version=$2 WHERE id=$1', [row.source_id, chunkerStamp()]);
     await tx.executeRaw("UPDATE op_checkpoints SET completed_keys=jsonb_set(completed_keys,'{0,done}','true'::jsonb),updated_at=now() WHERE op='managed-sync' AND fingerprint=$1", [p.cursorKey]);
     for (const path of p.releasedHolds ?? []) await releaseHold(tx, path);
+    await logManagedSyncIngest(tx, row, p, cursor.completed_keys[0]);
     return { status: 'synced', source_id: row.source_id, committed_pages: p.total };
   } };
   const source = { sourceId: row.source_id };
