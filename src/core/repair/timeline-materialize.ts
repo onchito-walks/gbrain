@@ -198,7 +198,7 @@ export async function prepareTimelineMaterialize(engine: BrainEngine, row: Write
   }
   const preimage = await materializationPreimage(engine, row, plan);
   const prepared = await preparePageMutation(engine, { ...row, operation: 'put_page',
-    intent: { kind: 'managed_maintenance_page', content: plan.content, expected_revision: snapshot.revision } }, config);
+    intent: { kind: 'managed_maintenance_page', content: plan.content, expected_revision: snapshot.revision } }, config, undefined, undefined, { preserveStoredBody: true });
   // Defense in depth: no worktree is bound (submitDatabaseMaintenanceIntent), so preparation stages no file; a target here would mean a filesystem effect this lane must never have.
   if (prepared.file) {
     throw opError('storage_error', 'The database-only timeline lane prepared a file target.',
@@ -217,13 +217,11 @@ export async function prepareTimelineMaterialize(engine: BrainEngine, row: Write
  * ordinary path).
  */
 export async function publishExcludedTimelineMaterialization(engine: BrainEngine, slug: string, sourceId: string,
-  snapshot: PageSnapshot): Promise<number | null> {
+  snapshot: PageSnapshot, requestId: string): Promise<number | null> {
   const authority = await maintenancePreflight(engine, sourceId);
   if (!authority) return null;
   const plan = await planTimelineMaterialization(engine, slug, sourceId, snapshot);
-  const requestId = digest([TIMELINE_MATERIALIZE_INTENT, sourceId, slug, snapshot.revision]);
-  const key = `${requestId.slice(0, 8)}-${requestId.slice(8, 12)}-4${requestId.slice(13, 16)}-a${requestId.slice(17, 20)}-${requestId.slice(20, 32)}`;
   const receipt = await submitDatabaseMaintenanceIntent(engine, authority, slug,
-    { kind: TIMELINE_MATERIALIZE_INTENT, expected_revision: snapshot.revision, preimage_digest: plan.preimage_digest }, key);
+    { kind: TIMELINE_MATERIALIZE_INTENT, expected_revision: snapshot.revision, preimage_digest: plan.preimage_digest }, requestId);
   return Number(receipt.timeline_materialized ?? 0);
 }

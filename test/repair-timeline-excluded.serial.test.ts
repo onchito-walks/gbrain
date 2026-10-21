@@ -51,7 +51,7 @@ afterAll(async () => {
 const ctxFor = (sourceId: string) => ({ engine, sourceId, remote: false as const, config: { engine: engine.kind, embedding_disabled: true },
   dryRun: false, logger: { info() {}, warn() {}, error() {} } }) as never;
 const config = () => ({ engine: engine.kind, embedding_disabled: true }) as never;
-const BODY = 'A legacy receipt body that sync never indexed because its root is excluded from the brain\'s scope.';
+const BODY = 'A legacy receipt body that sync never indexed because its root is excluded from the brain\'s scope.\n';
 
 function tree(root: string): Array<{ path: string; bytes: string }> {
   const walk = (dir: string): Array<{ path: string; bytes: string }> => readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))
