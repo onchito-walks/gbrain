@@ -55,7 +55,11 @@ export async function legacySlugLifecycle(databaseUrl?: string, opts: { sourcePa
 export async function legacySlugRefusals(databaseUrl?: string) {
   await managedBrain(async ({ engine, ctx }) => {
     const revision = await revisionOf(engine, LEGACY);
-    expect(await refusal(mutate(ctx, 'put_page', { slug: LEGACY, content: VAULT_BYTES, expected_revision: revision }))).toBe('invalid_params');
+    // An update of the exact existing row is admitted (repair visibility), but
+    // database-only: the slug still opens no file and no new page below.
+    const updated = (await mutate(ctx, 'put_page', { slug: LEGACY, content: VAULT_BYTES, expected_revision: revision })).outcome;
+    expect(updated.write_through).toMatchObject({ written: false });
+    expect(await refusal(mutate(ctx, 'put_page', { slug: 'people/john doe', content: VAULT_BYTES }))).toBe('invalid_params');
     expect(await refusal(mutate(ctx, 'edit_page', { slug: LEGACY, edits: [{ old: 'Jane', new: 'J' }], expected_revision: revision }))).toBe('invalid_params');
     expect(await refusal(mutate(ctx, 'delete_page', { slug: 'people/john doe', expected_revision: revision }))).toBe('invalid_params');
     expect(await refusal(mutate(ctx, 'delete_page', { slug: LEGACY, source_id: 'archive', expected_revision: revision }))).toBe('invalid_params');
