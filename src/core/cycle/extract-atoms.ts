@@ -1235,6 +1235,11 @@ export async function runPhaseExtractAtoms(
             {
               atom_type: atom.atom_type,
               ...originFrontmatter,
+              // Raw trace (raw_provenance, #1978): the page or transcript file
+              // this atom was actually distilled from. Stamped at write time so
+              // a derived page is never born without a trace; source_slug /
+              // source_path alone are binding keys, not evidence of origin.
+              raw_source: srcRef,
               // Provisional until the whole item's atoms persist (see above).
               source_hash: `pending:${hash16}`,
               visibility, ...(origin ? { managed_extraction: true } : {}),
