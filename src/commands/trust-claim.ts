@@ -15,7 +15,7 @@ import type { BrainEngine } from '../core/engine.ts';
 import { jsonRequested, writeStdoutFinal } from '../core/cli-force-exit.ts';
 import { opError } from '../core/ops/contract.ts';
 import {
-  claimSourcesFix, connectorRefusal, liftClaimedSources, listClaimSources, recordSourceClaims,
+  claimSourcesFix, connectorRefusal, externalDefaultRefusal, liftClaimedSources, listClaimSources, recordSourceClaims,
   type ClaimLiftReport, type ClaimSource,
 } from '../core/trust/claim.ts';
 import { promptTypedConfirmation } from '../core/trust/confirm.ts';
@@ -39,6 +39,7 @@ const mix = (counts: TierCounts | undefined) =>
 function describe(s: ClaimSource): string[] {
   const where = s.local_path ?? s.remote_url ?? 'no local path';
   const state = s.blocker === 'connector' ? `${s.kind} connector: cannot be claimed`
+    : s.blocker === 'external_default' ? 'explicitly "external, untrusted" by default: cannot be claimed'
     : s.blocker === 'archived' ? 'archived' : s.pending ? 'claimed; lift not finished (gbrain trust claim-sources --resume)'
       : s.claimed ? 'claimed' : s.blocker === 'no_legacy_rows' ? 'nothing to lift' : `${s.legacy_unknown} legacy row(s) with unverified origin`;
   return [
@@ -94,6 +95,7 @@ export async function runTrustClaimSources(engine: BrainEngine, args: string[], 
       const s = listing.sources.find(x => x.id === id);
       if (!s) throw opError('unknown_source', `Source "${id}" does not exist.`, 'List sources with gbrain trust claim-sources --dry-run.');
       if (s.blocker === 'connector') throw connectorRefusal(id, s.kind ?? 'connector');
+      if (s.blocker === 'external_default') throw externalDefaultRefusal(id);
     }
     const asked = listing.sources.filter(s => s.claimable && (named.length === 0 || named.includes(s.id)));
     if (!json) console.log(['Your sources:', ...listing.sources.filter(s => named.length === 0 || named.includes(s.id)).flatMap(describe)].join('\n'));

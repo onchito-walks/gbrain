@@ -8,6 +8,10 @@
  * - the row's source is a connector source (`sources.config.kind` google or
  *   github): external_untrusted (connector free text is attacker-controllable;
  *   legacy rows cannot tell structured fields apart);
+ * - the row's source is explicitly external by default (`sources.config.trust_tier`
+ *   exactly external_untrusted, the `sources set-trust` default): external_untrusted.
+ *   That declaration is evidenced provenance, so it lowers every legacy row of the
+ *   source and keeps a claim from relabeling it as the owner's own notes;
  * - pages.source_kind: webhook / file-watcher / inbox-folder / cron-scheduler
  *   (ingestion captures) external_untrusted; mcp:* / put_page / capture-cli
  *   agent_written;
@@ -43,7 +47,7 @@ import { withCoordinatedWrite, withTrustBackfill } from '../persistence/context.
 import { maintenanceAttribution } from '../persistence/attribution.ts';
 import { readManagedMode } from '../persistence/managed-mode.ts';
 import { frontmatterTrustCapsSql } from './channel.ts';
-import { claimedSourceSql, legacyRowSql, notConnectorSourceSql, readLegacyCeilings, type LegacyCeilings } from './claim-state.ts';
+import { claimedSourceSql, externalSourceDefaultSql, legacyRowSql, notConnectorSourceSql, readLegacyCeilings, type LegacyCeilings } from './claim-state.ts';
 import { TRUST_BACKFILL_COMPLETED_KEY, type TrustTable } from './schema.ts';
 import { TRUST_TIER_RANK, TRUST_TIERS, isTrustTier, trustRankSql, trustTierFromRankSql, type TrustTier } from './tier.ts';
 
@@ -68,6 +72,8 @@ export interface TrustBackfillOptions {
    * backfill completion stamp.
    */
   sources?: readonly string[];
+  /** A scoped CLI backfill is classification, not an ownership claim. Existing claim-lift callers retain their default. */
+  claim?: boolean;
   /** Dry run only: project these sources as if claimed. */
   assumeClaimed?: readonly string[];
 }
@@ -136,6 +142,16 @@ function classifier(cols: Columns, assumeClaimed: readonly string[] = [], ceilin
     signals.add('connector_source');
     return `CASE WHEN ${sourceAlias}.config->>'kind' IN (${quoted(CONNECTOR_SOURCE_KINDS)}) THEN ${rank('external_untrusted')} END`;
   };
+  /**
+   * The source's explicit per-source default (`sources set-trust`), one signal:
+   * only `external_untrusted` lowers here (a declared-own default never lifts a
+   * backfill, and every other tier is no signal at all).
+   */
+  const sourceDefault = (sourceAlias: string) => {
+    if (!cols.has('sources', 'config')) return null;
+    signals.add('source_trust_default');
+    return `CASE WHEN ${externalSourceDefaultSql(sourceAlias)} THEN ${rank('external_untrusted')} END`;
+  };
   const requests = cols.has('persistence_requests', 'operation') && cols.has('persistence_requests', 'intent') && cols.has('persistence_requests', 'authority');
   const request = (r: string) => {
     if (!requests) return null;
@@ -155,6 +171,7 @@ function classifier(cols: Columns, assumeClaimed: readonly string[] = [], ceilin
   const pageTerms = (p: string, s: string, r: string): string[] => {
     const terms: string[] = [];
     const c = connector(s); if (c) terms.push(c);
+    const d = sourceDefault(s); if (d) terms.push(d);
     if (cols.has('pages', 'source_kind')) {
       signals.add('pages_source_kind');
       terms.push(`CASE WHEN ${p}.source_kind IN ('webhook','file-watcher','inbox-folder','cron-scheduler') THEN ${rank('external_untrusted')}
@@ -199,6 +216,7 @@ function classifier(cols: Columns, assumeClaimed: readonly string[] = [], ceilin
     if (table === 'facts') {
       const terms: string[] = [];
       const c = connector('s'); if (c) terms.push(c);
+      const d = sourceDefault('s'); if (d) terms.push(d);
       const own = claimTerm('s', 'facts', 'x'); if (own) terms.push(own);
       if (cols.has('facts', 'source')) {
         signals.add('facts_source_lane');
@@ -214,7 +232,8 @@ function classifier(cols: Columns, assumeClaimed: readonly string[] = [], ceilin
       };
     }
     const terms: string[] = [pageTaint('pg', 'ps', 'pr')];
-    if (cols.has('sources', 'config')) terms.push(`CASE WHEN ps.config->>'kind' IN (${quoted(CONNECTOR_SOURCE_KINDS)}) THEN ${rank('external_untrusted')} END`);
+    const c = connector('ps'); if (c) terms.push(c);
+    const d = sourceDefault('ps'); if (d) terms.push(d);
     const own = claimTerm('ps', table, 'x'); if (own) terms.push(own);
     if (table === 'takes' && cols.has('takes', 'source')) {
       signals.add('takes_source');
@@ -309,9 +328,10 @@ export async function runTrustBackfill(engine: BrainEngine, opts: TrustBackfillO
   const managedBrain = await readManagedMode(engine);
   const attribution = await maintenanceAttribution(engine);
   const scoped = opts.sources !== undefined;
-  const op = scoped ? CLAIM_CHECKPOINT_OP : CHECKPOINT_OP;
+  const claiming = scoped && opts.claim !== false;
+  const op = claiming ? CLAIM_CHECKPOINT_OP : CHECKPOINT_OP;
   const key = scoped ? claimCursorKey(opts.sources!) : CHECKPOINT_KEY;
-  const origin = JSON.stringify({ channel: scoped ? 'trust_claim' : 'trust_backfill' });
+  const origin = JSON.stringify({ channel: claiming ? 'trust_claim' : 'trust_backfill' });
   const cursor = opts.resume || scoped ? await readCursor(engine, op, key) : {};
   const tables: TrustBackfillTableReport[] = [];
   for (const table of BACKFILL_ORDER) {
@@ -334,7 +354,7 @@ export async function runTrustBackfill(engine: BrainEngine, opts: TrustBackfillO
       after = ids[ids.length - 1]!;
       cursor[table] = after;
       await saveCursor(engine, cursor, op, key);
-      log(`[trust ${scoped ? 'claim' : 'backfill'}] ${table}: ${updated} row(s) classified, through id ${after}`);
+      log(`[trust ${claiming ? 'claim' : 'backfill'}] ${table}: ${updated} row(s) classified, through id ${after}`);
     }
     tables.push({ table, rows: 0, projected: zero(), updated });
   }

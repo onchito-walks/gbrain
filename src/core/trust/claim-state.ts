@@ -47,8 +47,24 @@ export function claimPendingSql(alias: string): string {
   return `(${claimedSourceSql(alias)} AND NOT (${alias}.config ? '${TRUST_CLAIM_LIFTED_AT_KEY}'))`;
 }
 
+/** The one per-source default that is evidenced provenance, not a guess: a mirror of third-party text (`sources set-trust`). */
+export const EXTERNAL_SOURCE_DEFAULT = 'external_untrusted';
+
+/** SQL predicate: the `sources` row aliased `alias` is explicitly external, untrusted by default. `alias` is a trusted alias. */
+export function externalSourceDefaultSql(alias: string): string {
+  return `${alias}.config->>'trust_tier' = '${EXTERNAL_SOURCE_DEFAULT}'`;
+}
+
 export function isConnectorConfig(config: Record<string, unknown> | null | undefined): boolean {
   return (CONNECTOR_SOURCE_KINDS as readonly unknown[]).includes(config?.kind);
+}
+
+/**
+ * The source's config declares it external by default: its text is third
+ * party, so a claim must not relabel it as the owner's own notes.
+ */
+export function isExternalDefaultConfig(config: Record<string, unknown> | null | undefined): boolean {
+  return config?.trust_tier === EXTERNAL_SOURCE_DEFAULT;
 }
 
 export function isClaimedConfig(config: Record<string, unknown> | null | undefined): boolean {

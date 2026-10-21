@@ -15,14 +15,16 @@ import type { TrustBackfillReport } from '../../core/trust/backfill.ts';
 import type { CliDispatchContext } from '../command-table.ts';
 import { TRUST_OWNER_USAGE, isTrustOwnerSubcommand, localTrustBackend, reportTrustCliError, runTrustOwnerCommand } from '../../commands/trust.ts';
 import { TRUST_CLAIM_USAGE } from '../../commands/trust-claim.ts';
+import { validateSourceId } from '../../core/utils.ts';
 
 export const TRUST_BACKFILL_USAGE = [
-  'Usage: gbrain trust backfill [--dry-run] [--resume] [--batch-size N] [--json]',
+  'Usage: gbrain trust backfill [--source <id>]... [--dry-run] [--resume] [--batch-size N] [--json]',
   '  Classifies rows written before trust tiers (facts, takes, timeline entries, pages) from deterministic signals:',
   '  connector sources, page source_kind, transcript/extraction/dream provenance, facts and takes source tags, and',
   '  the journaled request that wrote the row. Rows with no signal stay "unverified origin"; nothing becomes',
   '  "confirmed by you". --dry-run is read-only (no migrations, no writes) and works before the trust migration;',
   '  it reports the projected count per table and tier. --resume continues an interrupted run.',
+  '  --source limits classification to the named source(s), without claiming ownership or stamping global completion.',
   '',
   'Usage: gbrain trust scan [--batch-size N] [--json]',
   '  Runs the write gate\'s deterministic detector over agent-written and lower rows written before the gate,',
@@ -80,6 +82,20 @@ export async function run(engine: BrainEngine, args: string[], ctx: CliDispatchC
     return;
   }
   const dryRun = rest.includes('--dry-run');
+  const sources: string[] = [];
+  for (let i = 0; i < rest.length; i++) {
+    if (rest[i] !== '--source') continue;
+    const id = rest[++i];
+    if (sub !== 'backfill' || !id || id.startsWith('-')) {
+      await refuse(args, '--source needs an existing source id and is supported only by trust backfill.', 'Run gbrain trust backfill --source readwise --dry-run.');
+      return;
+    }
+    try { validateSourceId(id); }
+    catch { await refuse(args, 'Invalid source id.', 'Use the exact id shown by gbrain sources list.'); return; }
+    const [source] = await engine.executeRaw('SELECT id FROM sources WHERE id=$1', [id]);
+    if (!source) { await refuse(args, `Source "${id}" does not exist.`, 'Use the exact id shown by gbrain sources list.'); return; }
+    sources.push(id);
+  }
   const sizeAt = rest.indexOf('--batch-size');
   const batchSize = sizeAt >= 0 ? Number(rest[sizeAt + 1]) : undefined;
   if (batchSize !== undefined && (!Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize > 100_000)) {
@@ -100,7 +116,8 @@ export async function run(engine: BrainEngine, args: string[], ctx: CliDispatchC
   }
   if (!dryRun) await ctx.completeStartup?.(engine);
   const { runTrustBackfill } = await import('../../core/trust/backfill.ts');
-  const report = await runTrustBackfill(engine, { dryRun, resume: rest.includes('--resume'), ...(batchSize ? { batchSize } : {}) });
+  const report = await runTrustBackfill(engine, { dryRun, resume: rest.includes('--resume'), ...(batchSize ? { batchSize } : {}),
+    ...(sources.length ? { sources: [...new Set(sources)], claim: false } : {}) });
   if (jsonRequested(args)) await writeStdoutFinal(`${JSON.stringify(report, null, 2)}\n`);
   else console.log(render(report));
 }
