@@ -104,7 +104,8 @@ export const timelineRepair: RepairHandler = {
     // A page under an excluded root records no canonical file: put_page is refused there by design (B02),
     // so its stored rows are materialized by the database-only maintenance lane instead.
     if (await isExcludedDatabaseOnlyPage(ctx.engine, item.slug, item.source_id, snapshot)) {
-      const materialized = await publishExcludedTimelineMaterialization(ctx.engine, item.slug, item.source_id, snapshot);
+      const materialized = await publishExcludedTimelineMaterialization(ctx.engine, item.slug, item.source_id, snapshot,
+        await repairRequestId(ctx, 'timeline', item, snapshot.revision));
       if (materialized !== null) return true;
     }
     await submitPageMutation(ctx, { operation: 'put_page', params: { slug: item.slug, source_id: item.source_id,

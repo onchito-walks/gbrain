@@ -319,7 +319,7 @@ function preserveRemoteProtectedFences(content: string | undefined, row: WriteRe
  */
 export async function preparePageMutation(unbounded: BrainEngine, row: WriteRequest, _config: GBrainConfig,
   preparedIntent?: { content: string; expectedRevision: string; tags?: string[] }, signal?: AbortSignal,
-  options: { allowMissingFile?: boolean; coordinated?: boolean; clock?: ClaimPhaseClock } = {}): Promise<PreparedMutation> {
+  options: { allowMissingFile?: boolean; coordinated?: boolean; clock?: ClaimPhaseClock; preserveStoredBody?: boolean } = {}): Promise<PreparedMutation> {
   signal?.throwIfAborted();
   const clock = options.clock;
   const engine = boundedReads(unbounded, clock);
@@ -472,6 +472,17 @@ export async function preparePageMutation(unbounded: BrainEngine, row: WriteRequ
     ...(gateTrust ? { writeGate: gateInput(gateTrust, row.id) } : {}),
     // Provenance compares the caller's page with the stored one, so it runs before the server's trust marker is stamped.
     prepareFrontmatter: page => {
+      // Internal timeline-only maintenance must not trim legacy body bytes.
+      // Restore them before hashes, chunks and projections are prepared, never
+      // by updating the stored page after publication. This is a code-only
+      // option, not an accepted request/intent field.
+      if (options.preserveStoredBody) {
+        if (row.authority.remote !== false || p.kind !== 'managed_maintenance_page' || !snapshot
+          || page.compiled_truth.trim() !== snapshot.page.compiled_truth.trim()) {
+          throw opError('invalid_params', 'Timeline-only preparation cannot replace the stored body.', 'No page was published.');
+        }
+        page.compiled_truth = snapshot.page.compiled_truth;
+      }
       provenance = putProvenance(row, snapshot, page);
       suppliedTrustMarker = page.frontmatter.trust_tier;
       stampPageTrustMarker(row, page.frontmatter, trust, storedTier);
