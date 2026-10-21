@@ -13,6 +13,7 @@ import { serializePageToMarkdown } from '../markdown.ts';
 import { pendingTimelineRows } from '../persistence/canonical-projections.ts';
 import { submitPageMutation } from '../persistence/page-mutations.ts';
 import { retractRemovedTimelineEntries, type StoredTimelineTuple } from '../timeline-extract.ts';
+import { isExcludedDatabaseOnlyPage, publishExcludedTimelineMaterialization } from './timeline-materialize.ts';
 import { repairRequestId, type RepairHandler, type RepairItem, type RepairScope, type RepairCursor } from './core.ts';
 
 interface TimelinePage { id: number; source_id: string; slug: string; compiled_truth: string; timeline: string | null }
@@ -100,6 +101,12 @@ export const timelineRepair: RepairHandler = {
     if (!snapshot) return false;
     const counts = await pendingTimelineRows(ctx.engine, { ...snapshot.page, timeline: snapshot.page.timeline ?? '' }, await removedRowIds(ctx.engine, snapshot.page));
     if (!counts.materializable) return false;
+    // A page under an excluded root records no canonical file: put_page is refused there by design (B02),
+    // so its stored rows are materialized by the database-only maintenance lane instead.
+    if (await isExcludedDatabaseOnlyPage(ctx.engine, item.slug, item.source_id, snapshot)) {
+      const materialized = await publishExcludedTimelineMaterialization(ctx.engine, item.slug, item.source_id, snapshot);
+      if (materialized !== null) return true;
+    }
     await submitPageMutation(ctx, { operation: 'put_page', params: { slug: item.slug, source_id: item.source_id,
       content: serializePageToMarkdown(snapshot.page, snapshot.tags), expected_revision: snapshot.revision,
       request_id: await repairRequestId(ctx, 'timeline', item, snapshot.revision) } });
