@@ -553,6 +553,26 @@ than the preview also refuses with `preview_changed`. Doctor
 `atom_provenance_drift` names this command when drift crosses its warn
 threshold.
 
+### Atom extraction backlog
+
+Doctor's `extract_atoms_backlog` check counts pages eligible for atom
+extraction that have no atom yet. When the active schema pack does not declare
+`extract_atoms` and the operator has stated the absence is deliberate
+(`gbrain config set cycle.extract_atoms.enabled false`, the explicit "no" to
+the paid phase, or `gbrain config set autopilot.auto_drain.enabled false`, which
+turns off the only automatic atom-extraction lane), the check reports `ok`
+with the pending count as deferred by policy. It is not a warning: nothing is
+extracting those pages by choice. The message names the policy key and the
+on-demand drain command
+(`gbrain dream --phase extract_atoms --drain --source <id> --window 120`,
+paid).
+
+Without either policy statement the same backlog above ten pages warns, because
+nothing else signals it. A pack that *declares* `extract_atoms` always keeps
+the warning: pending pages there mean its cycle or drain is not running, and
+the check names the missing stamp. Neither form changes
+`atom_provenance_drift`; provenance is a separate check.
+
 ### Extractor facts
 
 A managed write by a gbrain older than v0.60.11.0 to a conversation page

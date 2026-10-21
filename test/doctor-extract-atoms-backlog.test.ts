@@ -346,3 +346,105 @@ describe('computeExtractAtomsBacklogCheck — declared branch verifies a runner 
     expect(check.message).toContain('no full cycle has ever completed');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Policy-aware absence: an explicit operator policy turns a real backlog on an
+// undeclared phase into ok/info (deferred, counted) instead of the #1678 warn.
+// A declaring pack keeps its warning: the phase is enabled, so pending pages
+// still mean its runner is not draining them.
+// ---------------------------------------------------------------------------
+
+describe('computeExtractAtomsBacklogCheck — deferred by policy', () => {
+  beforeEach(() => {
+    _resetPackLocatorForTests();
+    _resetPackCacheForTests();
+  });
+
+  afterAll(() => {
+    _resetPackLocatorForTests();
+    _resetPackCacheForTests();
+  });
+
+  it('OK+info with the pending count when paid extraction is explicitly off', async () => {
+    for (let i = 0; i < 12; i++) await seedArticle(`policy-off-${i}`);
+    await engine.setConfig('cycle.extract_atoms.enabled', 'false');
+    const check = await withEnv({ GBRAIN_HOME: EMPTY_HOME, GBRAIN_SCHEMA_PACK: undefined }, () =>
+      computeExtractAtomsBacklogCheck(engine));
+    expect(check.status).toBe('ok');
+    expect(check.severity).toBe('info');
+    expect(check.readiness_state).toBe('disabled_by_choice');
+    expect(check.message).toContain('12 page(s) pending atom extraction, deferred by policy');
+    expect(check.message).toContain('cycle.extract_atoms.enabled=false');
+    expect(check.message).toContain('gbrain dream --phase extract_atoms --drain --source default --window 120');
+    // No growth claim: the policy is the reason, not measured backlog motion.
+    expect(check.message).not.toMatch(/growing|growth rate/i);
+    const d = check.details as {
+      backlog: number; pack_declares_phase: boolean; deferred_by_policy: boolean;
+      policy: { state: string; reason: string; key: string }; fix_hint: string; known_approximation: string;
+    };
+    expect(d.backlog).toBe(12);
+    expect(d.pack_declares_phase).toBe(false);
+    expect(d.deferred_by_policy).toBe(true);
+    expect(d.policy).toEqual({ state: 'deferred', reason: 'phase_disabled_by_config', key: 'cycle.extract_atoms.enabled' });
+    expect(d.fix_hint).toContain('--drain');
+    expect(d.known_approximation).toContain('page backlog only');
+  });
+
+  it('OK+info when automatic atom extraction is off by policy (auto_drain)', async () => {
+    for (let i = 0; i < 11; i++) await seedArticle(`policy-drain-off-${i}`);
+    await engine.setConfig('autopilot.auto_drain.enabled', 'false');
+    const check = await withEnv({ GBRAIN_HOME: EMPTY_HOME, GBRAIN_SCHEMA_PACK: undefined }, () =>
+      computeExtractAtomsBacklogCheck(engine));
+    expect(check.status).toBe('ok');
+    expect(check.severity).toBe('info');
+    expect(check.message).toContain('deferred by policy (autopilot.auto_drain.enabled=false)');
+    const d = check.details as { backlog: number; policy: { reason: string; key: string } };
+    expect(d.backlog).toBe(11);
+    expect(d.policy.reason).toBe('auto_drain_disabled');
+    expect(d.policy.key).toBe('autopilot.auto_drain.enabled');
+  });
+
+  it('no backlog stays the plain OK message even when the policy is off', async () => {
+    await engine.setConfig('cycle.extract_atoms.enabled', 'false');
+    const check = await withEnv({ GBRAIN_HOME: EMPTY_HOME, GBRAIN_SCHEMA_PACK: undefined }, () =>
+      computeExtractAtomsBacklogCheck(engine));
+    expect(check.status).toBe('ok');
+    expect(check.message).toBe('no pages awaiting atom extraction');
+    expect(check.severity).toBeUndefined();
+    expect((check.details as { backlog: number }).backlog).toBe(0);
+  });
+
+  it('an ENABLED phase with a backlog still WARNs when auto-drain is off', async () => {
+    _resetPackCacheForTests();
+    seedDeclaringPack();
+    for (let i = 0; i < 11; i++) await seedArticle(`enabled-policy-off-${i}`);
+    await seedCycledSource('vault'); // stampable source, no last_full_cycle_at
+    await engine.setConfig('autopilot.auto_drain.enabled', 'false');
+    const check = await withEnv(PACK_ENV, () => computeExtractAtomsBacklogCheck(engine));
+    expect(check.status).toBe('warn');
+    expect(check.message).toContain('no full cycle has ever completed');
+    expect((check.details as { pack_declares_phase: boolean }).pack_declares_phase).toBe(true);
+  });
+
+  it('an explicit phase opt-out defers even when a DB pack declares the phase awaiting consent', async () => {
+    for (let i = 0; i < 12; i++) await seedArticle(`policy-consent-off-${i}`);
+    await engine.setConfig('schema_pack', 'gbrain-creator');
+    await engine.setConfig('cycle.extract_atoms.enabled', 'false');
+    const check = await withEnv({ GBRAIN_HOME: EMPTY_HOME, GBRAIN_SCHEMA_PACK: undefined }, () =>
+      computeExtractAtomsBacklogCheck(engine));
+    expect(check.status).toBe('ok');
+    expect(check.severity).toBe('info');
+    expect(check.message).toContain('cycle.extract_atoms.enabled=false');
+    expect(check.message).not.toContain('gbrain config set cycle.extract_atoms.enabled true');
+  });
+
+  it('auto-drain off alone does NOT mask a declaring pack awaiting consent', async () => {
+    for (let i = 0; i < 12; i++) await seedArticle(`policy-consent-drain-${i}`);
+    await engine.setConfig('schema_pack', 'gbrain-creator');
+    await engine.setConfig('autopilot.auto_drain.enabled', 'false');
+    const check = await withEnv({ GBRAIN_HOME: EMPTY_HOME, GBRAIN_SCHEMA_PACK: undefined }, () =>
+      computeExtractAtomsBacklogCheck(engine));
+    expect(check.status).toBe('warn');
+    expect(check.message).toContain('gbrain config set cycle.extract_atoms.enabled true');
+  });
+});

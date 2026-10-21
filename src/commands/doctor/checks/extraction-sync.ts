@@ -41,6 +41,7 @@ import {
 import { connectorAuthorities } from '../../../core/persistence/connector-authority.ts';
 import { parseSourceConfig } from '../../../core/sources-load.ts';
 import { checkError } from '../check-fix.ts';
+import { buildExtractAtomsDeferredCheck, resolveExtractAtomsDeferralPolicy } from './extract-atoms-backlog-policy.ts';
 import { haltReasonsWithUnknown, readRecordedHaltReasons7d, topHaltReason } from '../../../core/extract/rollup-writer.ts';
 
 /** Local aliases; the shared warn-once memo lives in core so it can't fork per module. */
@@ -729,6 +730,25 @@ export async function computeExtractAtomsBacklogCheck(
         message: 'no pages awaiting atom extraction',
         details: { backlog, pack_declares_phase: declared, known_approximation: approx },
       };
+    }
+
+    // Policy-aware absence: explicit operator policy (the phase opted out, or
+    // automatic extraction off) makes pending pages a deferred queue, not an
+    // unobserved leak — ok/info with the count and the on-demand drain. With
+    // no policy stated, the #1678 warning below is unchanged.
+    if (!declared) {
+      const gateReason = (gate as { reason?: string }).reason;
+      const policy = await resolveExtractAtomsDeferralPolicy(engine, {
+        packDeclaresPhase: gate.declared,
+        packResolutionFailed: gateReason === 'pack_resolution_failed',
+      });
+      if (policy.deferred) {
+        const backlogBySource = await countExtractAtomsBacklogBySource(engine, countExtractAtomsBacklog, opts.sourceIds);
+        return buildExtractAtomsDeferredCheck({
+          backlog, backlogBySource, policy, approx,
+          drain: buildExtractAtomsDrainCommand(backlogBySource),
+        });
+      }
     }
 
     // The incident: pack does NOT run the phase but a real backlog exists →
