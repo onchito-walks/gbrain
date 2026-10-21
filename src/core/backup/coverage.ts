@@ -15,6 +15,7 @@
  */
 
 import { existsSync } from 'node:fs';
+import { isAbsolute, relative } from 'node:path';
 
 import { VERSION } from '../../version.ts';
 import type { BrainEngine } from '../engine.ts';
@@ -147,7 +148,7 @@ export async function computeBackupCoverage(
     && Number.isFinite(previousAge) && previousAge >= 0 && !isBackupStatusStale(opts.previousStatus, now.getTime())
     ? currentBackupEvidence(opts.previousStatus, now.getTime()) : undefined;
   const previousAssets = new Map(previous?.assets.map(a => [`${a.kind}:${a.id}`, a]));
-  const repositories: { root: string; index: number }[] = [];
+  const repositories: { root: string; index: number; scope?: string[] }[] = [];
 
   // ── Bootstrap workspace (carries skills/, memory/, brain/, identity) ──────
   let workspaceRoot: string | null = null;
@@ -197,7 +198,10 @@ export async function computeBackupCoverage(
       engine,
       rows.filter((r) => !r.archived).map((r) => ({ id: r.id, kind: parseSourceConfig(r.config).kind })),
     );
-    const byRoot = new Map<string, { ids: string[]; dbOnly: boolean }>();
+    // `paths` is the set of source subdirectories inside this git root, used to
+    // scope the dirty/clean probe to the source's own subtree. null = the root
+    // itself is (part of) the source, so the whole-repo verdict is correct.
+    const byRoot = new Map<string, { ids: string[]; dbOnly: boolean; paths: Set<string> | null }>();
     let skippedOverCap = 0;
     // Root discovery is itself a git subprocess — memoize per local_path, count
     // it against the probe cap, skip it entirely on probe-less runs (their
@@ -253,6 +257,13 @@ export async function computeBackupCoverage(
         }
       }
       if (root === workspaceRoot) continue; // the workspace asset above owns it
+      // discoverGitRoot returns the repository toplevel, which may be a PARENT
+      // of this source's directory. Measure the source's own subtree so an
+      // unrelated sibling folder's edits cannot mark a clean source dirty. A
+      // path that is not expressible relative to the root (or IS the root)
+      // keeps the whole-repo probe — a scope we cannot compute fails closed.
+      const rel = relative(realpathOrResolve(root), realpathOrResolve(row.local_path));
+      const rowScope = rel === '' || isAbsolute(rel) || rel.startsWith('..') ? null : rel;
       const entry = byRoot.get(root);
       let dbOnly = false;
       try {
@@ -263,8 +274,9 @@ export async function computeBackupCoverage(
       if (entry) {
         entry.ids.push(row.id);
         entry.dbOnly = entry.dbOnly || dbOnly;
+        entry.paths = entry.paths === null || rowScope === null ? null : entry.paths.add(rowScope);
       } else {
-        byRoot.set(root, { ids: [row.id], dbOnly });
+        byRoot.set(root, { ids: [row.id], dbOnly, paths: rowScope === null ? null : new Set([rowScope]) });
       }
       // db_only exposure rides as its own info asset (per source repo).
       if (dbOnly) {
@@ -287,8 +299,9 @@ export async function computeBackupCoverage(
 
     sourceRootCount = byRoot.size;
     let probed = 0;
-    for (const [root, { ids }] of byRoot) {
+    for (const [root, { ids, paths }] of byRoot) {
       const id = ids.join(', ');
+      const scope = paths ? [...paths] : undefined;
       if (!opts.localGitProbes) {
         pushAsset(assets, { kind: 'source_repo', id, state: 'unknown', detail: 'probes_skipped', fix_argv: null });
         continue;
@@ -300,8 +313,8 @@ export async function computeBackupCoverage(
       }
       probed++;
       await yieldLoop();
-      repositories.push({ root, index: assets.length });
-      pushAsset(assets, await assessBackupRepository(root, 'source_repo', id, now, undefined, previousAssets.get(`source_repo:${id}`)));
+      repositories.push({ root, index: assets.length, scope });
+      pushAsset(assets, await assessBackupRepository(root, 'source_repo', id, now, undefined, previousAssets.get(`source_repo:${id}`), scope));
     }
     if (skippedOverCap > 0) {
       process.stderr.write(
@@ -321,7 +334,7 @@ export async function computeBackupCoverage(
       return Number(left?.state === 'verified') - Number(right?.state === 'verified')
         || (Date.parse(left?.checked_at ?? '') || 0) - (Date.parse(right?.checked_at ?? '') || 0);
     });
-    for (const { root, index } of ordered) {
+    for (const { root, index, scope } of ordered) {
       const asset = assets[index];
       if (!budgetAllowsProbe(remoteBudget)) {
         if (asset.verification?.state !== 'verified') {
@@ -330,7 +343,7 @@ export async function computeBackupCoverage(
         continue;
       }
       await yieldLoop();
-      const probed = await assessBackupRepository(root, asset.kind as 'source_repo' | 'bootstrap_workspace', asset.id, now, remoteBudget);
+      const probed = await assessBackupRepository(root, asset.kind as 'source_repo' | 'bootstrap_workspace', asset.id, now, remoteBudget, undefined, scope);
       // A deferred probe (the slot closed between the pre-check and the call) keeps first-pass verified evidence; a real transport failure still supersedes it.
       assets[index] = probed.verification?.state === 'budget_exhausted' && asset.verification?.state === 'verified' ? asset : probed;
     }

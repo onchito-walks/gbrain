@@ -63,6 +63,25 @@ function repositoryFingerprint(root: string, origin: string, branch: string, hea
   ])).digest('hex');
 }
 
+/**
+ * A source may be a SUBDIRECTORY of a larger repository: `discoverGitRoot`
+ * returns the repository toplevel, so `root` can be a parent of the source
+ * directory. Bare `git status --porcelain` walks the WHOLE work tree, which
+ * made a clean source inherit an unrelated sibling folder's edits — dirty
+ * forever, and `stillClean` could never verify it. Scope the probe to the
+ * source's own subtree (literal pathspecs, so a directory name can never be
+ * read as pathspec magic). An absent/empty scope keeps the whole-repo verdict
+ * exactly as before: a scope we cannot express fails closed, never open.
+ */
+function pathspecArgs(scope?: string[]): string[] {
+  const specs = (scope ?? []).filter((p) => p.length > 0);
+  return specs.length === 0 ? [] : ['--', ...specs.map((p) => `:(literal)${p}`)];
+}
+
+function statusArgs(scope?: string[]): string[] {
+  return ['status', '--porcelain', ...pathspecArgs(scope)];
+}
+
 export async function assessBackupRepository(
   root: string,
   kind: 'source_repo' | 'bootstrap_workspace',
@@ -70,6 +89,7 @@ export async function assessBackupRepository(
   now: Date,
   budget?: RemoteProbeBudget,
   previous?: BackupAssetVerdict,
+  scope?: string[],
 ): Promise<BackupAssetVerdict> {
   const asset: BackupAssetVerdict = { kind, id, state: 'unknown', fix_argv: null, verification: { state: 'not_checked' } };
   try {
@@ -96,9 +116,12 @@ export async function assessBackupRepository(
     }
     const branch = git(root, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
     const head = git(root, ['rev-parse', '--verify', 'HEAD']);
-    const dirty = withoutPhysicalRootMetadata(git(root, ['status', '--porcelain'])).length > 0;
+    const dirty = withoutPhysicalRootMetadata(git(root, statusArgs(scope))).length > 0;
     let ahead: number | undefined;
-    try { ahead = Number(git(root, ['rev-list', '--count', `refs/remotes/origin/${branch}..HEAD`])); } catch {}
+    // Same subtree scoping as the dirty check: commits that touch only an
+    // unrelated sibling folder are not this source's unpushed work. A missing
+    // tracking ref still throws and falls through to the fail-closed paths.
+    try { ahead = Number(git(root, ['rev-list', '--count', `refs/remotes/origin/${branch}..HEAD`, ...pathspecArgs(scope)])); } catch {}
     asset.state = ahead && ahead > 0 ? 'unpushed' : dirty ? 'dirty' : 'ok';
     if (ahead && ahead > 0) { asset.ahead = ahead; asset.detail = `${ahead} commit(s) ahead of origin/${branch} (local tracking ref only)`; }
     else if (dirty) asset.detail = 'uncommitted changes';
@@ -153,7 +176,7 @@ export async function assessBackupRepository(
     }
     const stillClean = git(root, ['rev-parse', '--verify', 'HEAD']) === head
       && git(root, ['symbolic-ref', '--quiet', '--short', 'HEAD']) === branch
-      && withoutPhysicalRootMetadata(git(root, ['status', '--porcelain'])).length === 0
+      && withoutPhysicalRootMetadata(git(root, statusArgs(scope))).length === 0
       && git(root, ['remote', 'get-url', 'origin']) === origin
       && repositoryFingerprint(root, origin, branch, head) === fingerprint;
     asset.verification = { state: remoteHead === head && stillClean && !dirty ? 'verified' : 'mismatch', checked_at: now.toISOString(), local_commit: head, remote_commit: remoteHead, repository_fingerprint: fingerprint };
