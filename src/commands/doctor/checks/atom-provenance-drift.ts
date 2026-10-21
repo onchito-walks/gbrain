@@ -52,6 +52,10 @@ export interface AtomProvenanceDriftRow {
   total: string | number; slug_unbound: string | number; drifted: string | number;
   source_changed: string | number; source_gone: string | number;
   oldest_ext: string | null; quote_candidates: unknown;
+  /** Drifted atoms whose frozen `source_hash` is a recorded extraction-time page hash. */
+  historically_proven?: string | number;
+  /** Drifted atoms whose frozen hash no retained scan state can account for. */
+  unexplained?: string | number;
 }
 
 /**
@@ -61,7 +65,17 @@ export interface AtomProvenanceDriftRow {
  * The alias arm is a COALESCE-by-join (never an OR) so an atom whose exact slug
  * AND de-prefixed slug both exist cannot fan out.
  */
-export function atomProvenanceDriftQuery(): string {
+export function atomProvenanceDriftQuery(opts: { historicalProof?: boolean } = {}): string {
+  const proof = opts.historicalProof === true;
+  // Only splice the scan-state CTE when the caller verified the table exists;
+  // a brain without it keeps this query byte-identical to before.
+  const scanCte = proof ? `, scan_hashes AS MATERIALIZED (
+         -- Extraction-time page state: the hash the extractor actually SAW.
+         -- Retained history, never rewritten here (read-only evidence).
+         SELECT DISTINCT page_id, substring(content_hash from 1 for 16) AS sh
+           FROM extract_atoms_page_state
+          WHERE content_hash IS NOT NULL
+       )` : '';
   return `WITH atom AS (
          SELECT a.source_id,
                 -- managed atoms keep their provisional prefix for good (#5770)
@@ -95,10 +109,10 @@ export function atomProvenanceDriftQuery(): string {
            FROM pages WHERE deleted_at IS NULL AND content_hash IS NOT NULL
              AND ${quarantineFilterFragment('pages')}
        ), live_slugs AS MATERIALIZED (
-         SELECT DISTINCT source_id, slug FROM pages
+         SELECT source_id, slug, id FROM pages
           WHERE deleted_at IS NULL AND type <> 'atom'
             AND ${quarantineFilterFragment('pages')}
-       ), drift AS (
+       )${scanCte}, drift AS (
          SELECT atom.*,
                 -- a slug-unbound atom is never drift: its hash is over a file,
                 -- not a page, so the page probe is meaningless (#4806)
@@ -107,7 +121,16 @@ export function atomProvenanceDriftQuery(): string {
                 -- rename — SAME source_id, and non-atom only (a source is a
                 -- content page, never another atom). COALESCE-by-join, not an
                 -- OR that could fan an atom out when both slugs exist.
-                (s.slug IS NOT NULL OR sa.slug IS NOT NULL) AS src_alive
+                (s.slug IS NOT NULL OR sa.slug IS NOT NULL) AS src_alive,
+                -- HISTORICAL PROOF: the atom's frozen source_hash equals a page
+                -- content hash the extractor recorded for that very page. The
+                -- binding WAS real when the atom was written; the page has been
+                -- edited since. This is evidence from retained state, not a
+                -- rewrite of the atom's provenance.
+                ${proof
+                  ? `EXISTS (SELECT 1 FROM scan_hashes sc
+                              WHERE sc.page_id = COALESCE(s.id, sa.id) AND sc.sh = atom.sh)`
+                  : 'FALSE'} AS proven
            FROM atom
            LEFT JOIN live_hashes h ON h.source_id = atom.source_id AND h.sh = atom.sh
            LEFT JOIN live_slugs  s ON s.source_id = atom.source_id AND s.slug = atom.ss
@@ -118,6 +141,8 @@ export function atomProvenanceDriftQuery(): string {
        SELECT count(*) FILTER (WHERE ss IS NOT NULL) AS total,
               count(*) FILTER (WHERE ss IS NULL) AS slug_unbound,
               count(*) FILTER (WHERE drifted) AS drifted,
+              count(*) FILTER (WHERE drifted AND proven) AS historically_proven,
+              count(*) FILTER (WHERE drifted AND NOT proven) AS unexplained,
               count(*) FILTER (WHERE drifted AND src_alive) AS source_changed,
               -- drifted implies a slug binding, so "gone" is always a binding
               -- that failed to resolve — never a slug-unbound atom (#4799)

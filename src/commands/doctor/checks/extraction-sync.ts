@@ -889,7 +889,18 @@ export async function computeAtomProvenanceDriftCheck(
   const MIN_DRIFTED = 25;
   const WARN_RATIO = 0.1;
   try {
-    const rows = await engine.executeRaw<AtomProvenanceDriftRow>(atomProvenanceDriftQuery(), []);
+    // Historical proof needs the retained extraction-time page state. Only a
+    // brain that has it can distinguish "the page was edited after this atom
+    // was written" (provable) from "no retained state accounts for this
+    // binding" (unexplained). A brain without the table keeps the old
+    // verdict exactly.
+    let historicalProof = false;
+    try {
+      const [scan] = await engine.executeRaw<{ present: boolean }>(
+        "SELECT to_regclass('public.extract_atoms_page_state') IS NOT NULL AS present", []);
+      historicalProof = scan?.present === true;
+    } catch { historicalProof = false; }
+    const rows = await engine.executeRaw<AtomProvenanceDriftRow>(atomProvenanceDriftQuery({ historicalProof }), []);
     const r = rows?.[0];
     if (!r) return { name, status: 'warn', message: 'atom provenance query returned no rows', details: { health: 'unknown' } };
 
@@ -899,6 +910,11 @@ export async function computeAtomProvenanceDriftCheck(
     const drifted = num(r.drifted);
     const sourceChanged = num(r.source_changed);
     const sourceGone = num(r.source_gone);
+    // Atoms whose frozen hash IS a recorded extraction-time page hash: the
+    // binding was genuine when written and the page was edited afterwards.
+    // They stay reported, but they are evidence, not an unexplained defect.
+    const proven = historicalProof ? num(r.historically_proven) : 0;
+    const unexplained = historicalProof ? num(r.unexplained) : drifted;
     const oldestExtMs = r.oldest_ext ? new Date(String(r.oldest_ext)).getTime() : NaN;
     const oldestDays = Number.isFinite(oldestExtMs)
       ? Math.round(((Date.now() - oldestExtMs) / 86_400_000) * 10) / 10
@@ -923,6 +939,8 @@ export async function computeAtomProvenanceDriftCheck(
       quote_orphaned: quoteOrphaned,
       quote_probe: quoteProbe,
       drift_pct: total > 0 ? Math.round(ratio * 1000) / 10 : 0,
+      historically_proven: historicalProof ? proven : undefined,
+      unexplained_drift: historicalProof ? unexplained : undefined,
       oldest_drifted_days: oldestDays ?? undefined,
     };
 
@@ -935,7 +953,12 @@ export async function computeAtomProvenanceDriftCheck(
     }
     if (drifted === 0) return { name, status: 'ok', message: `${total} atom(s), all provenance-resolved${su}`, details };
 
-    if (drifted >= MIN_DRIFTED && ratio > WARN_RATIO) {
+    // The verdict is the UNEXPLAINED population: atoms whose frozen hash no
+    // retained extraction-time state can account for. A historically proven
+    // binding is reported in the message and the details, never silently
+    // dropped, and never counted as a defect it is not.
+    const unexplainedRatio = total > 0 ? unexplained / total : 0;
+    if (unexplained >= MIN_DRIFTED && unexplainedRatio > WARN_RATIO) {
       const fix =
         "preview the atoms that are safe to retire with gbrain repair stale-atoms (source gone, or source edited and " +
         "already re-extracted), then apply with the --expect hash it prints. Atoms of an edited page that was not " +
@@ -943,7 +966,9 @@ export async function computeAtomProvenanceDriftCheck(
       return {
         name, status: 'warn',
         message:
-          `${drifted}/${total} atom(s) (${details.drift_pct}%) reference a source_hash no live page carries ` +
+          `${unexplained}/${total} atom(s) (${Math.round(unexplainedRatio * 1000) / 10}%) reference a source_hash ` +
+          `neither a live page nor retained extraction state accounts for ` +
+          (historicalProof ? `(${proven} further atom(s) drifted but are historically proven: the hash they carry is a page hash the extractor recorded, so the page was edited after extraction) ` : '') +
           `— ${sourceChanged} whose source page still exists (edited or alias-resolved), ${sourceGone} whose source page is gone` +
           (quoteProbe === 'folded'
             ? `; of those still-existing sources, ${quotePresent} still carry the atom's source_quote verbatim ` +
@@ -958,7 +983,10 @@ export async function computeAtomProvenanceDriftCheck(
 
     return {
       name, status: 'ok',
-      message: `${drifted}/${total} atom(s) drifted (below warn threshold)${su}`,
+      message: historicalProof
+        ? `${drifted}/${total} atom(s) drifted, ${unexplained} unexplained and ${proven} historically proven ` +
+          `(below warn threshold)${su}`
+        : `${drifted}/${total} atom(s) drifted (below warn threshold)${su}`,
       details,
     };
   } catch (err) {
