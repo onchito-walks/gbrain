@@ -342,7 +342,7 @@ export async function preparePageMutation(unbounded: BrainEngine, row: WriteRequ
   const observedRevision = snapshot?.revision ?? null;
   const activePack = pack?.manifest;
   if (row.operation === 'put_page' && p.kind === undefined && typeof p.content === 'string') {
-    canonicalPutPageContent(p.content, row.slug, activePack);
+    canonicalPutPageContent(p.content, row.slug, activePack, { storedType: snapshot?.page.type ?? null });
   }
   if (row.operation === 'put_page' && p.allow_empty !== true && snapshot && !snapshot.page.deleted_at
     && typeof p.content === 'string' && `${snapshot.page.compiled_truth}\n${snapshot.page.timeline ?? ''}`.trim()) {
@@ -379,7 +379,9 @@ export async function preparePageMutation(unbounded: BrainEngine, row: WriteRequ
   // #5616: edits apply to the caller's view of the locked snapshot (revision checked above).
   const edited = row.operation === 'edit_page' ? editLockedPage(row, snapshot) : undefined;
   let content = edited?.content ?? preparedIntent?.content ?? p.content as string;
-  if (row.operation === 'put_page' && p.kind === undefined && typeof content === 'string') content = canonicalPutPageContent(content, row.slug, activePack);
+  if (row.operation === 'put_page' && p.kind === undefined && typeof content === 'string') {
+    content = canonicalPutPageContent(content, row.slug, activePack, { storedType: snapshot?.page.type ?? null });
+  }
   let versionTags: string[] | undefined = preparedIntent?.tags;
   // A replacement/restore publishes a live page. Only a recorded version may
   // explicitly restore a tombstone; legacy versions leave this state unchanged.

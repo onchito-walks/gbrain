@@ -115,14 +115,20 @@ export async function withBatchAdmission<T>(ctx: OperationContext, run: (own: Op
 }
 /** Validate explicit routing before any admission, including dry-run adapters. */
 /**
- * validatePageSlug, except that delete and restore may name a slug an older
- * gbrain stored and today's grammar refuses, when an existing row in
- * `sourceId` holds exactly that slug (#6212). Such a row publishes
- * database-only (page-prepare.ts prepareFileTarget).
+ * validatePageSlug, except that a slug an older gbrain stored and today's
+ * grammar refuses is admitted when an existing row in `sourceId` holds exactly
+ * that slug: delete and restore may name a tombstone (#6212), and put_page may
+ * update a live row (repair visibility must stamp such atoms). The row must
+ * exist in the same source, so no new dot-led segment can be created and no
+ * write crosses sources. Such a row publishes database-only
+ * (page-prepare.ts prepareFileTarget).
  */
 export async function validateMutationSlug(ctx: OperationContext, operation: string, slug: string, sourceId: string): Promise<void> {
-  if ((operation === 'delete_page' || operation === 'restore_page') && isLegacyStoredPageSlug(slug)
-    && await ctx.engine.readPageSnapshot(slug, { sourceId, includeDeleted: true })) return;
+  if (isLegacyStoredPageSlug(slug)) {
+    if ((operation === 'delete_page' || operation === 'restore_page')
+      && await ctx.engine.readPageSnapshot(slug, { sourceId, includeDeleted: true })) return;
+    if (operation === 'put_page' && await ctx.engine.readPageSnapshot(slug, { sourceId })) return;
+  }
   validatePageSlug(slug);
 }
 
