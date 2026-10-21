@@ -74,6 +74,14 @@ evidence; they are not silently converted into valid fence positions.
   inside one maintenance transaction under the page lock, the managed path
   through the coordinator against the page revision, and a publication that is
   already current writes nothing at all.
+- **Cycle upkeep precedes strict completion.** The successful-cycle path first
+  runs `cycle/preserved-fence-maintenance.ts` over existing publications only.
+  It explicitly supersedes a drifted derived document using the existing
+  current-originals planner and transactional writer, retaining the old document
+  as a version. It never mines atoms or edits original facts/page bodies. A
+  current document is a write-free no-op; a concurrent original change refuses
+  rather than rebinding a stale plan. The completion transition itself remains
+  strict and atomic as described below.
 - **Cycle completion is a transition, not a drift repair.**
   `src/core/cycle/preserved-fence-completion.ts` owns the per-source `runCycle`
   stamp. Where a source has stored derived documents, that stamp is not a bare
