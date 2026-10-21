@@ -13,8 +13,12 @@
  *   connector origins, extraction and dream provenance, journaled agent
  *   writes and the lower-only trust_tier marker. Never above operator_curated.
  *
- * Connector sources (google, github) cannot be claimed: their text is third
- * party. Claiming needs the owner at a terminal typing each source id
+ * Connector sources (google, github) and sources explicitly declared external
+ * by default (`sources set-trust ... external_untrusted`) cannot be claimed:
+ * their text is third party, and a claim would overwrite that evidenced
+ * declaration with "your notes". The owner can deliberately reclassify such a
+ * source first (`sources set-trust <id> operator_curated`), then claim it.
+ * Claiming needs the owner at a terminal typing each source id
  * (trust/confirm.ts; `--yes` never counts); without one the command refuses
  * with a tell_user_to_run fix. The lift is bounded (keyset batches), resumable
  * (`--resume`, its own cursor) and receipted (each lifted row's
@@ -31,12 +35,12 @@ import { opError } from '../ops/contract.ts';
 import { normalizeSourceConfig, parseSourceConfig } from '../sources-load.ts';
 import { runTrustBackfill, type TierCounts } from './backfill.ts';
 import {
-  claimedSourceSql, isClaimedConfig, isConnectorConfig, legacyRowSql, notConnectorSourceSql, readLegacyCeilings,
+  claimedSourceSql, isClaimedConfig, isConnectorConfig, isExternalDefaultConfig, legacyRowSql, notConnectorSourceSql, readLegacyCeilings,
   TRUST_CLAIM_COMMAND, TRUST_CLAIM_LIFTED_AT_KEY, TRUST_CLAIMED_AT_KEY,
 } from './claim-state.ts';
-import { OWNER_TIER_FLOOR, TRUST_TIERS, isTrustTier } from './tier.ts';
+import { OWNER_TIER_FLOOR, TRUST_TIERS, isTrustTier, trustLabel } from './tier.ts';
 
-export type ClaimBlocker = 'connector' | 'archived' | 'claimed' | 'no_legacy_rows';
+export type ClaimBlocker = 'connector' | 'external_default' | 'archived' | 'claimed' | 'no_legacy_rows';
 
 export interface ClaimSource {
   id: string;
@@ -88,8 +92,8 @@ export async function listClaimSources(engine: BrainEngine, opts: { batchSize?: 
     const legacy = report.schema === 'pre_trust' || !legacyCounts ? report.rows : legacyCounts.get(row.id) ?? 0;
     const claimed = isClaimedConfig(config);
     const pending = claimed && typeof config[TRUST_CLAIM_LIFTED_AT_KEY] !== 'string';
-    const blocker: ClaimBlocker | undefined = isConnectorConfig(config) ? 'connector' : row.archived ? 'archived'
-      : claimed ? 'claimed' : legacy === 0 ? 'no_legacy_rows' : undefined;
+    const blocker: ClaimBlocker | undefined = isConnectorConfig(config) ? 'connector' : isExternalDefaultConfig(config) ? 'external_default'
+      : row.archived ? 'archived' : claimed ? 'claimed' : legacy === 0 ? 'no_legacy_rows' : undefined;
     out.push({
       id: row.id, name: row.name, local_path: row.local_path,
       remote_url: typeof config.remote_url === 'string' ? config.remote_url : null,
@@ -103,13 +107,20 @@ export async function listClaimSources(engine: BrainEngine, opts: { batchSize?: 
   return { schema, sources: out };
 }
 
-/** Records the claim on each source (per-source default operator_curated plus the receipt). Refuses connector and archived sources. */
+/**
+ * Records the claim on each source (per-source default operator_curated plus
+ * the receipt). Refuses connector sources, archived sources and sources the
+ * operator explicitly declared external by default: claiming those would
+ * silently overwrite that declaration, so it takes a deliberate
+ * `sources set-trust <id> operator_curated` first.
+ */
 export async function recordSourceClaims(engine: BrainEngine, ids: readonly string[], now = new Date()): Promise<void> {
   for (const id of ids) {
     const [row] = await engine.executeRaw<{ config: unknown; archived: boolean }>('SELECT config, archived FROM sources WHERE id = $1', [id]);
     if (!row) throw opError('unknown_source', `Source "${id}" does not exist.`, 'List sources with gbrain trust claim-sources --dry-run.');
     const config = parseSourceConfig(row.config);
     if (isConnectorConfig(config)) throw connectorRefusal(id, String(config.kind));
+    if (isExternalDefaultConfig(config)) throw externalDefaultRefusal(id);
     if (row.archived) throw opError('unknown_source', `Source "${id}" is archived.`, 'Restore it first (gbrain sources restore), or leave it unclaimed.');
     const next: Record<string, unknown> = { ...config, trust_tier: OWNER_TIER_FLOOR, [TRUST_CLAIMED_AT_KEY]: now.toISOString() };
     delete next[TRUST_CLAIM_LIFTED_AT_KEY];
@@ -120,6 +131,17 @@ export async function recordSourceClaims(engine: BrainEngine, ids: readonly stri
 export function connectorRefusal(id: string, kind: string) {
   return opError('invalid_params', `Source "${id}" is a ${kind} connector source, so it cannot be claimed as your own notes.`,
     'Claim only sources that hold your own files; connector text comes from other people and stays "external, untrusted".');
+}
+
+/**
+ * The source is explicitly external by default: a claim would overwrite that
+ * evidenced declaration, so the fix names the deliberate reclassification that
+ * must come first. Never raised by an agent path on its own.
+ */
+export function externalDefaultRefusal(id: string) {
+  return opError('invalid_params',
+    `Source "${id}" is set to "${trustLabel('external_untrusted')}" by default, so it cannot be claimed as your own notes.`,
+    `Claiming would overwrite that explicit default. If this source really holds your own files, reclassify it first (gbrain sources set-trust ${id} operator_curated), then run gbrain trust claim-sources.`);
 }
 
 export interface ClaimLiftReport {
