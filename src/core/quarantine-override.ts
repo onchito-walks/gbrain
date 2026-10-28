@@ -24,10 +24,11 @@ import { parseMarkdown, type ParsedMarkdown } from './markdown.ts';
 import { sanitizeText } from './batch-rows.ts';
 import { sha256 } from './persistence/digest.ts';
 import { CONTENT_FLAG_KEY, QUARANTINE_KEY } from './quarantine.ts';
+import { WRITE_GATE_DETECTOR_VERSION } from './write-gate.ts';
 
 export const QUARANTINE_OVERRIDE_KEY = 'quarantine_override';
 
-export interface QuarantineOverride { binding: string; cleared_at: string }
+export interface QuarantineOverride { binding: string; cleared_at: string; write_gate_detector_version?: number }
 
 type Bound = Pick<ParsedMarkdown, 'title' | 'type' | 'compiled_truth' | 'timeline'>;
 
@@ -40,13 +41,15 @@ export function quarantineOverrideBinding(page: Bound): string {
 export function quarantineOverrideFor(markdown: string, path: string, now = new Date()): QuarantineOverride {
   const parsed = parseMarkdown(markdown, path, { validate: true });
   return { binding: quarantineOverrideBinding({ title: sanitizeText(parsed.title), type: parsed.type,
-    compiled_truth: sanitizeText(parsed.compiled_truth), timeline: sanitizeText(parsed.timeline) }), cleared_at: now.toISOString() };
+    compiled_truth: sanitizeText(parsed.compiled_truth), timeline: sanitizeText(parsed.timeline) }), cleared_at: now.toISOString(),
+    write_gate_detector_version: WRITE_GATE_DETECTOR_VERSION };
 }
 
 function overrideOf(value: unknown): QuarantineOverride | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const { binding, cleared_at } = value as Record<string, unknown>;
-  return typeof binding === 'string' && /^[0-9a-f]{64}$/.test(binding) && typeof cleared_at === 'string' ? { binding, cleared_at } : null;
+  const { binding, cleared_at, write_gate_detector_version } = value as Record<string, unknown>;
+  return typeof binding === 'string' && /^[0-9a-f]{64}$/.test(binding) && typeof cleared_at === 'string'
+    ? { binding, cleared_at, ...(Number.isSafeInteger(write_gate_detector_version) ? { write_gate_detector_version: write_gate_detector_version as number } : {}) } : null;
 }
 
 /** Whether `page` carries an override bound to its current title, type and body. */

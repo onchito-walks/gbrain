@@ -2463,6 +2463,91 @@ function normalizeSdkUsage(usage: unknown): { inputTokens: number; outputTokens:
   };
 }
 
+/** A real token count: finite, non-negative, and never `null`/`''`/`false`. */
+function tokenCount(v: unknown): number | undefined {
+  if (typeof v === 'number') return Number.isFinite(v) && v >= 0 ? v : undefined;
+  if (typeof v === 'string' && v.trim() !== '') {
+    const n = Number(v);
+    return Number.isFinite(n) && n >= 0 ? n : undefined;
+  }
+  return undefined;
+}
+
+/** First valid token count in precedence order; invalid candidates fall through. */
+function firstTokenCount(...vals: unknown[]): number | undefined {
+  for (const v of vals) {
+    const n = tokenCount(v);
+    if (n !== undefined) return n;
+  }
+  return undefined;
+}
+
+/**
+ * Chat-lane usage assembly, including the cache buckets. Kept local (and NOT
+ * delegated to `sdkInvocationUsage` in invocation-guard.ts) because the two
+ * lanes deliberately use different input conventions:
+ *
+ *  - `ChatResult.usage` / `recordChatUsage` treat `input_tokens` as the TOTAL
+ *    prompt — uncached + cache reads + cache writes — with the cache buckets
+ *    as subsets (what AI SDK v6 reports, see chat-usage.ts).
+ *  - `sdkInvocationUsage` reports the UNcached input, because its budget
+ *    consumers add `cacheReadTokens + cacheWriteTokens` back themselves.
+ *
+ * Reusing the guard helper here would subtract the cache buckets twice and
+ * undercount the ledger. Cache counts arrive in four shapes, newest first:
+ *
+ *  1. AI SDK v6 nested `usage.inputTokenDetails.{cacheReadTokens,cacheWriteTokens}`
+ *  2. Anthropic `providerMetadata.anthropic.cache{Read,Creation}InputTokens`
+ *  3. legacy flat `usage.cachedInputTokens` / `usage.cache_*` (OpenAI-compatible
+ *     routes, the claude-cli adapter)
+ *  4. raw Messages-API snake case, where `input_tokens` excludes the buckets —
+ *     there the total has to be reconstructed from the parts.
+ *
+ * Missing, non-finite, negative or non-numeric candidates fall through to the
+ * next shape instead of poisoning the ledger with NaN/negative counts. Absent
+ * evidence stays 0: nothing here infers caching from a model/recipe name.
+ */
+function normalizeSdkChatUsage(usage: unknown, providerMetadata: unknown): {
+  inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number;
+} {
+  const u = (usage ?? {}) as Record<string, any>;
+  const anthropicCache = (providerMetadata as any)?.anthropic ?? {};
+  const details = u.inputTokenDetails && typeof u.inputTokenDetails === 'object' ? u.inputTokenDetails : {};
+
+  const cacheReadTokens = firstTokenCount(
+    details.cacheReadTokens,
+    anthropicCache.cacheReadInputTokens,
+    anthropicCache.cache_read_input_tokens,
+    u.cachedInputTokens,
+    u.cache_read_tokens,
+    u.cache_read_input_tokens,
+    u.prompt_tokens_details?.cached_tokens,
+  ) ?? 0;
+  const cacheWriteTokens = firstTokenCount(
+    details.cacheWriteTokens,
+    anthropicCache.cacheCreationInputTokens,
+    anthropicCache.cache_creation_input_tokens,
+    u.cache_creation_tokens,
+    u.cache_creation_input_tokens,
+    u.cache_write_tokens,
+  ) ?? 0;
+
+  // Raw Messages-API snake case reports `output_tokens`; `normalizeSdkUsage`
+  // (shared with expand/OCR) only reads the camelCase pair, so accept the raw
+  // key last here instead of widening that helper's blast radius.
+  const outputTokens = firstTokenCount(u.outputTokens, u.completionTokens, u.output_tokens) ?? 0;
+  // A camelCase total is already the total (AI SDK v6 and legacy v4). Only the
+  // raw Messages-API shape (`input_tokens` = uncached) needs reconstruction,
+  // and a bare noCache detail needs its buckets added back too.
+  const reportedTotal = firstTokenCount(u.inputTokens, u.promptTokens);
+  const uncachedReported = firstTokenCount(details.noCacheTokens, u.input_tokens);
+  const inputTokens = reportedTotal
+    ?? (uncachedReported !== undefined ? uncachedReported + cacheReadTokens + cacheWriteTokens
+      : cacheReadTokens + cacheWriteTokens);
+
+  return { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens };
+}
+
 /**
  * Expand a search query into up to 4 related queries.
  * Returns the original query PLUS expansions. On failure, returns just the original.
@@ -3800,20 +3885,16 @@ async function chatAdmitted(opts: ChatOpts, admitted: {
 
     const usage = (result as any).usage ?? {};
     const providerMetadata = (result as any).providerMetadata as Record<string, any> | undefined;
-    const anthropicCache = providerMetadata?.anthropic ?? {};
 
-    const { inputTokens: inTok, outputTokens: outTok } = normalizeSdkUsage(usage);
-    _recordBudget({ inputTokens: inTok, outputTokens: outTok });
+    const normalized = normalizeSdkChatUsage(usage, providerMetadata);
+    _recordBudget({ inputTokens: normalized.inputTokens, outputTokens: normalized.outputTokens });
 
     const reasoningTokens = usage.outputTokenDetails?.reasoningTokens ?? usage.reasoningTokens;
     const usageOut = {
-      input_tokens: inTok,
-      output_tokens: outTok,
-      // `usage.cachedInputTokens` is the AI SDK's provider-neutral cache-read
-      // count — it's how OpenAI-compatible routes (OpenRouter's
-      // prompt_tokens_details.cached_tokens) surface cache hits.
-      cache_read_tokens: Number(anthropicCache.cacheReadInputTokens ?? anthropicCache.cache_read_input_tokens ?? usage.cachedInputTokens ?? 0),
-      cache_creation_tokens: Number(anthropicCache.cacheCreationInputTokens ?? anthropicCache.cache_creation_input_tokens ?? 0),
+      input_tokens: normalized.inputTokens,
+      output_tokens: normalized.outputTokens,
+      cache_read_tokens: normalized.cacheReadTokens,
+      cache_creation_tokens: normalized.cacheWriteTokens,
       ...(typeof reasoningTokens === 'number' && Number.isFinite(reasoningTokens) ? { reasoning_tokens: reasoningTokens } : {}),
     };
     // #4218 success boundary: durable usage ledger (fire-and-forget, fail-open).

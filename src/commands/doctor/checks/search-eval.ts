@@ -242,9 +242,13 @@ export async function checkEmbeddingMigrationState(engine: BrainEngine): Promise
 export async function checkSubagentCapability(engine: BrainEngine): Promise<Check> {
   try {
     const { classifyCapabilities } = await import('../../../core/ai/capabilities.ts');
+    // Held in a property, not a `let`: the assignment happens inside the
+    // `explain` closure, which control-flow analysis does not track, so a
+    // `let` would be narrowed to its initial `null` at the report below.
+    const evidence: { caching: { calls: number; cache_read_tokens: number; last_cache_hit: string } | null } = { caching: null };
 
     // Helper: explain a verdict in user-facing terms.
-    const explain = (resolved: string, source: string): Check | null => {
+    const explain = async (resolved: string, source: string): Promise<Check | null> => {
       const verdict = classifyCapabilities(resolved);
       if (verdict === 'unusable:no_tools') {
         return {
@@ -286,14 +290,34 @@ export async function checkSubagentCapability(engine: BrainEngine): Promise<Chec
         };
       }
       if (verdict === 'degraded:no_caching') {
+        // A generic proxy recipe cannot know its backend's cache behavior.
+        // Prefer recent, measured hits for this EXACT route over that static
+        // absence of a declaration. Missing/expired/invalid evidence still warns.
+        try {
+          const [row] = await engine.executeRaw<{ calls: string; cache_read_tokens: string; last_cache_hit: string }>(
+            `SELECT count(*)::text AS calls, sum(cache_read_tokens)::text AS cache_read_tokens,
+                    max(created_at)::text AS last_cache_hit
+               FROM chat_usage_log
+              WHERE model = $1 AND provider = $2
+                AND created_at >= now() - interval '7 days' AND created_at <= now()
+                AND cache_read_tokens > 0 AND cache_read_tokens <= input_tokens`,
+            [resolved, resolved.split(':')[0]],
+          );
+          const calls = Number(row?.calls), tokens = Number(row?.cache_read_tokens);
+          const last = row?.last_cache_hit;
+          if (Number.isSafeInteger(calls) && calls > 0 && Number.isSafeInteger(tokens) && tokens > 0 &&
+              typeof last === 'string' && Number.isFinite(Date.parse(last))) {
+            evidence.caching = { calls, cache_read_tokens: tokens, last_cache_hit: last };
+            return null;
+          }
+        } catch { /* An unavailable ledger is not evidence of caching. */ }
         return {
           name: 'subagent_capability',
           status: 'warn',
           message:
-            `${source} is "${resolved}" — provider does not support prompt caching. ` +
-            `The subagent loop runs hot (cost scales linearly with conversation length). ` +
-            `For lower cost on long loops, use an Anthropic model: ` +
-            `\`gbrain config set models.tier.subagent anthropic:claude-sonnet-4-6\`.`,
+            `${source} is "${resolved}" — its recipe does not declare prompt caching, and no valid cache hits ` +
+            `were observed for this exact model/provider in the last 7 days. ` +
+            `Caching is unverified, not proven unsupported. Inspect usage telemetry before changing routing.`,
         };
       }
       return null;
@@ -313,7 +337,7 @@ export async function checkSubagentCapability(engine: BrainEngine): Promise<Chec
       if (!value) continue;
       resolvedSource = key;
       resolvedModel = value;
-      const issue = explain(value, key);
+      const issue = await explain(value, key);
       if (issue) return issue;
       break;
     }
@@ -349,8 +373,12 @@ export async function checkSubagentCapability(engine: BrainEngine): Promise<Chec
       name: 'subagent_capability',
       status: 'ok',
       message: resolvedModel && resolvedSource
-        ? `Subagent model resolves via ${resolvedSource} to "${resolvedModel}" with full tool-loop capability`
+        ? evidence.caching
+          ? `Subagent model resolves via ${resolvedSource} to "${resolvedModel}" with tool-loop capability; ` +
+            `prompt caching observed: ${evidence.caching.cache_read_tokens} cache-read tokens across ${evidence.caching.calls} hit-bearing calls in the last 7 days (not a guarantee for every request)`
+          : `Subagent model resolves via ${resolvedSource} to "${resolvedModel}" with full tool-loop capability`
         : `Subagent tier resolves to default (claude-sonnet-4-6) — full tool-loop capability`,
+      ...(evidence.caching ? { details: { cache_evidence: evidence.caching, evidence_window_days: 7, resolved_model: resolvedModel } } : {}),
     };
   } catch (e) {
     return checkError('subagent_capability', 'check subagent capability', e);

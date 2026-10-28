@@ -38,6 +38,9 @@ async function liveAtoms(): Promise<string[]> {
 }
 
 for (const stop of ['length', 'refusal', 'content_filter'] as const) {
+  // A `length` stop takes extract_atoms' ONE bounded truncation retry (at the
+  // escalated cap) before it is failed; the other stops are never retried.
+  const callsPerRun = stop === 'length' ? 2 : 1;
   test(`managed ${stop}: failure receipt, prior atoms kept, next run retries automatically`, async () => {
     const home = mkdtempSync(join(tmpdir(), 'gbrain-managed-atom-stop-'));
     try {
@@ -69,14 +72,21 @@ for (const stop of ['length', 'refusal', 'content_filter'] as const) {
         const clipped = await extract();
         expect(clipped.status).toBe('warn');
         expect(clipped.details?.stopped_outputs).toBe(1);
-        expect(calls).toBe(2);
+        expect(clipped.details?.truncation_retries).toBe(stop === 'length' ? 1 : 0);
+        expect(clipped.details?.truncation_recovered).toBe(0);
+        expect(calls).toBe(1 + callsPerRun);
         expect(await liveAtoms()).toEqual(prior);
         const receipt = (clipped.details?.write_requests as Array<{ request_id: string }>).at(-1)!;
         expect(receipt.request_id).toBeTruthy();
+        if (stop === 'length') {
+          // The failure receipt names the escalating retry, so a managed brain
+          // sees the truncation instead of an anonymous failure.
+          expect(JSON.stringify(clipped.details?.failures)).toContain('maxTokens=8192');
+        }
 
         await disposePersistenceConsumer(engine);
         const again = await extract();
-        expect(calls).toBe(3);
+        expect(calls).toBe(1 + callsPerRun * 2);
         expect(JSON.stringify(again.details?.failures)).toContain(`stopReason=${stop}`);
         expect(await liveAtoms()).toEqual(prior);
 
@@ -90,7 +100,7 @@ for (const stop of ['length', 'refusal', 'content_filter'] as const) {
           updateProgress: async () => {}, updateTokens: async () => {}, log: async () => {}, isActive: async () => true, readInbox: async () => [] };
         const retried = await worker.getHandler('extract-atoms-drain')!(job) as Record<string, unknown>;
         expect(retried.model_rerun).toBe(true);
-        expect(calls).toBe(4);
+        expect(calls).toBe(2 + callsPerRun * 2);
         const after = await liveAtoms();
         expect(after).toHaveLength(1);
         expect(after[0]).toContain('hire-slowly');
