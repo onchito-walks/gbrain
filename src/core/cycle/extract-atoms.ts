@@ -97,7 +97,7 @@ import { maintenanceTransaction } from '../persistence/attribution.ts';
 import { deriveTrust, lowerDerivedPage } from '../trust/taint.ts';
 import { derivedGateInput } from '../trust/derived-gate.ts';
 import { ATOM_TYPES, ATOMS_RESPONSE_SCHEMA } from './extract-atoms-schema.ts';
-import { parseAtomsOutcome } from './extract-atoms-parse.ts';
+import { extractAtomsWithTruncationRetry } from './extract-atoms-truncation.ts';
 import { buildAtomWorkList, type AtomWorkItem } from './extract-atoms-work.ts';
 import { dropQuarantinedListedPages } from './extract-atoms-quarantine.ts';
 import { quarantineFilterFragment } from '../quarantine.ts';
@@ -971,6 +971,11 @@ export async function runPhaseExtractAtoms(
 
   // ── gbrain#4148 helpers ────────────────────────────────────────────
   let malformedOutputs = 0, stoppedOutputs = 0; // #6260: stopped = clipped, or empty under an unconfirmed stop
+  // Bounded truncation recovery (extract-atoms-truncation.ts): how many items
+  // took the single escalated retry, and how many of those then parsed. A
+  // recovered item is NOT a stopped output — `stoppedOutputs` stays the count
+  // of clipped responses that were finally refused.
+  let truncationRetries = 0, truncationRecovered = 0;
   const tombstonedForFailures: string[] = [];
   // v146: transcript tombstones ride a SEPARATE array. `tombstoned_for_failures`
   // is a list of page SLUGS; transcripts are filesystem paths, and mixing the two
@@ -1107,12 +1112,26 @@ export async function runPhaseExtractAtoms(
       if (resumed === 'done') { duplicatesSkipped++; continue; }
       if (resumed === 'held') { heldFailed++; continue; } // #6325: settled after repeated failures; doctor lists it
 
-      const result = await chat({
-        model: extractModel,
-        ...atomsPrompt(dateGrounding, originLabel, promptContent),
-        maxTokens: maxOutputTokens, responseSchema: ATOMS_RESPONSE_SCHEMA,
-        abortSignal: opts.signal,
+      // #6260 + bounded recovery: a response clipped by the output cap is
+      // never parsed. The ONE way back is a single escalated retry, bounded
+      // by TRUNCATION_RETRY_MAX_TOKENS and gated on this run's remaining
+      // budget; the outcome below always comes from a response that
+      // terminated cleanly, so a clipped prefix can never publish atoms.
+      const recovered = await extractAtomsWithTruncationRetry({
+        call: (maxTokens: number) => chat({
+          model: extractModel,
+          ...atomsPrompt(dateGrounding, originLabel, promptContent),
+          maxTokens, responseSchema: ATOMS_RESPONSE_SCHEMA,
+          abortSignal: opts.signal,
+        }),
+        maxTokens: maxOutputTokens,
+        hasBudgetHeadroom: () => !budgetExhausted && budgetTracker.totalSpent < budgetCap,
+        onRetry: ({ from, to }) => console.error(
+          `[extract_atoms] ${originLabel}: output truncated at maxTokens=${from}; retrying once at ${to}`,
+        ),
       });
+      if (recovered.retried) truncationRetries++;
+      if (recovered.recovered) truncationRecovered++;
       // Post-await yield: closes the "long LLM call past TTL" hazard
       // codex flagged. The 30s throttle inside maybeYield bounds the
       // actual refresh rate so this is cheap when calls are fast.
@@ -1127,7 +1146,7 @@ export async function runPhaseExtractAtoms(
 
       // gbrain#4148: typed outcome — malformed output is a FAILURE (counted
       // toward the bounded tombstone below), never a zero-yield success.
-      const parseOutcome = parseAtomsOutcome(result.text, result.stopReason);
+      const parseOutcome = recovered.outcome;
       if (!parseOutcome.ok) {
         if (parseOutcome.stopped) stoppedOutputs++; else malformedOutputs++;
         if (!opts.dryRun && managed && origin) writeRequests.push(...await publishManagedAtoms(engine, managed, origin, [], parseOutcome.reason));
@@ -1458,6 +1477,7 @@ export async function runPhaseExtractAtoms(
       ...(managed ? { write_requests: writeRequests } : {}),
       ...(abortedGlobalError ? { aborted_global_error: abortedGlobalError } : {}),
       malformed_outputs: malformedOutputs, stopped_outputs: stoppedOutputs,
+      truncation_retries: truncationRetries, truncation_recovered: truncationRecovered,
       tombstoned_for_failures: tombstonedForFailures,
       tombstoned_transcripts: tombstonedTranscripts,
       estimated_spend_usd: estimatedSpendUsd,

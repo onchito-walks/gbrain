@@ -640,7 +640,37 @@ async function runRollback(engine: BrainEngine, args: string[]): Promise<void> {
   else console.log(`Rolled back ${rolledBack} page(s) (incident=${snap.incident}).`);
 }
 
-export const QUARANTINE_HELP = `Usage: gbrain quarantine <list|clear|scan|set|rollback|release|drop> [options]
+
+/** #6259: re-derive stored `content_flag` markers with the current detector. */
+async function runRescreen(engine: BrainEngine, args: string[]): Promise<void> {
+  const json = args.includes('--json');
+  const apply = args.includes('--apply');
+  const sourceId = flagValue(args, '--source') ?? flagValue(args, '--source-id') ?? 'default';
+  const limitRaw = flagValue(args, '--limit');
+  const limit = limitRaw === undefined ? undefined : Number(limitRaw);
+  if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1)) {
+    console.error('--limit must be a positive integer');
+    process.exit(2);
+  }
+  const { rescreenContentFlags } = await import('../core/content-flag-rescreen.ts');
+  const report = await rescreenContentFlags(engine, { sourceId, apply, limit });
+  if (json) { console.log(JSON.stringify(report, null, 2)); return; }
+  console.log(`Re-screened ${report.scanned} flagged page(s) in source "${sourceId}" with detector v${report.detector_version}.`);
+  console.log(`  stale verdicts: ${report.stale}  reproduced: ${report.reproduced}  errors: ${report.errors}`);
+  if (!apply) {
+    if (report.stale > 0) {
+      console.log(`\n${report.stale} stored flag(s) no longer match the current detector.`);
+      console.log(`Re-derive them with: gbrain quarantine rescreen --source ${sourceId} --apply`);
+    } else console.log('\nNo stale flags: every stored flag still reproduces.');
+    return;
+  }
+  console.log(`  cleared: ${report.cleared}`);
+  for (const o of report.outcomes) {
+    if (o.action === 'skipped_error') console.error(`  ! ${o.slug}: ${o.error}`);
+  }
+}
+
+export const QUARANTINE_HELP = `Usage: gbrain quarantine <list|clear|scan|rescreen|set|rollback|release|drop> [options]
 
   list [--json] [--include-flagged]
       Pages the content-quality gate hid as junk (quarantine), and with
@@ -654,6 +684,12 @@ export const QUARANTINE_HELP = `Usage: gbrain quarantine <list|clear|scan|set|ro
   scan [--limit N] [--apply] [--no-embed] [--json]
       Re-check existing pages against the gate (preview by default).
       --apply re-imports them and is refused on a managed brain.
+  rescreen [--source <id>] [--limit N] [--apply] [--json]
+      Re-derive stored content_flag markers with the CURRENT detector at each
+      page's stored trust tier (preview by default; no LLM, no content edit).
+      --apply republishes only the pages the gate now allows, dropping the
+      stale marker through the canonical owner; pages that still match keep
+      their flag.
   set --manifest <JSONL> --reason <reason> [--source-id <id>] [--incident <id>]
       [--limit N] [--snapshot-out <path>] [--dry-run] [--yes] [--json]
       Operator incident lane (host-bound; unmanaged brains only): apply ONLY
@@ -687,6 +723,8 @@ export async function runQuarantine(engine: BrainEngine, args: string[]): Promis
       return runClear(engine, rest);
     case 'scan':
       return runScan(engine, rest);
+    case 'rescreen':
+      return runRescreen(engine, rest);
     case 'set':
       return runSet(engine, rest);
     case 'rollback':

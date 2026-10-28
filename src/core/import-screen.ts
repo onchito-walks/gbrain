@@ -13,6 +13,7 @@ import { loadConfig, loadConfigWithEngine } from './config.ts';
 import { loadConfigSnapshot } from './config-snapshot.ts';
 import { assessContentSanity, ContentSanityBlockError, type ContentSanityResult } from './content-sanity.ts';
 import { carryStoredQuarantineOverride, dropClassifierMarkers, hasCurrentQuarantineOverride, QUARANTINE_OVERRIDE_KEY, withQuarantineOverride } from './quarantine-override.ts';
+import { recoverInstructionReview } from './instruction-review.ts';
 import { logContentSanityAssessment } from './audit/content-sanity-audit.ts';
 import { buildEmbedSkipMarker, EMBED_SKIP_KEY } from './embed-skip.ts';
 import { buildContentFlagMarker, buildQuarantineMarker, CONTENT_FLAG_KEY, QUARANTINE_KEY } from './quarantine.ts';
@@ -239,6 +240,11 @@ export async function settleContentDisposition(engine: BrainEngine, parsed: Pars
   }
   const gate = ctx.writeGate ? await applyTrustAllowRules(engine, assessPageForGate(parsed, ctx.writeGate, sanityCfg.writeGate ?? DEFAULT_WRITE_GATE_CONFIG),
     { sourceId: sourceId ?? 'default', sourceUri: ctx.writeGate.origin?.source_uri ?? null }) : null;
+  if (gate && await recoverInstructionReview(engine, parsed, { sourceId: sourceId ?? 'default', slug }, gate)) {
+    // A committed owner clear covers only this exact content and detector
+    // version. The detector still runs; unknown/new content stays flagged.
+    gate.verdict = 'allow';
+  }
   if (gate) {
     if (gate.verdict === 'reject') throw writeGateRejectedError(gate);
     const detail = writeGateDetail(gate);

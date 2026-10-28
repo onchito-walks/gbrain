@@ -62,6 +62,7 @@ import { purgePageInTransaction } from './page-purge.ts';
 import { withTrustKeep } from './context.ts';
 import { isFenceEditWrite, pageGateTrust, pageWriteTrust, recordAgentPageLowering, stampPageTrustMarker, storedPageTier } from '../trust/page-write.ts';
 import { suppliedTrustMarkerView } from '../trust/channel.ts';
+import { instructionReviewEvidence } from '../instruction-review.ts';
 import { gateField, gateInput } from '../trust/gate-outcomes.ts';
 
 
@@ -613,7 +614,12 @@ export async function preparePageMutation(unbounded: BrainEngine, row: WriteRequ
     }
     const coreUsage = core?.usage();
     const gate = noop ? undefined : gateField(ready.result.gate, `p:${row.source_id}/${row.slug}`, null);
+    // #6259 durability: the trusted clear stamps a compact review proof in its
+    // outcome, which survives intent compaction. Only this preparer may create it.
+    const reviewEvidence = !noop && row.authority.remote === false && p.kind === 'managed_quarantine_clear'
+      ? instructionReviewEvidence(ready.parsedPage) : null;
     return { ...advisories, ...(autoLinks ? {auto_links:autoLinks} : {}), ...(coreUsage ? { core: coreUsage } : {}),
+      ...(reviewEvidence ? { instruction_review: reviewEvidence } : {}),
       ...(removedTimeline ? { timeline_rows_removed: timelineRowsRemovedAdvisory(row, removedTimeline) } : {}),
       status: noop ? 'skipped' : row.operation === 'restore_page' ? 'restored' : row.operation === 'revert_version' ? 'reverted' : 'created_or_updated',
       slug: row.slug, source_id: row.source_id, chunks: ready.result.chunks, noop,
