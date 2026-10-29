@@ -124,7 +124,15 @@ export async function extractAtomsWithTruncationRetry(input: {
 }): Promise<TruncationRecoveryResult> {
   const first = await input.call(input.maxTokens);
   const firstOutcome = parseAtomsOutcome(first.text, first.stopReason);
-  if (first.stopReason !== 'length') {
+  // A `length` stop is not the only way a response arrives unusable: a call
+  // that terminates normally but yields an unparseable array fails the same
+  // page for the same reason (an emitter cut short by the output budget
+  // without reporting it). Both get the one escalation; a parse failure that
+  // persists is still reported as a failure.
+  // Only a NORMAL stop is treated as a silent clip: a refusal, content filter
+  // or other stop is a decision, and re-asking would bill for the same answer.
+  const unparseable = first.stopReason === 'end' && !firstOutcome.ok;
+  if (first.stopReason !== 'length' && !unparseable) {
     return { outcome: firstOutcome, retried: false, recovered: false, maxTokens: input.maxTokens };
   }
 

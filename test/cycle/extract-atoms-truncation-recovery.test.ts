@@ -107,6 +107,23 @@ describe('extractAtomsWithTruncationRetry', () => {
     }
   });
 
+  test('a normal stop with an unparseable array gets the same one escalation', async () => {
+    const caps: number[] = [];
+    const result = await extractAtomsWithTruncationRetry({
+      maxTokens: 4096,
+      hasBudgetHeadroom: true,
+      call: async (maxTokens) => {
+        caps.push(maxTokens);
+        return maxTokens === 4096
+          ? { text: '[{"title":"half an atom","atom_type":"insight"', stopReason: 'end' }
+          : { text: ATOMS_AT_8192, stopReason: 'end' };
+      },
+    });
+    expect(caps).toEqual([4096, 8192]);
+    expect(result.retried).toBe(true);
+    expect(result.outcome.ok).toBe(true);
+  });
+
   test('no budget headroom leaves the truncation as the item failure, with no second call', async () => {
     let calls = 0;
     const result = await extractAtomsWithTruncationRetry({
