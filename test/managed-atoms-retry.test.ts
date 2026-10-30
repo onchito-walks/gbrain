@@ -17,6 +17,7 @@ import { runExtractAtomsDrainForSource } from '../src/core/cycle/extract-atoms-d
 import { disposePersistenceConsumer, stopPersistenceConsumer } from '../src/core/persistence/service.ts';
 import { sha256 } from '../src/core/persistence/digest.ts';
 import { retryManagedAtomBatch } from '../src/core/persistence/atom-retry.ts';
+import { listHeldAtomTombstones, listHeldManagedAtoms } from '../src/core/persistence/atom-maintenance.ts';
 import { atomHeldFailedEntry } from '../src/commands/doctor/checks/atom-holds.ts';
 import type { DoctorContext } from '../src/commands/doctor/context.ts';
 import type { Check } from '../src/commands/doctor.ts';
@@ -86,18 +87,18 @@ test('a malformed reply, then a valid one: the next run retries on its own and e
     const extract = () => runPhaseExtractAtoms(engine, { _transcripts: [],
       _pages: [{ slug: page.slug, content: page.compiled_truth, contentHash: page.content_hash! }], _chat: f.chat });
     expect((await extract()).status).toBe('warn');
-    expect(f.calls()).toBe(1);
+    expect(f.calls()).toBe(2);
     await disposePersistenceConsumer(engine);
     f.replies.push(VALID);
     const retried = await extract();
-    expect(f.calls()).toBe(2);
+    expect(f.calls()).toBe(3);
     expect(retried.status).toBe('ok');
     expect(retried.details?.failures).toEqual([]);
     expect(await atomCount()).toBe(1);
     expect(await countExtractAtomsBacklog(engine, 'default')).toBe(0);
     await disposePersistenceConsumer(engine);
     await extract();
-    expect(f.calls()).toBe(2);
+    expect(f.calls()).toBe(3);
   });
 }, 60_000);
 
@@ -109,7 +110,7 @@ test('three malformed replies settle the page held_failed: out of the backlog, n
       _pages: [{ slug: page.slug, content: page.compiled_truth, contentHash: page.content_hash! }], _chat: f.chat });
     for (let attempt = 1; attempt <= MAX_DETERMINISTIC_FAILURES; attempt++) {
       const run = await extract();
-      expect(f.calls()).toBe(attempt);
+      expect(f.calls()).toBe(attempt * 2);
       expect(run.details?.malformed_outputs).toBe(1);
       const [checkpoint] = await checkpoints();
       expect(Number(checkpoint.attempts)).toBe(attempt);
@@ -119,7 +120,7 @@ test('three malformed replies settle the page held_failed: out of the backlog, n
     }
     expect(await discoverExtractablePages(engine, 'default')).toEqual([]);
     const held = await extract();
-    expect(f.calls()).toBe(MAX_DETERMINISTIC_FAILURES);
+    expect(f.calls()).toBe(MAX_DETERMINISTIC_FAILURES * 2);
     expect(held.details?.failures).toEqual([]);
     expect(held.details?.held_failed).toBe(1);
     expect(await checkpoints()).toHaveLength(1);
@@ -143,7 +144,7 @@ test('three malformed replies settle the page held_failed: out of the backlog, n
     const [changed] = await discoverExtractablePages(engine, 'default');
     f.replies.push(VALID);
     expect((await runPhaseExtractAtoms(engine, { _transcripts: [], _pages: [{ slug: changed.slug, content: changed.content, contentHash: changed.contentHash }], _chat: f.chat })).status).toBe('ok');
-    expect(f.calls()).toBe(MAX_DETERMINISTIC_FAILURES + 1);
+    expect(f.calls()).toBe(MAX_DETERMINISTIC_FAILURES * 2 + 1);
     expect(await atomCount()).toBe(1);
     expect((await doctorHeld()).status).toBe('ok');
   });
@@ -162,12 +163,12 @@ test('an explicit retry still runs a held page and clears it from doctor', async
     f.replies.push(VALID);
     __setChatTransportForTests(f.chat);
     expect(await retryManagedAtomBatch(engine, 'default', requestId, 'job:61')).toMatchObject({ model_rerun: true });
-    expect(f.calls()).toBe(MAX_DETERMINISTIC_FAILURES + 1);
+    expect(f.calls()).toBe(MAX_DETERMINISTIC_FAILURES * 2 + 1);
     expect(await atomCount()).toBe(1);
     await disposePersistenceConsumer(engine);
     expect((await doctorHeld()).status).toBe('ok');
     await extract();
-    expect(f.calls()).toBe(MAX_DETERMINISTIC_FAILURES + 1);
+    expect(f.calls()).toBe(MAX_DETERMINISTIC_FAILURES * 2 + 1);
   });
 }, 90_000);
 
@@ -181,11 +182,11 @@ test('a transcript origin is bounded the same way', async () => {
     const extract = () => runPhaseExtractAtoms(engine, { _pages: [], _transcripts: [{ filePath: file, content: text, contentHash: sha256(text) }], _chat: f.chat });
     for (let attempt = 1; attempt <= MAX_DETERMINISTIC_FAILURES; attempt++) {
       await extract();
-      expect(f.calls()).toBe(attempt);
+      expect(f.calls()).toBe(attempt * 2);
       await disposePersistenceConsumer(engine);
     }
     const held = await extract();
-    expect(f.calls()).toBe(MAX_DETERMINISTIC_FAILURES);
+    expect(f.calls()).toBe(MAX_DETERMINISTIC_FAILURES * 2);
     expect(held.details?.failures).toEqual([]);
     expect(held.details?.held_failed).toBe(1);
   });
@@ -199,12 +200,12 @@ test('a drain over a failed page retries it instead of stopping provider_failure
     __setChatTransportForTests(f.chat);
     await withEnv({ ANTHROPIC_API_KEY: 'sk-test-atom-retry' }, async () => {
       const first = await runExtractAtomsDrainForSource(engine, { sourceId: 'default', windowSeconds: 120, maxBatches: 1 });
-      expect(f.calls()).toBe(1);
+      expect(f.calls()).toBe(2);
       expect(first.failure_count).toBe(1);
       await disposePersistenceConsumer(engine);
       f.replies.push(VALID);
       const second = await runExtractAtomsDrainForSource(engine, { sourceId: 'default', windowSeconds: 120, maxBatches: 3 });
-      expect(f.calls()).toBe(2);
+      expect(f.calls()).toBe(3);
       expect(second.status).toBe('ok');
       expect(second.stopped).toBe('drained');
       expect(second.extracted).toBe(1);
@@ -212,3 +213,84 @@ test('a drain over a failed page retries it instead of stopping provider_failure
     });
   });
 }, 60_000);
+
+// --- #6325 follow-on: current-content tombstones without a managed checkpoint ---
+
+const putPage = async (slug: string, text: string, sourceId = 'default') => {
+  await setManaged(false);
+  return engine.putPage(slug, { type: 'note', title: slug, compiled_truth: `${text} `.repeat(40) }, { sourceId });
+};
+const tombstonePage = (page: { id: number }, sourceId: string, failCount = MAX_DETERMINISTIC_FAILURES) =>
+  engine.executeRaw(
+    `INSERT INTO extract_atoms_page_state (source_incarnation,page_id,content_hash,fail_count,tombstoned)
+     SELECT s.incarnation,p.id,p.content_hash,$3,true FROM pages p JOIN sources s ON s.id=p.source_id
+     WHERE p.id=$1 AND p.source_id=$2
+     ON CONFLICT (source_incarnation,page_id,content_hash) DO UPDATE SET fail_count=EXCLUDED.fail_count,tombstoned=true`,
+    [page.id, sourceId, failCount]);
+const incarnationOf = async (sourceId: string) =>
+  (await engine.executeRaw<{ incarnation: string }>('SELECT incarnation FROM sources WHERE id=$1', [sourceId]))[0]!.incarnation;
+
+test('doctor lists a current page tombstone, not an obsolete content revision', async () => {
+  const page = await putPage('notes/tombstoned', 'A careful project record.');
+  await tombstonePage(page, 'default');
+  const held = await doctorHeld();
+  expect(held.status).toBe('warn');
+  expect(held.message).toContain('tombstoned:');
+  expect(held.details?.items).toEqual([expect.objectContaining({ source_id: 'default', kind: 'page', locator: page.slug,
+    request_id: null, attempts: MAX_DETERMINISTIC_FAILURES, held_by: 'tombstone' })]);
+  expect(held.fix).toBeUndefined();
+  await putPage('notes/tombstoned', 'A rewritten project record.');
+  expect((await doctorHeld()).status).toBe('ok');
+});
+
+test('a zero-yield tombstone (no failure streak) is not reported as held', async () => {
+  const page = await putPage('notes/empty-yield', 'A carefully empty project record.');
+  await tombstonePage(page, 'default', 0);
+  expect((await doctorHeld()).status).toBe('ok');
+});
+
+test('tombstones respect the requested source scope', async () => {
+  await engine.executeRaw("INSERT INTO sources(id,name) VALUES('other','other')");
+  const mine = await putPage('notes/scoped-default', 'A default-source record.');
+  const other = await putPage('notes/scoped-other', 'An other-source record.', 'other');
+  await tombstonePage(mine, 'default');
+  await tombstonePage(other, 'other');
+  expect((await listHeldAtomTombstones(engine, ['default'])).map(row => row.source_id)).toEqual(['default']);
+  expect((await listHeldAtomTombstones(engine, ['other'])).map(row => row.source_id)).toEqual(['other']);
+  expect(await listHeldManagedAtoms(engine, ['other'])).toEqual([]);
+});
+
+test('a managed hold and its tombstone row are one doctor item, with the retryable checkpoint winning', async () => {
+  const page = await putPage('notes/double-held', 'A careful project record.');
+  const requestId = '11111111-1111-4111-8111-111111111111';
+  await tombstonePage(page, 'default');
+  await engine.executeRaw(`INSERT INTO op_checkpoints(op,fingerprint,completed_keys) VALUES('managed-atoms','dedupe-held',$1::text::jsonb)`,
+    [JSON.stringify([{ sourceId: 'default', incarnation: await incarnationOf('default'), requestId, kind: 'page',
+      locator: page.slug, pageId: page.id, contentHash: page.content_hash, failure: 'malformed model output',
+      attempts: MAX_DETERMINISTIC_FAILURES, held: true }])]);
+  const held = await doctorHeld();
+  expect(held.details?.items).toEqual([expect.objectContaining({ request_id: requestId, held_by: 'checkpoint' })]);
+  expect(held.fix).toMatchObject({ consent: ['paid'] });
+  await engine.executeRaw("UPDATE op_checkpoints SET completed_keys=completed_keys #- '{0,held}' #- '{0,failure}' WHERE fingerprint='dedupe-held'");
+  expect((await doctorHeld()).status).toBe('ok');
+});
+
+test('a transcript tombstone is listed only while the file still hashes to its revision', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'gbrain-atom-tombstone-'));
+  try {
+    const file = join(home, 'session.txt');
+    const first = 'A careful session transcript about measured progress. '.repeat(40);
+    writeFileSync(file, first);
+    await engine.executeRaw(
+      `INSERT INTO extract_atoms_transcript_state (source_id,file_path,content_hash,fail_count,tombstoned)
+       VALUES('default',$1,$2,$3,true)`, [file, sha256(first).slice(0, 16), MAX_DETERMINISTIC_FAILURES]);
+    const held = await doctorHeld();
+    expect(held.status).toBe('warn');
+    expect(held.details?.items).toEqual([expect.objectContaining({ source_id: 'default', kind: 'transcript', locator: file,
+      request_id: null, attempts: MAX_DETERMINISTIC_FAILURES, held_by: 'tombstone' })]);
+    writeFileSync(file, 'A rewritten session transcript about measured progress. '.repeat(40));
+    expect((await doctorHeld()).status).toBe('ok');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});

@@ -28,6 +28,7 @@ export interface ExtractStatusRow {
   eval_fail_count: number;
   halt_count: number;
   round_completed_count: number;
+  expected_limit_count: number;
   halt_rate: number;
   last_updated_at: string | null;
 }
@@ -53,6 +54,7 @@ export function buildStatusReport(
     eval_fail_count: number | string | null;
     halt_count: number | string | null;
     round_completed_count: number | string | null;
+    expected_limit_count?: number | string | null;
     last_updated_at: Date | string | null;
   }>,
   filters: { source_id?: string; kind?: string },
@@ -60,7 +62,11 @@ export function buildStatusReport(
   const rows: ExtractStatusRow[] = rollupRows.map(r => {
     const halts = Number(r.halt_count) || 0;
     const completed = Number(r.round_completed_count) || 0;
-    const total = halts + completed;
+    // Same denominator as doctor's extract_health (#4482): a run that stopped
+    // at an expected budget/deadline cap is successful progress, so it counts
+    // as a run but never as a failure. Absent on pre-v141 rows → 0.
+    const expectedLimits = Number(r.expected_limit_count) || 0;
+    const total = halts + completed + expectedLimits;
     return {
       kind: r.kind,
       source_id: r.source_id,
@@ -69,6 +75,7 @@ export function buildStatusReport(
       eval_fail_count: Number(r.eval_fail_count) || 0,
       halt_count: halts,
       round_completed_count: completed,
+      expected_limit_count: expectedLimits,
       halt_rate: total > 0 ? halts / total : 0,
       last_updated_at: r.last_updated_at
         ? new Date(r.last_updated_at).toISOString()
@@ -110,6 +117,7 @@ export function formatStatusTable(report: ExtractStatusReport, verbose: boolean)
     `${'SOURCE'.padEnd(SOURCE)}  ` +
     `${'COST_7D_USD'.padStart(11)}  ` +
     `${'COMPLETED'.padStart(9)}  ` +
+    `${'CAP_STOPS'.padStart(9)}  ` +
     `${'HALTS'.padStart(5)}  ` +
     `${'HALT_RATE'.padStart(9)}  ` +
     `${'EVAL_PASS'.padStart(9)}  ` +
@@ -123,6 +131,7 @@ export function formatStatusTable(report: ExtractStatusReport, verbose: boolean)
       `${r.source_id.padEnd(SOURCE)}  ` +
       `${('$' + r.cost_7d_usd.toFixed(4)).padStart(11)}  ` +
       `${String(r.round_completed_count).padStart(9)}  ` +
+      `${String(r.expected_limit_count).padStart(9)}  ` +
       `${String(r.halt_count).padStart(5)}  ` +
       `${(r.halt_rate * 100).toFixed(1).padStart(8) + '%'}  ` +
       `${String(r.eval_pass_count).padStart(9)}  ` +
@@ -171,26 +180,36 @@ export async function runExtractStatus(
     eval_fail_count: number | string | null;
     halt_count: number | string | null;
     round_completed_count: number | string | null;
+    expected_limit_count: number | string | null;
     last_updated_at: Date | string | null;
   };
 
+  // #4482: expected_limit_count arrives in migration v141. Read it when present
+  // so the halt rate matches doctor's; pre-v141 brains retry without it (caps
+  // read as 0) instead of failing the whole dashboard.
+  const rollupQuery = (withExpected: boolean) =>
+    `SELECT
+       kind,
+       source_id,
+       SUM(cost_usd) AS cost_7d_usd,
+       SUM(eval_pass_count) AS eval_pass_count,
+       SUM(eval_fail_count) AS eval_fail_count,
+       SUM(halt_count) AS halt_count,
+       SUM(round_completed_count) AS round_completed_count,
+       ${withExpected ? 'SUM(expected_limit_count)' : '0'} AS expected_limit_count,
+       MAX(updated_at) AS last_updated_at
+     FROM extract_rollup_7d
+     WHERE ${conds.join(' AND ')}
+     GROUP BY kind, source_id`;
+
   let rows: Row[] = [];
   try {
-    rows = await engine.executeRaw<Row>(
-      `SELECT
-         kind,
-         source_id,
-         SUM(cost_usd) AS cost_7d_usd,
-         SUM(eval_pass_count) AS eval_pass_count,
-         SUM(eval_fail_count) AS eval_fail_count,
-         SUM(halt_count) AS halt_count,
-         SUM(round_completed_count) AS round_completed_count,
-         MAX(updated_at) AS last_updated_at
-       FROM extract_rollup_7d
-       WHERE ${conds.join(' AND ')}
-       GROUP BY kind, source_id`,
-      params,
-    );
+    try {
+      rows = await engine.executeRaw<Row>(rollupQuery(true), params);
+    } catch (err) {
+      if (!/expected_limit_count/i.test((err as Error).message || String(err))) throw err;
+      rows = await engine.executeRaw<Row>(rollupQuery(false), params);
+    }
   } catch (err) {
     const msg = (err as Error).message || String(err);
     if (/extract_rollup_7d.*does not exist|no such table/i.test(msg)) {

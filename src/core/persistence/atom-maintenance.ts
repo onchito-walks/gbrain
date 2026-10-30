@@ -600,6 +600,50 @@ export interface HeldManagedAtom {
   held_at: string;
 }
 
+/** A current-content tombstone: an origin the unmanaged extractor stopped retrying after MAX_DETERMINISTIC_FAILURES. */
+export interface HeldAtomTombstone {
+  source_id: string;
+  kind: 'page' | 'transcript';
+  locator: string;
+  content_hash: string;
+  attempts: number;
+  held_at: string;
+}
+
+/**
+ * #6325 follow-on: tombstones that keep an origin out of discovery but have no `managed-atoms` checkpoint
+ * (the unmanaged failure path). Page rows are matched to the page's CURRENT content hash and the source's
+ * current incarnation, so an obsolete revision or an unrelated worktree is not listed; a completed managed
+ * checkpoint for the same origin/hash wins over the row. Transcript rows are candidates only: the table
+ * stores hashes, not the file's current state, so the caller confirms `content_hash` against the file.
+ */
+export async function listHeldAtomTombstones(engine: BrainEngine, sourceIds?: string[]): Promise<HeldAtomTombstone[]> {
+  const rows = await engine.executeRaw<Omit<HeldAtomTombstone, 'attempts' | 'held_at'> & { attempts: string | number; held_at: string | Date }>(
+    `SELECT s.id AS source_id, 'page' AS kind, p.slug AS locator, ps.content_hash,
+        ps.fail_count AS attempts, ps.updated_at AS held_at
+       FROM extract_atoms_page_state ps
+       JOIN sources s ON s.incarnation=ps.source_incarnation
+       JOIN pages p ON p.id=ps.page_id AND p.source_id=s.id
+         AND p.content_hash=ps.content_hash AND p.deleted_at IS NULL
+      WHERE ps.tombstoned AND ps.fail_count >= $2
+        AND ($1::text[] IS NULL OR s.id=ANY($1::text[]))
+        AND NOT EXISTS (SELECT 1 FROM op_checkpoints ac WHERE ac.op='managed-atoms'
+          AND ac.completed_keys->0->>'sourceId'=s.id AND ac.completed_keys->0->>'incarnation'=s.incarnation::text
+          AND ac.completed_keys->0->>'kind'='page' AND ac.completed_keys->0->>'locator'=p.slug
+          AND ac.completed_keys->0->>'contentHash'=ps.content_hash AND ac.completed_keys->0->>'failure' IS NULL)
+     UNION ALL
+     SELECT ts.source_id, 'transcript', ts.file_path, ts.content_hash, ts.fail_count, ts.updated_at
+       FROM extract_atoms_transcript_state ts JOIN sources s ON s.id=ts.source_id
+      WHERE ts.tombstoned AND ts.fail_count >= $2
+        AND ($1::text[] IS NULL OR s.id=ANY($1::text[]))
+        AND NOT EXISTS (SELECT 1 FROM op_checkpoints ac WHERE ac.op='managed-atoms'
+          AND ac.completed_keys->0->>'sourceId'=s.id AND ac.completed_keys->0->>'incarnation'=s.incarnation::text
+          AND ac.completed_keys->0->>'kind'='transcript' AND ac.completed_keys->0->>'locator'=ts.file_path
+          AND left(ac.completed_keys->0->>'contentHash', 16)=ts.content_hash AND ac.completed_keys->0->>'failure' IS NULL)
+     ORDER BY source_id, kind, locator`, [sourceIds ?? null, MAX_DETERMINISTIC_FAILURES]);
+  return rows.map(row => ({ ...row, attempts: Number(row.attempts), held_at: new Date(row.held_at).toISOString() }));
+}
+
 /**
  * #6325: managed atom origins held after MAX_DETERMINISTIC_FAILURES failed extractions of their current
  * content, in the source's current incarnation, that no later run completed. A page whose content

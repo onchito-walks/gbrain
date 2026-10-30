@@ -219,6 +219,22 @@ function hashContent(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex');
 }
 
+/**
+ * The content hash discovery would record for this file NOW, through the same `.md` raw / `.txt`
+ * off-turn filter it applies, so a stored transcript tombstone can be matched to the current revision.
+ * Null when the file is unreadable or discovery would skip it (all turns captured off).
+ */
+export function currentTranscriptHash(filePath: string): string | null {
+  let content: string;
+  try { content = readFileSync(filePath, 'utf8'); } catch { return null; }
+  if (!filePath.endsWith('.md')) {
+    const kept = withoutOffPeriodTurns(filePath, content);
+    if (kept === null) return null;
+    content = kept;
+  }
+  return hashContent(content);
+}
+
 function isInDateRange(date: string | null, opts: DiscoverOpts): boolean {
   if (!opts.date && !opts.from && !opts.to) return true;
   if (!date) return false; // file has no inferable date but a filter is active
