@@ -5,11 +5,15 @@
 //   - Non-verbose: top 5; verbose: all
 //   - Empty rollup → "No extract events" message
 //   - JSON envelope schema_version: 1
+//   - halt_rate denominator = halts + completed + expected-limit caps, the
+//     same formula doctor's extract_health reports (so CLI and doctor agree)
 
-import { describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { PGLiteEngine } from '../../src/core/pglite-engine.ts';
 import {
   buildStatusReport,
   formatStatusTable,
+  runExtractStatus,
   type ExtractStatusRow,
 } from '../../src/commands/extract-status.ts';
 
@@ -79,6 +83,55 @@ describe('buildStatusReport — pure aggregation', () => {
       {},
     );
     expect(report.rows[0].halt_rate).toBe(0);
+  });
+
+  test('expected-limit caps join the denominator (6 halts / (6 + 3 + 33))', () => {
+    const report = buildStatusReport(
+      [{
+        kind: 'atoms', source_id: 'default',
+        cost_7d_usd: 0, eval_pass_count: 0, eval_fail_count: 0,
+        halt_count: 6, round_completed_count: 3, expected_limit_count: 33,
+        last_updated_at: null,
+      }],
+      {},
+    );
+    expect(report.rows[0].expected_limit_count).toBe(33);
+    expect(report.rows[0].halt_rate).toBeCloseTo(6 / 42, 10);
+  });
+
+  test('expected-limit-only row (no halts, no completions) stays 0, not NaN', () => {
+    const report = buildStatusReport(
+      [{
+        kind: 'atoms', source_id: 'default',
+        cost_7d_usd: 0, eval_pass_count: 0, eval_fail_count: 0,
+        halt_count: 0, round_completed_count: 0, expected_limit_count: 12,
+        last_updated_at: null,
+      }],
+      {},
+    );
+    expect(report.rows[0].expected_limit_count).toBe(12);
+    expect(report.rows[0].halt_rate).toBe(0);
+  });
+
+  test('all-zero counts keep denominator at zero (halt_rate 0)', () => {
+    const report = buildStatusReport(
+      [{
+        kind: 'atoms', source_id: 'default',
+        cost_7d_usd: 0, eval_pass_count: 0, eval_fail_count: 0,
+        halt_count: 0, round_completed_count: 0, expected_limit_count: 0,
+        last_updated_at: null,
+      }],
+      {},
+    );
+    expect(report.rows[0].halt_rate).toBe(0);
+  });
+
+  test('absent expected_limit_count (pre-v141 row) reads as 0', () => {
+    const report = buildStatusReport(SAMPLE_ROWS, {});
+    const atoms = report.rows.find(r => r.kind === 'atoms')!;
+    expect(atoms.expected_limit_count).toBe(0);
+    // 5 halts + 5 completed, unchanged when the column is absent
+    expect(atoms.halt_rate).toBe(0.5);
   });
 
   test('coerces string-typed counts (postgres returns SUM() as string)', () => {
@@ -156,6 +209,7 @@ describe('formatStatusTable — human output', () => {
     expect(out).toContain('SOURCE');
     expect(out).toContain('COST_7D_USD');
     expect(out).toContain('HALT_RATE');
+    expect(out).toContain('CAP_STOPS');
   });
 
   test('non-verbose truncates to top 5 with "more rows" hint', () => {
@@ -167,6 +221,7 @@ describe('formatStatusTable — human output', () => {
       eval_fail_count: 0,
       halt_count: 0,
       round_completed_count: 1,
+      expected_limit_count: 0,
       halt_rate: 0,
       last_updated_at: null,
     }));
@@ -191,6 +246,7 @@ describe('formatStatusTable — human output', () => {
       eval_fail_count: 0,
       halt_count: 0,
       round_completed_count: 1,
+      expected_limit_count: 0,
       halt_rate: 0,
       last_updated_at: null,
     }));
@@ -202,5 +258,56 @@ describe('formatStatusTable — human output', () => {
     const out = formatStatusTable(report, true);
     expect(out).toContain('kind7');
     expect(out).not.toContain('more rows');
+  });
+});
+
+// The bug this pins: the CLI's SQL never selected expected_limit_count, so a
+// brain that stopped runs at budget/deadline caps (successful partial progress)
+// read e.g. 66.7% here while doctor read 14.3% from identical rows.
+describe('runExtractStatus — SQL parity with doctor', () => {
+  let engine: PGLiteEngine;
+
+  beforeAll(async () => {
+    engine = new PGLiteEngine();
+    await engine.connect({});
+    await engine.initSchema();
+    await engine.executeRaw('DELETE FROM extract_rollup_7d');
+    await engine.executeRaw(
+      `INSERT INTO extract_rollup_7d
+         (kind, source_id, day, cost_usd, eval_pass_count, eval_fail_count,
+          halt_count, round_completed_count, expected_limit_count, rollup_write_failures, updated_at)
+       VALUES ('atoms', 'default', CURRENT_DATE, 0.25, 0, 0, 6, 3, 33, 0, NOW())`,
+    );
+  });
+
+  afterAll(async () => {
+    await engine.disconnect();
+  });
+
+  async function statusJson(args: string[]): Promise<Record<string, any>> {
+    const logs: string[] = [];
+    const original = console.log;
+    console.log = (...a: unknown[]) => { logs.push(a.join(' ')); };
+    try {
+      await runExtractStatus(engine, args);
+    } finally {
+      console.log = original;
+    }
+    return JSON.parse(logs.join('\n'));
+  }
+
+  test('--json reports the cap count and the doctor halt rate', async () => {
+    const report = await statusJson(['--json']);
+    expect(report.schema_version).toBe(1);
+    expect(report.rows[0].expected_limit_count).toBe(33);
+    expect(report.rows[0].halt_count).toBe(6);
+    expect(report.rows[0].halt_rate).toBeCloseTo(6 / (6 + 3 + 33), 10);
+  });
+
+  test('pre-v141 brain (no expected_limit_count column) still reports, caps as 0', async () => {
+    await engine.executeRaw('ALTER TABLE extract_rollup_7d DROP COLUMN expected_limit_count');
+    const report = await statusJson(['--json']);
+    expect(report.rows[0].expected_limit_count).toBe(0);
+    expect(report.rows[0].halt_rate).toBeCloseTo(6 / (6 + 3), 10);
   });
 });
